@@ -3,13 +3,15 @@
  * @author Zechun Li - XJTU ANTS NetVerify Lab
  * @version 1.0
  */
-package org.ants.jndd.diagram;
+package org.ants.jpndd.diagram;
 
 import javafx.util.Pair;
-import org.ants.jndd.cache.OperationCache;
-import org.ants.jndd.nodetable.AtomizedNodeTable;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.ants.jpndd.cache.OperationCache;
+import org.ants.jpndd.nodetable.AtomizedNodeTable;
 
 public class AtomizedNDD extends NDD {
     private final static boolean DEBUG_MODEL = false;
@@ -57,7 +59,7 @@ public class AtomizedNDD extends NDD {
         atomizedNodeTable.deref(ndd);
     }
 
-    public static AtomizedNDD mkAtomized(int field, HashMap<AtomizedNDD, HashSet<Integer>> edges) {
+    public static AtomizedNDD mkAtomized(int field, ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges) {
         return atomizedNodeTable.mk(field, edges);
     }
 
@@ -79,7 +81,7 @@ public class AtomizedNDD extends NDD {
 
     // logical operations
 
-    private static void addEdge(HashMap<AtomizedNDD, HashSet<Integer>> edges, AtomizedNDD descendant, HashSet<Integer> labelAtoms) {
+    private static void addEdge(ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges, AtomizedNDD descendant, HashSet<Integer> labelAtoms) {
         // omit the edge pointing to terminal node FALSE
         if (descendant.isFalse()) {
             return;
@@ -118,7 +120,7 @@ public class AtomizedNDD extends NDD {
         }
 
         AtomizedNDD result = null;
-        HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+        ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
         if (a.field == b.field) {
             for (Map.Entry<AtomizedNDD, HashSet<Integer>> entryA : a.getAtomizedEdges().entrySet()) {
                 for (Map.Entry<AtomizedNDD, HashSet<Integer>> entryB : b.getAtomizedEdges().entrySet()) {
@@ -198,10 +200,10 @@ public class AtomizedNDD extends NDD {
         }
 
         AtomizedNDD result = null;
-        HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+        ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
         if (a.field == b.field) {
             // record edges of each node, which will 'or' with the edge pointing to FALSE of another node
-            HashMap<AtomizedNDD, HashSet<Integer>> residualA = new HashMap<>();
+            ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> residualA = new ConcurrentHashMap<>();
             for (Map.Entry<AtomizedNDD, HashSet<Integer>> entry : a.getAtomizedEdges().entrySet()) {
                 residualA.put(entry.getKey(), new HashSet<>(entry.getValue()));
             }
@@ -286,7 +288,7 @@ public class AtomizedNDD extends NDD {
             return TRUE;
         }
 
-        HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+        ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
         HashSet<Integer> residual = new HashSet<>(getAllAtoms(a.field));
         for (Map.Entry<AtomizedNDD, HashSet<Integer>> entryA : a.getAtomizedEdges().entrySet()) {
             residual.removeAll(entryA.getValue());
@@ -337,7 +339,7 @@ public class AtomizedNDD extends NDD {
                 result = orRec(result, next);
             }
         } else {
-            HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+            ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
             for (Map.Entry<AtomizedNDD, HashSet<Integer>> entryA : a.getAtomizedEdges().entrySet()) {
                 AtomizedNDD subResult = existRec(entryA.getKey(), field);
                 addEdge(edges, subResult, entryA.getValue());
@@ -360,7 +362,7 @@ public class AtomizedNDD extends NDD {
             return NDD.getFalse();
         }
 
-        HashMap<NDD, Integer> edges = new HashMap<>();
+        ConcurrentHashMap<NDD, Integer> edges = new ConcurrentHashMap<>();
         for (Map.Entry<AtomizedNDD, HashSet<Integer>> entry : a.getAtomizedEdges().entrySet()) {
             int bddLabel = 0;
             for (int atom : entry.getValue()) {
@@ -453,7 +455,7 @@ public class AtomizedNDD extends NDD {
         } else if (current.isFalse()){
             return FALSE;
         }
-        HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+        ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
         for (Map.Entry<NDD, Integer> entry : current.getEdges().entrySet()) {
             AtomizedNDD subResult = atomizeNDD(entry.getKey(), bddToAtoms);
             edges.put(subResult, new HashSet<>(bddToAtoms.get(entry.getValue())));
@@ -620,7 +622,7 @@ public class AtomizedNDD extends NDD {
                     }
                 }
                 if (change) {
-                    HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+                    ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
                     edges.put(TRUE, atomsOnEdge);
                     return mkAtomized(atomizedNDD.field, edges);
                 }
@@ -635,7 +637,7 @@ public class AtomizedNDD extends NDD {
             return new Pair<Boolean, AtomizedNDD>(false, atomizedNDD);
         } else {
             Boolean change = false;
-            HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+            ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
             if (atomizedNDD.field == field) {
                 for (Map.Entry<AtomizedNDD, HashSet<Integer>> entry : atomizedNDD.getAtomizedEdges().entrySet()) {
                     Boolean subChange = false;
@@ -682,7 +684,7 @@ public class AtomizedNDD extends NDD {
             return new Pair<Boolean, AtomizedNDD>(false, atomizedNDD);
         } else {
             boolean change = false;
-            HashMap<AtomizedNDD, HashSet<Integer>> edges = new HashMap<>();
+            ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges = new ConcurrentHashMap<>();
             for (Map.Entry<AtomizedNDD, HashSet<Integer>> entry : atomizedNDD.getAtomizedEdges().entrySet()) {
                 boolean subChange = false;
                 Pair<Boolean, AtomizedNDD> result = splitMultipleFieldsAtomsWithMultipleFieldsPredicate(atomsToSplit, entry.getKey());
@@ -743,13 +745,13 @@ public class AtomizedNDD extends NDD {
 
     // per node content
 
-    private HashMap<AtomizedNDD, HashSet<Integer>> atomizedEdges;
+    private ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> atomizedEdges;
 
     public AtomizedNDD() {
         super();
     }
 
-    public AtomizedNDD(int field, HashMap<AtomizedNDD, HashSet<Integer>> atomizedEdges) {
+    public AtomizedNDD(int field, ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> atomizedEdges) {
         this.field = field;
         this.atomizedEdges = atomizedEdges;
     }
@@ -778,14 +780,14 @@ public class AtomizedNDD extends NDD {
         return this == getTrue() || this == getFalse();
     }
 
-    public HashMap<AtomizedNDD, HashSet<Integer>> getAtomizedEdges() {
+    public ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> getAtomizedEdges() {
         return atomizedEdges;
     }
 
     public static int nodeCount() {
-        ArrayList<HashMap<HashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD>> tables = atomizedNodeTable.getNodeTable();
+        ArrayList<ConcurrentHashMap<ConcurrentHashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD>> tables = atomizedNodeTable.getNodeTable();
         int nodeCount = 0;
-        for (HashMap<HashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD> table : tables) {
+        for (ConcurrentHashMap<ConcurrentHashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD> table : tables) {
             nodeCount += table.size();
         }
         return nodeCount;

@@ -3,7 +3,7 @@
  * @author Zechun Li - XJTU ANTS NetVerify Lab
  * @version 1.0
  */
-package org.ants.jndd.cache;
+package org.ants.jpndd.cache;
 
 import javax.validation.constraints.NotNull;
 

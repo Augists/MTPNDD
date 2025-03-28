@@ -3,12 +3,13 @@
  * @author Zechun Li - XJTU ANTS NetVerify Lab
  * @version 1.0
  */
-package org.ants.jndd.nodetable;
+package org.ants.jpndd.nodetable;
 
 import jdd.bdd.BDD;
-import org.ants.jndd.diagram.AtomizedNDD;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import org.ants.jpndd.diagram.AtomizedNDD;
 
 public class AtomizedNodeTable {
     /**
@@ -24,7 +25,7 @@ public class AtomizedNodeTable {
     /**
      * The node table.
      */
-    ArrayList<HashMap<HashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD>> nodeTable;
+    ArrayList<ConcurrentHashMap<ConcurrentHashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD>> nodeTable;
 
     /**
      * The internal bdd engine.
@@ -54,7 +55,7 @@ public class AtomizedNodeTable {
         this.referenceCount = new HashMap<>();
     }
 
-    public ArrayList<HashMap<HashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD>> getNodeTable() {
+    public ArrayList<ConcurrentHashMap<ConcurrentHashMap<AtomizedNDD, HashSet<Integer>>, AtomizedNDD>> getNodeTable() {
         return nodeTable;
     }
 
@@ -71,7 +72,7 @@ public class AtomizedNodeTable {
      */
     // declare a new node table for a new field
     public void declareField() {
-        nodeTable.add(new HashMap<>());
+        nodeTable.add(new ConcurrentHashMap<>());
     }
 
     /**
@@ -81,7 +82,7 @@ public class AtomizedNodeTable {
      * @return The ndd node.
      */
     // create or reuse a new node
-    public AtomizedNDD mk(int field, HashMap<AtomizedNDD, HashSet<Integer>> edges) {
+    public AtomizedNDD mk(int field, ConcurrentHashMap<AtomizedNDD, HashSet<Integer>> edges) {
         if (edges.size() == 0) {
             // Since NDD omits all edges pointing to FALSE, the empty edge represents FALSE.
             return AtomizedNDD.getFalse();

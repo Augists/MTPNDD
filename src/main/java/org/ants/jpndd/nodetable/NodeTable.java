@@ -3,12 +3,14 @@
  * @author Zechun Li - XJTU ANTS NetVerify Lab
  * @version 1.0
  */
-package org.ants.jndd.nodetable;
+package org.ants.jpndd.nodetable;
 
 import jdd.bdd.BDD;
-import org.ants.jndd.diagram.NDD;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.ants.jpndd.diagram.NDD;
 
 public class NodeTable {
     /**
@@ -24,7 +26,7 @@ public class NodeTable {
     /**
      * The node table.
      */
-    ArrayList<HashMap<HashMap<NDD, Integer>, NDD>> nodeTable;
+    ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Integer>, NDD>> nodeTable;
 
     /**
      * The internal bdd engine.
@@ -32,7 +34,8 @@ public class NodeTable {
     BDD bddEngine;
 
     /**
-     * If the number of free nodes is less than this threshold after garbage collection, the ndd engine will grow its node table.
+     * If the number of free nodes is less than this threshold after garbage
+     * collection, the ndd engine will grow its node table.
      */
     final double QUICK_GROW_THRESHOLD = 0.1;
 
@@ -43,6 +46,7 @@ public class NodeTable {
 
     /**
      * Construct function for ndd.
+     * 
      * @param nddTableSize The max size of ndd node table.
      * @param bddTableSize The max size of bdd node table.
      * @param bddCacheSize The max size of ndd operation cache.
@@ -57,8 +61,9 @@ public class NodeTable {
 
     /**
      * Construct function for atomized ndd.
+     * 
      * @param nddTableSize The max size of ndd node table.
-     * @param bddEngine The engine for bdd.
+     * @param bddEngine    The engine for bdd.
      */
     public NodeTable(long nddTableSize, BDD bddEngine) {
         this.currentSize = 0L;
@@ -68,12 +73,13 @@ public class NodeTable {
         this.referenceCount = new HashMap<>();
     }
 
-    public ArrayList<HashMap<HashMap<NDD, Integer>, NDD>> getNodeTable() {
+    public ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Integer>, NDD>> getNodeTable() {
         return nodeTable;
     }
 
     /**
      * Get the internal bdd engine.
+     * 
      * @return The internal bdd engine.
      */
     public BDD getBddEngine() {
@@ -85,17 +91,18 @@ public class NodeTable {
      */
     // declare a new node table for a new field
     public void declareField() {
-        nodeTable.add(new HashMap<>());
+        nodeTable.add(new ConcurrentHashMap<>());
     }
 
     /**
      * Create or reuse an ndd node.
+     * 
      * @param field The field of the node.
      * @param edges Edges of the node.
      * @return The ndd node.
      */
     // create or reuse a new node
-    public NDD mk(int field, HashMap<NDD, Integer> edges) {
+    public NDD mk(int field, ConcurrentHashMap<NDD, Integer> edges) {
         if (edges.size() == 0) {
             // Since NDD omits all edges pointing to FALSE, the empty edge represents FALSE.
             return NDD.getFalse();
@@ -137,7 +144,8 @@ public class NodeTable {
     }
 
     /**
-     * Free unused ndd node, first by garbage collection, then by growing the node table.
+     * Free unused ndd node, first by garbage collection, then by growing the node
+     * table.
      */
     private void gcOrGrow() {
         gc();
@@ -166,7 +174,8 @@ public class NodeTable {
         while (!deadNodesQueue.isEmpty()) {
             NDD deadNode = deadNodesQueue.poll();
             for (NDD descendant : deadNode.getEdges().keySet()) {
-                if (descendant.isTerminal()) continue;
+                if (descendant.isTerminal())
+                    continue;
                 int newReferenceCount = referenceCount.get(descendant) - 1;
                 referenceCount.put(descendant, newReferenceCount);
                 if (newReferenceCount == 0) {
@@ -196,6 +205,7 @@ public class NodeTable {
 
     /**
      * Protect a root node from garbage collection.
+     * 
      * @param ndd The root to be protected.
      * @return The ndd node.
      */
@@ -208,6 +218,7 @@ public class NodeTable {
 
     /**
      * Ref the initialized NDD node with Integer.MAX_VALUE (special label)
+     * 
      * @param ndd
      */
     public void fixNDDNodeRefCount(NDD ndd) {
@@ -215,7 +226,9 @@ public class NodeTable {
     }
 
     /**
-     * Unprotect a root node, such that the node can be cleared during garbage collection.
+     * Unprotect a root node, such that the node can be cleared during garbage
+     * collection.
+     * 
      * @param ndd The ndd node to be unprotected.
      */
     public void deref(NDD ndd) {

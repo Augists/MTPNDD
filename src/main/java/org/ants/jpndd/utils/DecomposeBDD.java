@@ -3,7 +3,7 @@
  * @author Zechun Li - XJTU ANTS NetVerify Lab
  * @version 1.0
  */
-package org.ants.jndd.utils;
+package org.ants.jpndd.utils;
 
 import jdd.bdd.BDD;
 
