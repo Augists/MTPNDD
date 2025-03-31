@@ -112,11 +112,13 @@ public class NDDSolution {
     }
 
     public static void main(String[] args) {
-        System.out.println(Solution(1));
-        System.out.println(Solution(2));
-        System.out.println(Solution(3));
-        System.out.println(Solution(4));
-        System.out.println(Solution(5));
-        System.out.println(Solution(6));
+        System.out.println(Solution(7));
+//        System.out.println(Solution(8));
+//        System.out.println(Solution(9));
+//        System.out.println(Solution(10));
+//        System.out.println(Solution(11));
+//        System.out.println(Solution(12));
+//        System.out.println(Solution(13));
+//        System.out.println(Solution(14));
     }
 }

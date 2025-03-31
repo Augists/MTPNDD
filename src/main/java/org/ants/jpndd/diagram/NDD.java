@@ -10,6 +10,7 @@ import jdd.bdd.BDD;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.ants.jpndd.cache.OperationCache;
 import org.ants.jpndd.nodetable.NodeTable;
@@ -310,6 +311,8 @@ public class NDD {
         edges.put(descendant, newLabel);
     }
 
+    static int and_count = 0;
+
     /**
      * The logical operation AND.
      * 
@@ -318,6 +321,15 @@ public class NDD {
      * @return The result of the logical operation.
      */
     public static NDD and(NDD a, NDD b) {
+        and_count++;
+        System.out.println("===============AND " + and_count);
+        if (and_count == 167) {
+            System.out.println("a " + a);
+            print(a);
+            System.out.println("b " + b);
+            print(b);
+            System.out.println();
+        }
         temporarilyProtect.clear();
         NDD result = andRec(a, b);
         if (DEBUG_MODEL) {
@@ -331,6 +343,8 @@ public class NDD {
         }
         return result;
     }
+
+    static ReentrantLock bdd_lock = new ReentrantLock();
 
     /**
      * The recursive implementation of the logical operation AND.
@@ -356,13 +370,27 @@ public class NDD {
         if (a.field == b.field) {
             // compute the intersection of the edges in parallel
             a.edges.entrySet().parallelStream().forEach(entryA -> {
+                System.out.println("outer " + Thread.currentThread().getName() + " processing" + " from " + entryA.getKey());
+
                 b.edges.entrySet().parallelStream().forEach(entryB -> {
-                    int intersect = bddEngine.ref(bddEngine.and(entryA.getValue(), entryB.getValue()));
-                    if (intersect != 0) {
-                        // the descendant of the new edge
-                        NDD subResult = andRec(entryA.getKey(), entryB.getKey());
-                        // try to merge edges
-                        addEdge(edges, subResult, intersect);
+                    System.out.println("inner " + Thread.currentThread().getName() + " processing" + " from " + entryA.getKey() + " for " + entryB.getKey());
+
+                    System.out.println("trying to get lock " + Thread.currentThread().getName() + " from " + entryA.getKey() + " for " + entryB.getKey());
+                    bdd_lock.lock();
+                    System.out.println("successfully get lock " + Thread.currentThread().getName() + " from " + entryA.getKey() + " for " + entryB.getKey());
+                    try {
+                        int intersect = bddEngine.ref(bddEngine.and(entryA.getValue(), entryB.getValue()));
+                        if (intersect != 0) {
+                            // the descendant of the new edge
+                            System.out.println("digui" + " from " + entryA.getKey() + " for " + entryB.getKey());
+                            NDD subResult = andRec(entryA.getKey(), entryB.getKey());
+                            // try to merge edges
+                            addEdge(edges, subResult, intersect);
+                        }
+                    } finally {
+                        System.out.println("trying to free lock " + Thread.currentThread().getName() + " from " + entryA.getKey() + " for " + entryB.getKey());
+                        bdd_lock.unlock();
+                        System.out.println("successfully free lock " + Thread.currentThread().getName() + " from " + entryA.getKey() + " for " + entryB.getKey());
                     }
                 });
             });
