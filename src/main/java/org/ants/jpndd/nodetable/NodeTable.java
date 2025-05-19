@@ -5,12 +5,17 @@
  */
 package org.ants.jpndd.nodetable;
 
-import jdd.bdd.BDD;
-
-import java.util.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.ants.jpndd.diagram.NDD;
+
+import jsylvan.JSylvan;
 
 public class NodeTable {
     /**
@@ -26,12 +31,7 @@ public class NodeTable {
     /**
      * The node table.
      */
-    ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Integer>, NDD>> nodeTable;
-
-    /**
-     * The internal bdd engine.
-     */
-    BDD bddEngine;
+    ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Long>, NDD>> nodeTable;
 
     /**
      * If the number of free nodes is less than this threshold after garbage
@@ -51,11 +51,23 @@ public class NodeTable {
      * @param bddTableSize The max size of bdd node table.
      * @param bddCacheSize The max size of ndd operation cache.
      */
-    public NodeTable(long nddTableSize, int bddTableSize, int bddCacheSize) {
+    public NodeTable(int nddTableSize, int bddTableSize, int bddCacheSize) {
         this.currentSize = 0L;
         this.nddTableSize = nddTableSize;
         this.nodeTable = new ArrayList<>();
-        bddEngine = new BDD(bddTableSize, bddCacheSize);
+
+        long maxMemory = 400L * 1024 * 1024;
+        // int tableRatio = Math.max(1, bddTableSize / bddCacheSize - 1);
+        // int initratio = (int)Math.sqrt((double) maxMemory / (bddTableSize + bddCacheSize));
+        try{
+            JSylvan.init(2, maxMemory, 1, 4, 1);
+        }catch (IOException ex) {
+            ex.printStackTrace();
+            return;
+        }
+        JSylvan.disableGC();
+        JSylvan.enableGC();
+        
         this.referenceCount = new HashMap<>();
     }
 
@@ -65,25 +77,15 @@ public class NodeTable {
      * @param nddTableSize The max size of ndd node table.
      * @param bddEngine    The engine for bdd.
      */
-    public NodeTable(long nddTableSize, BDD bddEngine) {
+    public NodeTable(long nddTableSize, JSylvan bddEngine) {
         this.currentSize = 0L;
         this.nddTableSize = nddTableSize;
         this.nodeTable = new ArrayList<>();
-        this.bddEngine = bddEngine;
         this.referenceCount = new HashMap<>();
     }
 
-    public ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Integer>, NDD>> getNodeTable() {
+    public ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Long>, NDD>> getNodeTable() {
         return nodeTable;
-    }
-
-    /**
-     * Get the internal bdd engine.
-     * 
-     * @return The internal bdd engine.
-     */
-    public BDD getBddEngine() {
-        return bddEngine;
     }
 
     /**
@@ -102,8 +104,8 @@ public class NodeTable {
      * @return The ndd node.
      */
     // create or reuse a new node
-    public NDD mk(int field, ConcurrentHashMap<NDD, Integer> edges) {
-        if (edges.size() == 0) {
+    public NDD mk(int field, ConcurrentHashMap<NDD, Long> edges) {
+        if (edges.isEmpty()) {
             // Since NDD omits all edges pointing to FALSE, the empty edge represents FALSE.
             return NDD.getFalse();
         } else if (edges.size() == 1 && edges.values().iterator().next() == 1) {
@@ -114,9 +116,7 @@ public class NodeTable {
             if (node == null) {
                 // create a new node
                 // 1. add ref count of all descendants
-                Iterator<NDD> iterator = edges.keySet().iterator();
-                while (iterator.hasNext()) {
-                    NDD descendant = iterator.next();
+                for (NDD descendant : edges.keySet()) {
                     if (!descendant.isTerminal()) {
                         referenceCount.put(descendant, referenceCount.get(descendant) + 1);
                     }
@@ -135,8 +135,8 @@ public class NodeTable {
                 return newNode;
             } else {
                 // reuse node
-                for (Integer bdd : edges.values()) {
-                    bddEngine.deref(bdd);
+                for (Long bdd : edges.values()) {
+                    JSylvan.deref(bdd);
                 }
                 return node;
             }
@@ -183,8 +183,8 @@ public class NodeTable {
                 }
             }
             // delete current dead node
-            for (int bddLabel : deadNode.getEdges().values()) {
-                bddEngine.deref(bddLabel);
+            for (long bddLabel : deadNode.getEdges().values()) {
+                JSylvan.deref(bddLabel);
             }
             referenceCount.remove(deadNode);
             nodeTable.get(deadNode.getField()).remove(deadNode.getEdges());
