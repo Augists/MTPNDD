@@ -11,13 +11,14 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.ants.jpndd.diagram.NDD;
 
 import jsylvan.JSylvan;
 
 public class NodeTable {
+    private static final boolean TEST_SYLVAN_INIT = false;
+
     /**
      * The current size of the node table.
      */
@@ -31,7 +32,7 @@ public class NodeTable {
     /**
      * The node table.
      */
-    ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Long>, NDD>> nodeTable;
+    ArrayList<Map<Map<NDD, Long>, NDD>> nodeTable;
 
     /**
      * If the number of free nodes is less than this threshold after garbage
@@ -42,7 +43,7 @@ public class NodeTable {
     /**
      * The reference count of each node.
      */
-    HashMap<NDD, Integer> referenceCount;
+    Map<NDD, Integer> referenceCount;
 
     /**
      * Construct function for ndd.
@@ -51,6 +52,7 @@ public class NodeTable {
      * @param bddTableSize The max size of bdd node table.
      * @param bddCacheSize The max size of ndd operation cache.
      */
+    @SuppressWarnings("CallToPrintStackTrace")
     public NodeTable(int nddTableSize, int bddTableSize, int bddCacheSize) {
         this.currentSize = 0L;
         this.nddTableSize = nddTableSize;
@@ -67,6 +69,49 @@ public class NodeTable {
         }
         JSylvan.disableGC();
         JSylvan.enableGC();
+
+        if (TEST_SYLVAN_INIT) {
+            System.out.println("Going to make two variables and compute their conjunction.");
+
+            // We create BDDs that hold just "a" and "b" (i.e. x_1, x_2)
+            long a = JSylvan.ref(JSylvan.makeVar(1));
+            long b = JSylvan.ref(JSylvan.makeVar(2));
+
+            // Create a BDD representing a /\ b
+            long aAndB = JSylvan.ref(JSylvan.makeAnd(a, b));
+
+            // Create a BDD set of variables 1,2,3,4,5
+            long setOfVariables = JSylvan.ref(JSylvan.makeSet(new int[]{1,2,3,4,5}));
+
+            System.out.println("Going to compute the number of satisfying assignments with 5 variables.");
+
+            // Calculate the number of satisfying assignments, given domain of vars 1,2,3,4,5
+            // This is... 8! 11000, 11001, 11010, 11011, 11100, 11101, 11110, 11111.
+            double count = JSylvan.satcount(aAndB, setOfVariables);
+            System.out.println(String.format("Number of satisfying assignments: %.0f (should be 8)", count));
+
+            // Compute amount of nodes in A and b.
+            long numberOfNodes = JSylvan.nodecount(aAndB);
+            System.out.println(String.format("Number of nodes in the BDD: %d (should be 3)", numberOfNodes));
+
+            System.out.println("Going to test existential quantification...");
+
+            // Calculate \exists a * a /\ b
+            // Obviously, the result should be "0 \/ b" = "b"
+            long result = JSylvan.ref(JSylvan.makeExists(aAndB, a));
+            if (result != b) System.out.println("Fail test 1.");
+
+            long c = JSylvan.ref(JSylvan.makeVar(3));
+            long d = JSylvan.ref(JSylvan.makeVar(4));
+            long e = JSylvan.ref(JSylvan.makeVar(5));
+
+            result = JSylvan.ref(JSylvan.makeUnionPar(new long[]{a, b, c, d, e}));
+            if (result != JSylvan.makeOr(JSylvan.makeOr(a, b),JSylvan.makeOr(c,JSylvan.makeOr(d,e)))) System.out.println("Fail test 2.");
+
+            // And that concludes our little demonstration. TODO: make proper test class...
+            System.out.println("Simple tests success!");
+            System.exit(1);
+        }
         
         this.referenceCount = new HashMap<>();
     }
@@ -84,7 +129,7 @@ public class NodeTable {
         this.referenceCount = new HashMap<>();
     }
 
-    public ArrayList<ConcurrentHashMap<ConcurrentHashMap<NDD, Long>, NDD>> getNodeTable() {
+    public ArrayList<Map<Map<NDD, Long>, NDD>> getNodeTable() {
         return nodeTable;
     }
 
@@ -93,7 +138,7 @@ public class NodeTable {
      */
     // declare a new node table for a new field
     public void declareField() {
-        nodeTable.add(new ConcurrentHashMap<>());
+        nodeTable.add(new HashMap<>());
     }
 
     /**
@@ -104,7 +149,7 @@ public class NodeTable {
      * @return The ndd node.
      */
     // create or reuse a new node
-    public NDD mk(int field, ConcurrentHashMap<NDD, Long> edges) {
+    public NDD mk(int field, Map<NDD, Long> edges) {
         if (edges.isEmpty()) {
             // Since NDD omits all edges pointing to FALSE, the empty edge represents FALSE.
             return NDD.getFalse();

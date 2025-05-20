@@ -1,5 +1,8 @@
 package application.nqueen;
 
+import java.io.FileOutputStream;
+import java.io.PrintStream;
+
 import org.ants.jpndd.diagram.NDD;
 
 public class NDDSolution {
@@ -7,7 +10,7 @@ public class NDDSolution {
 
     // declare n fields, n bits per field
     private static void declareFields(int n) {
-        for (int i = 0;i < n;i++) {
+        for (int i = 0; i < n; i++) {
             NDD.declareField(n);
         }
     }
@@ -27,6 +30,8 @@ public class NDDSolution {
             }
         }
 
+        // NDD.printDot("a", a);
+
         /* No one in the same row */
         for (k = 0; k < n; k++) {
             if (k != i) {
@@ -35,6 +40,8 @@ public class NDDSolution {
                 NDD.deref(mp);
             }
         }
+
+        // NDD.printDot("b", b);
 
         /* No one in the same up-right diagonal */
         for (k = 0; k < n; k++) {
@@ -48,6 +55,8 @@ public class NDDSolution {
             }
         }
 
+        // NDD.printDot("c", c);
+
         /* No one in the same down-right diagonal */
         for (k = 0; k < n; k++) {
             int ll = i + j - k;
@@ -60,11 +69,16 @@ public class NDDSolution {
             }
         }
 
+        // NDD.printDot("d", d);
+
         c = NDD.andTo(c, d);
         b = NDD.andTo(b, c);
         a = NDD.andTo(a, b);
         NDD.deref(d);
         impBatch[i][j] = a;
+
+        // NDD.printDot("impBatch", a);
+        // System.exit(1);
     }
 
     // N is the number of queens, fieldNum is the number of fields in NDD library.
@@ -107,13 +121,20 @@ public class NDDSolution {
             }
         }
         double endTime = System.currentTimeMillis();
-        // todo: add a cache for satCount
         return "\t" + String.format("" + (endTime - startTime) / 1000, ".3f") + "\t" + NDD.satCount(queen);
     }
 
     public static void main(String[] args) {
+        try {
+            FileOutputStream fos = new FileOutputStream("nqueen.txt");
+            PrintStream ps = new PrintStream(fos);
+            System.setOut(ps);
+            System.setErr(ps);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
         // System.out.println(Solution(7));
-       System.out.println(Solution(8));
+        System.out.println(Solution(8));
 //        System.out.println(Solution(9));
 //        System.out.println(Solution(10));
 //        System.out.println(Solution(11));
