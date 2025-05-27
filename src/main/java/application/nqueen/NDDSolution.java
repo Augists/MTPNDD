@@ -84,7 +84,9 @@ public class NDDSolution {
     // N is the number of queens, fieldNum is the number of fields in NDD library.
     public static String Solution(int n) {
         // init NDD library
-        NDD.initNDD(NDD_TABLE_SIZE, 1 + Math.max(1000, (int) (Math.pow(4.4, n - 6)) * 1000), 10000);
+        // long maxMemory = 400L * 1024 * 1024;
+        long maxMemory = 8L * 1024 * 1024 * 1024;
+        NDD.initNDD(NDD_TABLE_SIZE, 1 + Math.max(1000, (int) (Math.pow(4.4, n - 6)) * 1000), 10000, maxMemory);
 
         double startTime = System.currentTimeMillis();
 
@@ -121,6 +123,7 @@ public class NDDSolution {
             }
         }
         double endTime = System.currentTimeMillis();
+        // NDD.printDot("queen", queen);
         return "\t" + String.format("" + (endTime - startTime) / 1000, ".3f") + "\t" + NDD.satCount(queen);
     }
 
@@ -133,13 +136,19 @@ public class NDDSolution {
         } catch (Exception e) {
             e.printStackTrace();
         }
+        // System.out.println(Solution(1));
+        // System.out.println(Solution(2));
+        // System.out.println(Solution(3));
+        // System.out.println(Solution(4));
+        // System.out.println(Solution(5));
+        // System.out.println(Solution(6));
         // System.out.println(Solution(7));
-        System.out.println(Solution(8));
-//        System.out.println(Solution(9));
-//        System.out.println(Solution(10));
-//        System.out.println(Solution(11));
-//        System.out.println(Solution(12));
-//        System.out.println(Solution(13));
-//        System.out.println(Solution(14));
+        // System.out.println(Solution(8));
+        System.out.println(Solution(9));
+        // System.out.println(Solution(10));
+        // System.out.println(Solution(11));
+        // System.out.println(Solution(12));
+        // System.out.println(Solution(13));
+        // System.out.println(Solution(14));
     }
 }

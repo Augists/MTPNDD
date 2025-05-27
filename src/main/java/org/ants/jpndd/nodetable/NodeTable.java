@@ -53,16 +53,15 @@ public class NodeTable {
      * @param bddCacheSize The max size of ndd operation cache.
      */
     @SuppressWarnings("CallToPrintStackTrace")
-    public NodeTable(int nddTableSize, int bddTableSize, int bddCacheSize) {
+    public NodeTable(int nddTableSize, int bddTableSize, int bddCacheSize, long sylvanMaxMemory) {
         this.currentSize = 0L;
         this.nddTableSize = nddTableSize;
         this.nodeTable = new ArrayList<>();
 
-        long maxMemory = 400L * 1024 * 1024;
         // int tableRatio = Math.max(1, bddTableSize / bddCacheSize - 1);
         // int initratio = (int)Math.sqrt((double) maxMemory / (bddTableSize + bddCacheSize));
         try{
-            JSylvan.init(2, maxMemory, 1, 4, 1);
+            JSylvan.init(0, sylvanMaxMemory, 1, 4, 1);
         }catch (IOException ex) {
             ex.printStackTrace();
             return;

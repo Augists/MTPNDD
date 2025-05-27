@@ -25,8 +25,8 @@ public class NDD {
     /**
      * The size of each operation cache.
      */
-    private final static int CACHE_SIZE = 10000;
-    private final static boolean DEBUG_MODEL = true;
+    private static int CACHE_SIZE = 10000;
+    private final static boolean DEBUG_MODEL = false;
 
     /**
      * The ndd node table.
@@ -94,8 +94,8 @@ public class NDD {
      * @param bddTableSize The max size of bdd node table.
      * @param bddCacheSize The max size of bdd operation cache.
      */
-    public static void initNDD(int nddTableSize, int bddTableSize, int bddCacheSize) {
-        nodeTable = new NodeTable(nddTableSize, bddTableSize, bddCacheSize);
+    public static void initNDD(int nddTableSize, int bddTableSize, int bddCacheSize, long sylvanMaxMemory) {
+        nodeTable = new NodeTable(nddTableSize, bddTableSize, bddCacheSize, sylvanMaxMemory);
         fieldNum = -1;
         maxVariablePerField = new ArrayList<>();
         satCountDiv = new ArrayList<>();
@@ -109,9 +109,20 @@ public class NDD {
         orCache = new OperationCache<>(CACHE_SIZE, 3);
     }
 
-    // declare a field of 'bitNum' bits
     /**
-     * Declare a new field.
+     * Initialize the NDD engine with user-defined cache size.
+     * @param nddTableSize The max size of ndd node table.
+     * @param nddCacheSize The size of ndd cache (default 10000).
+     * @param bddTableSize The max size of bdd node table.
+     * @param bddCacheSize The max size of bdd operation cache.
+     */
+    public static void initNDD(int nddTableSize, int nddCacheSize, int bddTableSize, int bddCacheSize, long sylvanMaxMemory) {
+        CACHE_SIZE = nddCacheSize;
+        initNDD(nddTableSize, bddTableSize, bddCacheSize, sylvanMaxMemory);
+    }
+
+    /**
+     * declare a new field of 'bitNum' bits.
      * 
      * @param bitNum The number of bits in the field.
      * @return The id of the field.
@@ -144,7 +155,7 @@ public class NDD {
         NDD[] nddNotVars = new NDD[bitNum];
 
         for (int i = 0; i < bitNum; i++) {
-            bddVars[i] = JSylvan.ref(JSylvan.makeVar(totalBitsBefore + i));
+            bddVars[i] = JSylvan.ref(JSylvan.makeVar(totalBitsBefore + i + 1));
             bddNotVars[i] = JSylvan.ref(JSylvan.makeNot(bddVars[i]));
 
             Map<NDD, Long> edges = new HashMap<>();
@@ -250,7 +261,7 @@ public class NDD {
         if (DEBUG_MODEL) {
             long aBDD = JSylvan.ref(toBDD(a));
             long bBDD = JSylvan.ref(toBDD(b));
-            long resultBDD = JSylvan.makeAnd(aBDD, bBDD);
+            long resultBDD = JSylvan.ref(JSylvan.makeAnd(aBDD, bBDD));
             JSylvan.deref(aBDD);
             JSylvan.deref(bBDD);
             if (resultBDD != toBDD(result)) {
@@ -275,7 +286,7 @@ public class NDD {
         if (DEBUG_MODEL) {
             long aBDD = JSylvan.ref(toBDD(a));
             long bBDD = JSylvan.ref(toBDD(b));
-            long resultBDD = JSylvan.makeOr(aBDD, bBDD);
+            long resultBDD = JSylvan.ref(JSylvan.makeOr(aBDD, bBDD));
             JSylvan.deref(aBDD);
             JSylvan.deref(bBDD);
             if (resultBDD != toBDD(result)) {
@@ -305,8 +316,8 @@ public class NDD {
             oldLabel = edges.get(descendant);
         }
         // merge the bdd label
-        long newLabel = JSylvan.makeOr(oldLabel, labelBDD);
-        // JSylvan.deref(labelBDD);
+        long newLabel = JSylvan.ref(JSylvan.makeOr(oldLabel, labelBDD));
+        JSylvan.deref(labelBDD);
         JSylvan.deref(oldLabel);
         edges.put(descendant, newLabel);
     }
@@ -324,7 +335,7 @@ public class NDD {
         if (DEBUG_MODEL) {
             long aBDD = JSylvan.ref(toBDD(a));
             long bBDD = JSylvan.ref(toBDD(b));
-            long resultBDD = JSylvan.makeAnd(aBDD, bBDD);
+            long resultBDD = JSylvan.ref(JSylvan.makeAnd(aBDD, bBDD));
             JSylvan.deref(aBDD);
             JSylvan.deref(bBDD);
             if (resultBDD != toBDD(result)) {
@@ -399,10 +410,9 @@ public class NDD {
             }
         } else {
             if (a.field > b.field) {
-                return andRec(b, a);
-                // NDD t = a;
-                // a = b;
-                // b = t;
+                NDD t = a;
+                a = b;
+                b = t;
             }
             // a.edges.entrySet().parallelStream().forEach(entryA -> {
             //     /*
@@ -445,7 +455,7 @@ public class NDD {
         if (DEBUG_MODEL) {
             long aBDD = JSylvan.ref(toBDD(a));
             long bBDD = JSylvan.ref(toBDD(b));
-            long resultBDD = JSylvan.makeOr(aBDD, bBDD);
+            long resultBDD = JSylvan.ref(JSylvan.makeOr(aBDD, bBDD));
             JSylvan.deref(aBDD);
             JSylvan.deref(bBDD);
             if (resultBDD != toBDD(result)) {
@@ -515,9 +525,11 @@ public class NDD {
                         // update residual
                         long notIntersect = JSylvan.ref(JSylvan.makeNot(intersect));
                         long oldResidual = residualA.get(entryA.getKey());
-                        residualA.put(entryA.getKey(), JSylvan.makeAnd(oldResidual, notIntersect));
+                        residualA.put(entryA.getKey(), JSylvan.ref(JSylvan.makeAnd(oldResidual, notIntersect)));
+                        JSylvan.deref(oldResidual);
                         oldResidual = residualB.get(entryB.getKey());
-                        residualB.put(entryB.getKey(), JSylvan.makeAnd(oldResidual, notIntersect));
+                        residualB.put(entryB.getKey(), JSylvan.ref(JSylvan.makeAnd(oldResidual, notIntersect)));
+                        JSylvan.deref(oldResidual);
                         JSylvan.deref(notIntersect);
                         // the descendant of the new edge
                         NDD subResult = orRec(entryA.getKey(), entryB.getKey());
@@ -553,10 +565,9 @@ public class NDD {
             }
         } else {
             if (a.field > b.field) {
-                return orRec(b, a);
-                // NDD t = a;
-                // a = b;
-                // b = t;
+                NDD t = a;
+                a = b;
+                b = t;
             }
             long residualB = JSylvan.getTrue();
             // a.edges.entrySet().parallelStream().forEach(entryA -> {
@@ -574,7 +585,9 @@ public class NDD {
                  * with only edge labelled by true and pointing to B
                  */
                 long notIntersect = JSylvan.ref(JSylvan.makeNot(entryA.getValue()));
-                residualB = JSylvan.makeAnd(residualB, notIntersect);
+                long temp = residualB;
+                residualB = JSylvan.ref(JSylvan.makeAnd(residualB, notIntersect));
+                JSylvan.deref(temp);
                 JSylvan.deref(notIntersect);
                 NDD subResult = orRec(entryA.getKey(), b);
                 addEdge(edges, subResult, JSylvan.ref(entryA.getValue()));
@@ -603,7 +616,7 @@ public class NDD {
         NDD result = notRec(a);
         if (DEBUG_MODEL) {
             long aBDD = JSylvan.ref(toBDD(a));
-            long resultBDD = JSylvan.makeNot(aBDD);
+            long resultBDD = JSylvan.ref(JSylvan.makeNot(aBDD));
             JSylvan.deref(aBDD);
             if (resultBDD != toBDD(result)) {
                 System.out.println("Operation not: result wrong!");
@@ -633,7 +646,9 @@ public class NDD {
         long residual = JSylvan.getTrue();
         for (Map.Entry<NDD, Long> entryA : a.edges.entrySet()) {
             long notIntersect = JSylvan.ref(JSylvan.makeNot(entryA.getValue()));
-            residual = JSylvan.makeAnd(residual, notIntersect);
+            long temp = residual;
+            residual = JSylvan.ref(JSylvan.makeAnd(residual, notIntersect));
+            JSylvan.deref(temp);
             JSylvan.deref(notIntersect);
             NDD subResult = notRec(entryA.getKey());
             addEdge(edges, subResult, JSylvan.ref(entryA.getValue()));
@@ -664,7 +679,7 @@ public class NDD {
             long bBDD = JSylvan.ref(toBDD(b));
             long t = JSylvan.ref(JSylvan.makeNot(bBDD));
             JSylvan.deref(bBDD);
-            long resultBDD = JSylvan.makeAnd(aBDD, t);
+            long resultBDD = JSylvan.ref(JSylvan.makeAnd(aBDD, t));
             JSylvan.deref(aBDD);
             JSylvan.deref(t);
             if (resultBDD != toBDD(result)) {
@@ -759,6 +774,13 @@ public class NDD {
         for (int i = 0; i < maxVariablePerField.get(fieldNum) + 1; i++)
             variableset[i] = i + 1;
         long SetofVariable = JSylvan.ref(JSylvan.makeSet(variableset));
+
+        // long bddQueen = toBDD(ndd);
+        // System.out.println("bdd queen");
+        // System.out.println("length " + (maxVariablePerField.get(fieldNum) + 1));
+        // System.out.println("set of variable " + SetofVariable);
+        // JSylvan.printDot(bddQueen);
+
         return JSylvan.satcount(toBDD(ndd), SetofVariable);
     }
 
@@ -830,14 +852,16 @@ public class NDD {
     public static NDD encodePrefixs(ArrayList<int[]> prefixsBinary, int field) {
         long prefixsBDD = JSylvan.getFalse();
         for (int[] prefix : prefixsBinary) {
+            long temp = prefixsBDD;
             prefixsBDD = JSylvan.makeOr(prefixsBDD, encodePrefixBDD(prefix, getBDDVars(field), getNotBDDVars(field)));
+            JSylvan.deref(temp);
         }
         Map<NDD, Long> edges = new HashMap<>();
         edges.put(TRUE, prefixsBDD);
         return mk(field, edges);
     }
 
-    public static long encodePrefixBDD(int[] prefixBinary, long[] vars, long[] notVars) {
+    private static long encodePrefixBDD(int[] prefixBinary, long[] vars, long[] notVars) {
         if (prefixBinary.length == 0) {
             return JSylvan.getTrue();
         }
@@ -848,13 +872,17 @@ public class NDD {
             if (i == prefixBinary.length - 1) {
                 prefixBDD = JSylvan.ref(currentBit);
             } else {
-                prefixBDD = JSylvan.makeAnd(prefixBDD, currentBit);
+                long temp = prefixBDD;
+                prefixBDD = JSylvan.ref(JSylvan.makeAnd(prefixBDD, currentBit));
+                JSylvan.deref(temp);
             }
         }
         return prefixBDD;
     }
 
-    // <field, bdd>, entries in perFieldBDD must follow the order with field asc
+    /**
+     * <field, bdd>, entries in perFieldBDD must follow the order with field asc
+     */
     public static NDD encodeACL(ArrayList<Pair<Integer, Long>> perFieldBDD) {
         NDD result = TRUE;
         for (int i = perFieldBDD.size() - 1; i >= 0; i--) {
@@ -962,9 +990,13 @@ public class NDD {
         } else {
             long result = JSylvan.getFalse();
             for (Map.Entry<NDD, Long> entry : current.edges.entrySet()) {
-                long temp = JSylvan.makeAnd(toBDDRec(entry.getKey()), entry.getValue());
-                result = JSylvan.makeOr(result, temp);
+                long child = toBDDRec(entry.getKey());
+                long children = JSylvan.ref(JSylvan.makeAnd(child, entry.getValue()));
+                JSylvan.deref(child);
+                long temp = result;
+                result = JSylvan.ref(JSylvan.makeOr(result, children));
                 JSylvan.deref(temp);
+                JSylvan.deref(children);
             }
             return result;
         }
@@ -1038,7 +1070,6 @@ public class NDD {
             return;
         }
         visitedBDD.put(bdd, true);
-        System.out.println("print bdd " + bdd);
         JSylvan.printDot(bdd);
     }
 
@@ -1055,9 +1086,7 @@ public class NDD {
     /**
      * Construct function, used for terminal nodes.
      */
-    public NDD() {
-
-    }
+    public NDD() {}
 
     /**
      * Construct function, used for non-terminal nodes.

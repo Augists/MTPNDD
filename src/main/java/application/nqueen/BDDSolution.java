@@ -1,7 +1,5 @@
 package application.nqueen;
 
-import org.ants.jpndd.diagram.NDD;
-
 import jdd.bdd.BDD;
 
 public class BDDSolution {
@@ -121,11 +119,11 @@ public class BDDSolution {
     }
 
     public static void main(String[] args) {
-        Solution(1);
-        Solution(2);
-        Solution(3);
-        Solution(4);
-        Solution(5);
-        Solution(6);
+        System.out.println(Solution(1));
+        System.out.println(Solution(2));
+        System.out.println(Solution(3));
+        System.out.println(Solution(4));
+        System.out.println(Solution(5));
+        System.out.println(Solution(6));
     }
 }
