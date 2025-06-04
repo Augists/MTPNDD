@@ -9,10 +9,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.ants.jpndd.cache.OperationCache;
 import org.ants.jpndd.nodetable.NodeTable;
@@ -158,12 +158,12 @@ public class NDD {
             bddVars[i] = JSylvan.ref(JSylvan.makeVar(totalBitsBefore + i + 1));
             bddNotVars[i] = JSylvan.ref(JSylvan.makeNot(bddVars[i]));
 
-            Map<NDD, Long> edges = new HashMap<>();
+            Map<NDD, Long> edges = new ConcurrentHashMap<>();
             edges.put(getTrue(), JSylvan.ref(bddVars[i]));
             nddVars[i] = mk(fieldNum, edges);
             nodeTable.fixNDDNodeRefCount(nddVars[i]);
 
-            edges = new HashMap<>();
+            edges = new ConcurrentHashMap<>();
             edges.put(getTrue(), JSylvan.ref(bddNotVars[i]));
             nddNotVars[i] = mk(fieldNum, edges);
             nodeTable.fixNDDNodeRefCount(nddNotVars[i]);
@@ -367,9 +367,22 @@ public class NDD {
         if (andCache.getEntry(a, b))
             return andCache.result;
 
-        Map<NDD, Long> edges = new HashMap<>();
+        Map<NDD, Long> edges = new ConcurrentHashMap<>();
         if (a.field == b.field) {
             // // compute the intersection of the edges in parallel
+            // for (Map.Entry<NDD, Long> entryA : a.edges.entrySet()) {
+            //     b.edges.entrySet().parallelStream().forEach(entryB -> {
+            //         // the bdd label on the new edge
+            //         long intersect = JSylvan.ref(JSylvan.makeAnd(entryA.getValue(), entryB.getValue()));
+            //         if (intersect != JSylvan.getFalse()) {
+            //             // the descendant of the new edge
+            //             NDD subResult = andRec(entryA.getKey(), entryB.getKey());
+            //             // try to merge edges
+            //             addEdge(edges, subResult, intersect);
+            //         }
+            //     });
+            // }
+
             // a.edges.entrySet().parallelStream().forEach(entryA -> {
             //     // System.out.println("outer " + Thread.currentThread().getName() + " processing" + " from " + entryA.getKey());
 
@@ -410,20 +423,12 @@ public class NDD {
             }
         } else {
             if (a.field > b.field) {
-                NDD t = a;
-                a = b;
-                b = t;
+                return andRec(b, a);
+                // NDD t = a;
+                // a = b;
+                // b = t;
             }
-            // a.edges.entrySet().parallelStream().forEach(entryA -> {
-            //     /*
-            //      * if A branches on a higher field than B,
-            //      * we can let A operate with a pseudo node
-            //      * with only edge labelled by true and pointing to B
-            //      */
-            //     NDD subResult = andRec(entryA.getKey(), b);
-            //     addEdge(edges, subResult, JSylvan.ref(entryA.getValue()));
-            // });
-            for (Map.Entry<NDD, Long> entryA : a.edges.entrySet()) {
+            a.edges.entrySet().parallelStream().forEach(entryA -> {
                 /*
                  * if A branches on a higher field than B,
                  * we can let A operate with a pseudo node
@@ -431,7 +436,16 @@ public class NDD {
                  */
                 NDD subResult = andRec(entryA.getKey(), b);
                 addEdge(edges, subResult, JSylvan.ref(entryA.getValue()));
-            }
+            });
+            // for (Map.Entry<NDD, Long> entryA : a.edges.entrySet()) {
+            //     /*
+            //      * if A branches on a higher field than B,
+            //      * we can let A operate with a pseudo node
+            //      * with only edge labelled by true and pointing to B
+            //      */
+            //     NDD subResult = andRec(entryA.getKey(), b);
+            //     addEdge(edges, subResult, JSylvan.ref(entryA.getValue()));
+            // }
         }
         // try to create or reuse node
         NDD result = mk(a.field, edges);
@@ -485,12 +499,12 @@ public class NDD {
         if (orCache.getEntry(a, b))
             return orCache.result;
 
-        Map<NDD, Long> edges = new HashMap<>();
+        Map<NDD, Long> edges = new ConcurrentHashMap<>();
         if (a.field == b.field) {
             // record edges of each node, which will 'or' with the edge pointing to FALSE of
             // another node
-            Map<NDD, Long> residualA = new HashMap<>(a.edges);
-            Map<NDD, Long> residualB = new HashMap<>(b.edges);
+            Map<NDD, Long> residualA = new ConcurrentHashMap<>(a.edges);
+            Map<NDD, Long> residualB = new ConcurrentHashMap<>(b.edges);
             for (long oneBDD : a.edges.values()) {
                 JSylvan.ref(oneBDD);
             }
@@ -642,7 +656,7 @@ public class NDD {
         if (notCache.getEntry(a))
             return notCache.result;
 
-        Map<NDD, Long> edges = new HashMap<>();
+        Map<NDD, Long> edges = new ConcurrentHashMap<>();
         long residual = JSylvan.getTrue();
         for (Map.Entry<NDD, Long> entryA : a.edges.entrySet()) {
             long notIntersect = JSylvan.ref(JSylvan.makeNot(entryA.getValue()));
@@ -723,7 +737,7 @@ public class NDD {
                 result = orRec(result, next);
             }
         } else {
-            Map<NDD, Long> edges = new HashMap<>();
+            Map<NDD, Long> edges = new ConcurrentHashMap<>();
             // a.edges.entrySet().parallelStream().forEach(entryA -> {
             //     NDD subResult = existRec(entryA.getKey(), field);
             //     addEdge(edges, subResult, JSylvan.ref(entryA.getValue()));
@@ -844,7 +858,7 @@ public class NDD {
 
         long prefixBDD = encodePrefixBDD(prefixBinary, getBDDVars(field), getNotBDDVars(field));
 
-        Map<NDD, Long> edges = new HashMap<>();
+        Map<NDD, Long> edges = new ConcurrentHashMap<>();
         edges.put(TRUE, prefixBDD);
         return mk(field, edges);
     }
@@ -856,7 +870,7 @@ public class NDD {
             prefixsBDD = JSylvan.makeOr(prefixsBDD, encodePrefixBDD(prefix, getBDDVars(field), getNotBDDVars(field)));
             JSylvan.deref(temp);
         }
-        Map<NDD, Long> edges = new HashMap<>();
+        Map<NDD, Long> edges = new ConcurrentHashMap<>();
         edges.put(TRUE, prefixsBDD);
         return mk(field, edges);
     }
@@ -887,7 +901,7 @@ public class NDD {
         NDD result = TRUE;
         for (int i = perFieldBDD.size() - 1; i >= 0; i--) {
             if (perFieldBDD.get(i).getValue() != JSylvan.getTrue()) {
-                Map<NDD, Long> edges = new HashMap<>();
+                Map<NDD, Long> edges = new ConcurrentHashMap<>();
                 edges.put(result, perFieldBDD.get(i).getValue());
                 result = mk(perFieldBDD.get(i).getKey(), edges);
             }
@@ -903,7 +917,7 @@ public class NDD {
         if (a == JSylvan.getTrue()) {
             return TRUE;
         } else {
-            Map<NDD, Long> edges = new HashMap<>();
+            Map<NDD, Long> edges = new ConcurrentHashMap<>();
             edges.put(TRUE, a);
             return mk(field, edges);
         }
@@ -914,15 +928,15 @@ public class NDD {
     }
 
     private static NDD toNDDFunc(long a) {
-        Map<Long, HashMap<Long, Long>> decomposed = DecomposeBDD.decompose(a, maxVariablePerField);
-        Map<Long, NDD> converted = new HashMap<>();
+        Map<Long, Map<Long, Long>> decomposed = DecomposeBDD.decompose(a, maxVariablePerField);
+        Map<Long, NDD> converted = new ConcurrentHashMap<>();
         converted.put(JSylvan.getTrue(), TRUE);
         while (!decomposed.isEmpty()) {
             Set<Long> finished = converted.keySet();
-            for (Map.Entry<Long, HashMap<Long, Long>> entry : decomposed.entrySet()) {
+            for (Map.Entry<Long, Map<Long, Long>> entry : decomposed.entrySet()) {
                 if (finished.containsAll(entry.getValue().keySet())) {
                     int field = DecomposeBDD.bddGetField(entry.getKey());
-                    Map<NDD, Long> map = new HashMap<>();
+                    Map<NDD, Long> map = new ConcurrentHashMap<>();
                     for (Map.Entry<Long, Long> entry1 : entry.getValue().entrySet()) {
                         map.put(converted.get(entry1.getKey()), JSylvan.ref(entry1.getValue()));
                     }
@@ -1025,8 +1039,8 @@ public class NDD {
     }
 
     private static PrintStream ps = null;
-    private static Map<NDD, Boolean> visitedNDD = new HashMap<>();
-    private static Map<Long, Boolean> visitedBDD = new HashMap<>();
+    private static Map<NDD, Boolean> visitedNDD = new ConcurrentHashMap<>();
+    private static Map<Long, Boolean> visitedBDD = new ConcurrentHashMap<>();
 
     public static void printDot(String filename, NDD root) {
         try {

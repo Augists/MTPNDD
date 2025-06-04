@@ -1,13 +1,14 @@
 /**
  * Utility for decomposing NDD.
- * @author Zechun Li - XJTU ANTS NetVerify Lab
+ * @author Zechun Li & Yichi Zhang - XJTU ANTS NetVerify Lab
  * @version 1.0
  */
 package org.ants.jpndd.utils;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import jsylvan.JSylvan;
 
@@ -17,23 +18,23 @@ public class DecomposeBDD {
     private static int fieldNum;
     private static ArrayList<Integer> maxVariablePerField;
 
-    public static HashMap<Long, HashMap<Long, Long>> decompose(long a, ArrayList<Integer> vars) {
+    public static Map<Long, Map<Long, Long>> decompose(long a, ArrayList<Integer> vars) {
         maxVariablePerField = vars;
         fieldNum = maxVariablePerField.size();
-        HashMap<Long, HashMap<Long, Long>> decomposedBDD = new HashMap<>();
+        Map<Long, Map<Long, Long>> decomposedBDD = new ConcurrentHashMap<>();
         if (a == BDD_FALSE) {
         } else if (a == BDD_TRUE) {
-            HashMap<Long, Long> map = new HashMap<>();
+            Map<Long, Long> map = new ConcurrentHashMap<>();
             map.put(BDD_TRUE, BDD_TRUE);
             decomposedBDD.put(BDD_TRUE, map);
         } else {
-            HashMap<Long, HashSet<Long>> boundaryTree = new HashMap<>();
+            Map<Long, HashSet<Long>> boundaryTree = new ConcurrentHashMap<>();
             ArrayList<HashSet<Long>> boundaryPoints = new ArrayList<>();
             getBoundaryTree(a, boundaryTree, boundaryPoints);
 
             for (int currentField = 0; currentField < fieldNum - 1; currentField++) {
                 for (long from : boundaryPoints.get(currentField)) {
-                    decomposedBDD.put(from, new HashMap<>());
+                    decomposedBDD.put(from, new ConcurrentHashMap<>());
                     for (long to : boundaryTree.get(from)) {
                         long perFieldBDD = JSylvan.ref(constructPerFieldBDD(from, to, from));
                         decomposedBDD.get(from).put(to, perFieldBDD);
@@ -42,7 +43,7 @@ public class DecomposeBDD {
             }
 
             for (long from : boundaryPoints.get(fieldNum - 1)) {
-                decomposedBDD.put(from, new HashMap<>());
+                decomposedBDD.put(from, new ConcurrentHashMap<>());
                 decomposedBDD.get(from).put(BDD_TRUE, JSylvan.ref(from));
             }
         }
@@ -64,7 +65,7 @@ public class DecomposeBDD {
         return currentField;
     }
 
-    private static void getBoundaryTree(long a, HashMap<Long, HashSet<Long>> boundaryTree,
+    private static void getBoundaryTree(long a, Map<Long, HashSet<Long>> boundaryTree,
                                         ArrayList<HashSet<Long>> boundaryPoints) {
         int startField = bddGetField(a);
         for (int i = 0; i < fieldNum; i++) {
@@ -83,7 +84,7 @@ public class DecomposeBDD {
         }
     }
 
-    private static void detectBoundaryPoints(long from, long current, HashMap<Long, HashSet<Long>> boundaryTree,
+    private static void detectBoundaryPoints(long from, long current, Map<Long, HashSet<Long>> boundaryTree,
                                              ArrayList<HashSet<Long>> boundaryPoints) {
         if (current == BDD_FALSE) {
             return;

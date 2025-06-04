@@ -7,10 +7,10 @@ package org.ants.jpndd.nodetable;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.ants.jpndd.diagram.NDD;
 
@@ -112,7 +112,7 @@ public class NodeTable {
             System.exit(1);
         }
         
-        this.referenceCount = new HashMap<>();
+        this.referenceCount = new ConcurrentHashMap<>();
     }
 
     /**
@@ -125,7 +125,7 @@ public class NodeTable {
         this.currentSize = 0L;
         this.nddTableSize = nddTableSize;
         this.nodeTable = new ArrayList<>();
-        this.referenceCount = new HashMap<>();
+        this.referenceCount = new ConcurrentHashMap<>();
     }
 
     public ArrayList<Map<Map<NDD, Long>, NDD>> getNodeTable() {
@@ -137,7 +137,7 @@ public class NodeTable {
      */
     // declare a new node table for a new field
     public void declareField() {
-        nodeTable.add(new HashMap<>());
+        nodeTable.add(new ConcurrentHashMap<>());
     }
 
     /**
