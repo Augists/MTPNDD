@@ -1,0 +1,159 @@
+{
+	"archive" : {},
+	"artifacts" : 
+	[
+		{
+			"path" : "_deps/lace-build/lib/liblace14.a"
+		}
+	],
+	"backtrace" : 1,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_library",
+			"install",
+			"target_compile_options",
+			"target_include_directories"
+		],
+		"files" : 
+		[
+			"/home/augists/PNDD/build/_deps/lace-src/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 32,
+				"parent" : 0
+			},
+			{
+				"command" : 1,
+				"file" : 0,
+				"line" : 114,
+				"parent" : 0
+			},
+			{
+				"command" : 2,
+				"file" : 0,
+				"line" : 65,
+				"parent" : 0
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 50,
+				"parent" : 0
+			}
+		]
+	},
+	"compileGroups" : 
+	[
+		{
+			"compileCommandFragments" : 
+			[
+				{
+					"fragment" : "-g"
+				},
+				{
+					"backtrace" : 3,
+					"fragment" : "-pipe"
+				},
+				{
+					"backtrace" : 3,
+					"fragment" : "-march=native"
+				},
+				{
+					"backtrace" : 3,
+					"fragment" : "-O0"
+				},
+				{
+					"backtrace" : 3,
+					"fragment" : "-Wall"
+				},
+				{
+					"backtrace" : 3,
+					"fragment" : "-Wextra"
+				},
+				{
+					"backtrace" : 3,
+					"fragment" : "-Wpedantic"
+				}
+			],
+			"includes" : 
+			[
+				{
+					"backtrace" : 4,
+					"path" : "/home/augists/PNDD/build/_deps/lace-src/src"
+				},
+				{
+					"backtrace" : 4,
+					"path" : "/home/augists/PNDD/build/_deps/lace-build"
+				}
+			],
+			"language" : "C",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		}
+	],
+	"id" : "lace14::@dcd496ced5f9e510df61",
+	"install" : 
+	{
+		"destinations" : 
+		[
+			{
+				"backtrace" : 2,
+				"path" : "lib"
+			}
+		],
+		"prefix" : 
+		{
+			"path" : "/usr/local"
+		}
+	},
+	"name" : "lace14",
+	"nameOnDisk" : "liblace14.a",
+	"paths" : 
+	{
+		"build" : "_deps/lace-build",
+		"source" : "/home/augists/PNDD/build/_deps/lace-src"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "Source Files",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		},
+		{
+			"name" : "Header Files",
+			"sourceIndexes" : 
+			[
+				1
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 1,
+			"compileGroupIndex" : 0,
+			"path" : "/home/augists/PNDD/build/_deps/lace-src/src/lace14.c",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 1,
+			"path" : "/home/augists/PNDD/build/_deps/lace-src/src/lace14.h",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "STATIC_LIBRARY"
+}

@@ -1,0 +1,164 @@
+[
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -Wpedantic -o _deps/lace-build/CMakeFiles/lace.dir/src/lace.c.o -c /home/augists/PNDD/build/_deps/lace-src/src/lace.c",
+  "file": "/home/augists/PNDD/build/_deps/lace-src/src/lace.c",
+  "output": "_deps/lace-build/CMakeFiles/lace.dir/src/lace.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -Wpedantic -o _deps/lace-build/CMakeFiles/lace14.dir/src/lace14.c.o -c /home/augists/PNDD/build/_deps/lace-src/src/lace14.c",
+  "file": "/home/augists/PNDD/build/_deps/lace-src/src/lace14.c",
+  "output": "_deps/lace-build/CMakeFiles/lace14.dir/src/lace14.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sha2.c.o -c /home/augists/PNDD/sylvan/src/sha2.c",
+  "file": "/home/augists/PNDD/sylvan/src/sha2.c",
+  "output": "src/CMakeFiles/sylvan.dir/sha2.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_bdd.c.o -c /home/augists/PNDD/sylvan/src/sylvan_bdd.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_bdd.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_bdd.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_cache.c.o -c /home/augists/PNDD/sylvan/src/sylvan_cache.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_cache.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_cache.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_common.c.o -c /home/augists/PNDD/sylvan/src/sylvan_common.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_common.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_common.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_hash.c.o -c /home/augists/PNDD/sylvan/src/sylvan_hash.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_hash.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_hash.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_ldd.c.o -c /home/augists/PNDD/sylvan/src/sylvan_ldd.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_ldd.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_ldd.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_mt.c.o -c /home/augists/PNDD/sylvan/src/sylvan_mt.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_mt.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_mt.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_mtbdd.c.o -c /home/augists/PNDD/sylvan/src/sylvan_mtbdd.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_mtbdd.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_mtbdd.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/g++ -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_obj.cpp.o -c /home/augists/PNDD/sylvan/src/sylvan_obj.cpp",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_obj.cpp",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_obj.cpp.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_refs.c.o -c /home/augists/PNDD/sylvan/src/sylvan_refs.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_refs.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_refs.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_sl.c.o -c /home/augists/PNDD/sylvan/src/sylvan_sl.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_sl.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_sl.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_stats.c.o -c /home/augists/PNDD/sylvan/src/sylvan_stats.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_stats.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_stats.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_table.c.o -c /home/augists/PNDD/sylvan/src/sylvan_table.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_table.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_table.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -DSYLVAN_USE_MMAP -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -pipe -march=native -O0 -Wall -Wextra -o src/CMakeFiles/sylvan.dir/sylvan_zdd.c.o -c /home/augists/PNDD/sylvan/src/sylvan_zdd.c",
+  "file": "/home/augists/PNDD/sylvan/src/sylvan_zdd.c",
+  "output": "src/CMakeFiles/sylvan.dir/sylvan_zdd.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/bddmc.dir/bddmc.c.o -c /home/augists/PNDD/sylvan/examples/bddmc.c",
+  "file": "/home/augists/PNDD/sylvan/examples/bddmc.c",
+  "output": "examples/CMakeFiles/bddmc.dir/bddmc.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/bddmc.dir/getrss.c.o -c /home/augists/PNDD/sylvan/examples/getrss.c",
+  "file": "/home/augists/PNDD/sylvan/examples/getrss.c",
+  "output": "examples/CMakeFiles/bddmc.dir/getrss.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/lddmc.dir/lddmc.c.o -c /home/augists/PNDD/sylvan/examples/lddmc.c",
+  "file": "/home/augists/PNDD/sylvan/examples/lddmc.c",
+  "output": "examples/CMakeFiles/lddmc.dir/lddmc.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/lddmc.dir/getrss.c.o -c /home/augists/PNDD/sylvan/examples/getrss.c",
+  "file": "/home/augists/PNDD/sylvan/examples/getrss.c",
+  "output": "examples/CMakeFiles/lddmc.dir/getrss.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/ldd2bdd.dir/ldd2bdd.c.o -c /home/augists/PNDD/sylvan/examples/ldd2bdd.c",
+  "file": "/home/augists/PNDD/sylvan/examples/ldd2bdd.c",
+  "output": "examples/CMakeFiles/ldd2bdd.dir/ldd2bdd.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/ldd2bdd.dir/getrss.c.o -c /home/augists/PNDD/sylvan/examples/getrss.c",
+  "file": "/home/augists/PNDD/sylvan/examples/getrss.c",
+  "output": "examples/CMakeFiles/ldd2bdd.dir/getrss.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/nqueens.dir/nqueens.c.o -c /home/augists/PNDD/sylvan/examples/nqueens.c",
+  "file": "/home/augists/PNDD/sylvan/examples/nqueens.c",
+  "output": "examples/CMakeFiles/nqueens.dir/nqueens.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/g++ -I/home/augists/PNDD/sylvan/examples -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wno-unused -Wall -Wextra -Werror -Wno-deprecated -o examples/CMakeFiles/simple.dir/simple.cpp.o -c /home/augists/PNDD/sylvan/examples/simple.cpp",
+  "file": "/home/augists/PNDD/sylvan/examples/simple.cpp",
+  "output": "examples/CMakeFiles/simple.dir/simple.cpp.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wall -Wextra -Werror -Wno-deprecated -o test/CMakeFiles/test_basic.dir/test_basic.c.o -c /home/augists/PNDD/sylvan/test/test_basic.c",
+  "file": "/home/augists/PNDD/sylvan/test/test_basic.c",
+  "output": "test/CMakeFiles/test_basic.dir/test_basic.c.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/g++ -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wall -Wextra -Werror -Wno-deprecated -o test/CMakeFiles/test_cxx.dir/test_cxx.cpp.o -c /home/augists/PNDD/sylvan/test/test_cxx.cpp",
+  "file": "/home/augists/PNDD/sylvan/test/test_cxx.cpp",
+  "output": "test/CMakeFiles/test_cxx.dir/test_cxx.cpp.o"
+},
+{
+  "directory": "/home/augists/PNDD/build",
+  "command": "/usr/bin/gcc -I/home/augists/PNDD/sylvan/src -I/home/augists/PNDD/build/_deps/lace-src/src -I/home/augists/PNDD/build/_deps/lace-build -g -Wall -Wextra -Werror -Wno-deprecated -o test/CMakeFiles/test_zdd.dir/test_zdd.c.o -c /home/augists/PNDD/sylvan/test/test_zdd.c",
+  "file": "/home/augists/PNDD/sylvan/test/test_zdd.c",
+  "output": "test/CMakeFiles/test_zdd.dir/test_zdd.c.o"
+}
+]

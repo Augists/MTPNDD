@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Site BuildName="Linux-g++"
+	BuildStamp="20250604-0317-Experimental"
+	Name="archtoy"
+	Generator="ctest-4.0.2-dirty"
+	CompilerName="/usr/bin/g++"
+	CompilerVersion="15.1.1"
+	OSName="Linux"
+	Hostname="archtoy"
+	OSRelease="6.14.4-arch1-2"
+	OSVersion="#1 SMP PREEMPT_DYNAMIC Tue, 29 Apr 2025 09:23:13 +0000"
+	OSPlatform="x86_64"
+	Is64Bits="1"
+	VendorString="GenuineIntel"
+	VendorID="Intel Corporation"
+	FamilyID="6"
+	ModelID="158"
+	ModelName="Intel(R) Core(TM) i5-8500 CPU @ 3.00GHz"
+	ProcessorCacheSize="9216"
+	NumberOfLogicalCPU="6"
+	NumberOfPhysicalCPU="6"
+	TotalVirtualMemory="0"
+	TotalPhysicalMemory="31958"
+	LogicalProcessorsPerPhysical="1"
+	ProcessorClockFrequency="3899.03"
+	>
+	<Testing>
+		<StartDateTime>Jun 04 11:17 CST</StartDateTime>
+		<StartTestTime>1749007057</StartTestTime>
+		<TestList/>
+		<EndDateTime>Jun 04 11:17 CST</EndDateTime>
+		<EndTestTime>1749007057</EndTestTime>
+		<ElapsedMinutes>0</ElapsedMinutes>
+	</Testing>
+</Site>

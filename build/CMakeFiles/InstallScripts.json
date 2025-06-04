@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/augists/PNDD/build/cmake_install.cmake",
+		"/home/augists/PNDD/build/_deps/lace-build/cmake_install.cmake",
+		"/home/augists/PNDD/build/src/cmake_install.cmake",
+		"/home/augists/PNDD/build/examples/cmake_install.cmake",
+		"/home/augists/PNDD/build/test/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

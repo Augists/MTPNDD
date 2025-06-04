@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/CMakeFiles/lace-populate"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/CMakeFiles/lace-populate.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/CMakeFiles/lace-populate-complete.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-build.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-configure.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-download.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-install.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-mkdir.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-patch.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-test.rule"
+		},
+		{
+			"file" : "/home/augists/PNDD/build/_deps/lace-subbuild/lace-populate-prefix/src/lace-populate-stamp/lace-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"lace-populate"
+		],
+		"name" : "lace-populate"
+	}
+}
