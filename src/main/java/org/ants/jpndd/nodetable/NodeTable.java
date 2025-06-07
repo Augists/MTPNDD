@@ -52,7 +52,6 @@ public class NodeTable {
      * @param bddTableSize The max size of bdd node table.
      * @param bddCacheSize The max size of ndd operation cache.
      */
-    @SuppressWarnings("CallToPrintStackTrace")
     public NodeTable(int nddTableSize, int bddTableSize, int bddCacheSize, long sylvanMaxMemory) {
         this.currentSize = 0L;
         this.nddTableSize = nddTableSize;
@@ -60,14 +59,20 @@ public class NodeTable {
 
         // int tableRatio = Math.max(1, bddTableSize / bddCacheSize - 1);
         // int initratio = (int)Math.sqrt((double) maxMemory / (bddTableSize + bddCacheSize));
-        try{
+        try {
             JSylvan.init(0, sylvanMaxMemory, 1, 4, 1);
-        }catch (IOException ex) {
-            ex.printStackTrace();
-            return;
+        } catch (IOException ex) {
+            System.err.println(ex.getMessage());
+            // ex.printStackTrace();
+            // return;
+        } finally {
+            this.referenceCount = new HashMap<>();
         }
-        JSylvan.disableGC();
-        JSylvan.enableGC();
+        /**
+         * moved to JSylvan.init
+         */
+        // JSylvan.disableGC();
+        // JSylvan.enableGC();
 
         if (TEST_SYLVAN_INIT) {
             System.out.println("Going to make two variables and compute their conjunction.");
@@ -112,7 +117,7 @@ public class NodeTable {
             System.exit(1);
         }
         
-        this.referenceCount = new HashMap<>();
+        // this.referenceCount = new HashMap<>();
     }
 
     /**

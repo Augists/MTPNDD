@@ -124,7 +124,7 @@ public class NDDSolution {
         }
         double endTime = System.currentTimeMillis();
         // NDD.printDot("queen", queen);
-        return "\t" + String.format("" + (endTime - startTime) / 1000, ".3f") + "\t" + NDD.satCount(queen);
+        return "n=" + n + "\t" + String.format("" + (endTime - startTime) / 1000, ".3f") + "\t" + NDD.satCount(queen);
     }
 
     public static void main(String[] args) {
@@ -143,7 +143,7 @@ public class NDDSolution {
         // System.out.println(Solution(5));
         // System.out.println(Solution(6));
         // System.out.println(Solution(7));
-        // System.out.println(Solution(8));
+        System.out.println(Solution(8));
         System.out.println(Solution(9));
         // System.out.println(Solution(10));
         // System.out.println(Solution(11));

@@ -47,8 +47,46 @@ public class JSylvan
      */
     public static void init(int workers, long maxMemory, int tableRatio, int initialRatio, int granularity) throws IOException
     {
-        if (instance != null) throw new RuntimeException("JSylvan already initialized!");
-        instance = new JSylvan();
+        if (instance != null) {
+            /**
+             * will reuse Sylvan backend in different NDD
+             * cannot set instance as `static final` cuz it may throw Exception
+             */
+            System.err.println("JSylvan already initialized with: ");
+            System.err.println("\tworkers: " + s_workers);
+            System.err.println("\tmaxMemory: " + s_maxMemory);
+            System.err.println("\ttableRatio: " + s_tableRatio);
+            System.err.println("\tinitialRatio: " + s_initialRatio);
+            System.err.println("\tgranuality: " + s_granularity);
+            if (s_maxMemory != maxMemory || s_tableRatio != tableRatio || s_initialRatio != initialRatio) {
+                setLimits(maxMemory, tableRatio, initialRatio);
+                s_maxMemory = maxMemory;
+                s_tableRatio = tableRatio;
+                s_initialRatio = initialRatio;
+            }
+            if (s_granularity != granularity) {
+                setGranularity(granularity);
+                s_granularity = granularity;
+            }
+            return;
+            // throw new RuntimeException("JSylvan already initialized!");
+        }
+        /**
+         * double check for singleton
+         * save current parameters
+         */
+        synchronized (JSylvan.class) {
+            if (instance == null) {
+                instance = new JSylvan();
+                s_workers = workers;
+                s_maxMemory = maxMemory;
+                s_tableRatio = tableRatio;
+                s_initialRatio = initialRatio;
+                s_granularity = granularity;
+            } else {
+                return;
+            }
+        }
 
         initLace(workers, 0);
 
@@ -57,7 +95,16 @@ public class JSylvan
 
         setGranularity(granularity);
         initMtbdd();
+
+        disableGC();
+        enableGC();
     }
+
+    private static int s_workers;
+    private static double s_maxMemory;
+    private static int s_tableRatio;
+    private static int s_initialRatio;
+    private static int s_granularity;
 
     /**
      * Terminate Lace and Sylvan and free memory.
