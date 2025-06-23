@@ -1,0 +1,1 @@
+message(STATUS "CMake is working in directory: ${CMAKE_CURRENT_LIST_DIR}")

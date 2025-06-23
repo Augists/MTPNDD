@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/augists/PNDD/build/_deps/lace-subbuild/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

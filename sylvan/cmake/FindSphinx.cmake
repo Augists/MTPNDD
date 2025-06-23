@@ -9,6 +9,7 @@ find_program(SPHINX_EXECUTABLE
     /usr/bin
     /usr/local/bin
     /opt/local/bin
+    /opt/homebrew/bin
   DOC "Sphinx documentation generator"
 )
 
