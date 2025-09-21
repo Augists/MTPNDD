@@ -15,5 +15,39 @@ queen.png
 **/.project
 **/.settings
 
-# CMake files
+# Build files and artifacts
 sylvan/build/
+**/build/
+**/*.o
+**/*.a
+**/*.so
+**/*.dll
+**/*.exe
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Java build artifacts
+target/
+**/*.class
+**/*.jar
+!lib/*.jar
+
+# Temporary and backup files
+**/*.tmp
+**/*.log
+**/*.swp
+**/*.bak
+**/*~
+**/.DS_Store
+
+# IDE and editor files
+**/*.iml
+.idea/
+.vscode/
+**/.cproject
+**/.project
+**/.settings/
+
+reference/
+archive_unused/
