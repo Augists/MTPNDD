@@ -36,7 +36,7 @@ void test_basic_memory_management() {
     printf("   创建10个节点后:\n");
     printf("   - 当前分配内存: %lu 字节\n", stats.current_allocated);
     printf("   - 总分配内存: %lu 字节\n", stats.total_allocated);
-    printf("   - 引用计数操作: %lu\n", stats.ref_count_operations);
+    printf("   - 分配次数: %lu\n", stats.allocation_count);
     
     // 测试引用计数
     printf("2. 测试引用计数...\n");
@@ -45,7 +45,7 @@ void test_basic_memory_management() {
     
     stats = ndd_get_memory_stats();
     printf("   增加2个引用后:\n");
-    printf("   - 引用计数操作: %lu\n", stats.ref_count_operations);
+    printf("   - 分配次数: %lu\n", stats.allocation_count);
     
     // 测试引用释放
     ndd_deref(ref1);
@@ -98,7 +98,7 @@ void test_parallel_memory_management() {
     ndd_memory_stats_t stats = ndd_get_memory_stats();
     printf("   执行100次并行AND操作后:\n");
     printf("   - 当前分配内存: %lu 字节\n", stats.current_allocated);
-    printf("   - 引用计数操作: %lu\n", stats.ref_count_operations);
+    printf("   - 分配次数: %lu\n", stats.allocation_count);
     
     // 清理结果
     for (int i = 0; i < 100; i++) {
@@ -222,7 +222,7 @@ void test_thread_safety() {
     ndd_memory_stats_t stats = ndd_get_memory_stats();
     printf("   %d个线程，每个线程%d次操作:\n", num_threads, operations_per_thread);
     printf("   - 总耗时: %ld ms\n", (elapsed * 1000) / CLOCKS_PER_SEC);
-    printf("   - 引用计数操作: %lu\n", stats.ref_count_operations);
+    printf("   - 分配次数: %lu\n", stats.allocation_count);
     printf("   - 当前分配内存: %lu 字节\n", stats.current_allocated);
     
     // 清理
@@ -264,7 +264,7 @@ void test_garbage_collection() {
     
     ndd_memory_stats_t stats = ndd_get_memory_stats();
     printf("   触发GC后:\n");
-    printf("   - 垃圾回收次数: %lu\n", stats.gc_cycles);
+    printf("   - 释放次数: %lu\n", stats.deallocation_count);
     printf("   - 当前分配内存: %lu 字节\n", stats.current_allocated);
     
     ndd_quit();

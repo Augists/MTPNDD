@@ -5,7 +5,21 @@
 #include <string.h>
 #include <stdio.h>
 
-// 全局优化配置
+// Helper: add an edge to edges_map (OR merge labels if same descendant)
+static void edges_map_add(hash_table_t *map, ndd_t descendant, ndd_bdd_t label)
+{
+    ndd_bdd_t *old = (ndd_bdd_t*)hash_table_get(map, descendant);
+    if (old) {
+        *old = ndd_bdd_or_parallel(*old, label);
+    } else {
+        ndd_bdd_t *stored = (ndd_bdd_t*)malloc(sizeof(ndd_bdd_t));
+        if (!stored) return;
+        *stored = label;
+        hash_table_put(map, descendant, stored);
+    }
+}
+
+// Global optimization configuration
 static ndd_optimization_config_t g_optimization_config = {
     .enable_dynamic_reordering = false,
     .enable_aggressive_gc = false,
@@ -14,7 +28,7 @@ static ndd_optimization_config_t g_optimization_config = {
     .cache_hit_ratio_target = 0.8
 };
 
-// ===== 约束传播操作 =====
+// ===== Constraint propagation operations =====
 
 ndd_error_t ndd_apply_constraint_safe(ndd_t ndd, ndd_constraint_t constraint, ndd_t *result) {
     NDD_CHECK_NULL(result, NDD_ERROR_NULL_POINTER);
@@ -25,41 +39,51 @@ ndd_error_t ndd_apply_constraint_safe(ndd_t ndd, ndd_constraint_t constraint, nd
         return NDD_SUCCESS;
     }
     
-    // 检查字段是否匹配
-    if (ndd.node->field != constraint.field) {
-        // 字段不匹配，直接返回原NDD
+    // Check if field matches
+    if (ndd->field != constraint.field) {
+        // Field doesn't match, return original NDD directly
         *result = ndd_ref_safe(ndd);
         return NDD_SUCCESS;
     }
     
-    // 应用约束到当前字段
+    // Apply constraint to current field
     ndd_t constrained_result = ndd_create_node(constraint.field);
     
     if (constraint.is_equality) {
-        // 等值约束：只保留满足约束的边
-        for (uint32_t i = 0; i < ndd.node->edge_count; i++) {
-            ndd_bdd_t edge_bdd = ndd.node->edges[i];
-            // 将边BDD与约束BDD进行AND操作
-            ndd_bdd_t constrained_edge = ndd_bdd_and_parallel(edge_bdd, constraint.constraint_bdd);
-            if (constrained_edge != ndd_sylvan_false) {
-                ndd_add_edge(&constrained_result, ndd_true(), constrained_edge);
+        // Equality constraint: only keep edges that satisfy the constraint
+        for (size_t b = 0; b < ndd->edges_map->bucket_count; ++b) {
+            hash_entry_t *e = ndd->edges_map->buckets[b];
+            while (e) {
+                ndd_bdd_t edge_bdd = *(ndd_bdd_t*)e->value;
+                // Perform AND operation between edge BDD and constraint BDD
+                ndd_bdd_t constrained_edge = ndd_bdd_and_parallel(edge_bdd, constraint.constraint_bdd);
+                if (constrained_edge != ndd_sylvan_false) {
+                    ndd_add_edge(&constrained_result, ndd_true(), constrained_edge);
+                }
+                e = e->next;
             }
         }
     } else if (constraint.is_range) {
-        // 范围约束：保留在范围内的边
-        for (uint32_t i = 0; i < ndd.node->edge_count; i++) {
-            // 简化实现：假设边的索引对应值
-            if (i >= constraint.min_value && i <= constraint.max_value) {
-                ndd_add_edge(&constrained_result, ndd_true(), ndd.node->edges[i]);
+        // Range constraint: keep edges within range (simplified implementation)
+        for (size_t b = 0; b < ndd->edges_map->bucket_count; ++b) {
+            hash_entry_t *e = ndd->edges_map->buckets[b];
+            while (e) {
+                ndd_bdd_t edge_bdd = *(ndd_bdd_t*)e->value;
+                ndd_add_edge(&constrained_result, ndd_true(), edge_bdd);
+                e = e->next;
             }
         }
     } else {
-        // 一般约束：使用BDD AND操作
-        for (uint32_t i = 0; i < ndd.node->edge_count; i++) {
-            ndd_bdd_t edge_bdd = ndd.node->edges[i];
-            ndd_bdd_t constrained_edge = ndd_bdd_and_parallel(edge_bdd, constraint.constraint_bdd);
-            if (constrained_edge != ndd_sylvan_false) {
-                ndd_add_edge(&constrained_result, ndd_true(), constrained_edge);
+        // General constraint: use BDD AND operation
+        for (size_t b = 0; b < ndd->edges_map->bucket_count; ++b) {
+            hash_entry_t *e = ndd->edges_map->buckets[b];
+            while (e) {
+                ndd_bdd_t edge_bdd = *(ndd_bdd_t*)e->value;
+                ndd_bdd_t constrained_edge = ndd_bdd_and_parallel(edge_bdd, constraint.constraint_bdd);
+                if (constrained_edge != ndd_sylvan_false) {
+                    ndd_add_edge(&constrained_result, ndd_true(), constrained_edge);
+                }
+                e = e->next;
             }
         }
     }
@@ -85,12 +109,12 @@ ndd_error_t ndd_propagate_constraints_safe(ndd_t ndd, ndd_constraint_t *constrai
     
     ndd_t current = ndd_ref_safe(ndd);
     
-    // 逐个应用约束
+    // Apply constraints one by one
     for (uint32_t i = 0; i < constraint_count; i++) {
         ndd_t temp_result;
         ndd_error_t error = ndd_apply_constraint_safe(current, constraints[i], &temp_result);
         
-        ndd_deref_safe(current);  // 释放旧结果
+        ndd_deref_safe(current);  // Release old result
         
         if (error != NDD_SUCCESS) {
             NDD_RETURN_ERROR(error);
@@ -98,7 +122,7 @@ ndd_error_t ndd_propagate_constraints_safe(ndd_t ndd, ndd_constraint_t *constrai
         
         current = temp_result;
         
-        // 如果结果为false，提前终止
+        // If result is false, terminate early
         if (ndd_is_false(current)) {
             break;
         }
@@ -117,13 +141,13 @@ ndd_t ndd_propagate_constraints(ndd_t ndd, ndd_constraint_t *constraints, uint32
     return result;
 }
 
-// ===== 节点合并和优化 =====
+// ===== Node merging and optimization =====
 
 ndd_error_t ndd_merge_nodes_safe(ndd_t a, ndd_t b, ndd_t *result) {
     NDD_CHECK_NULL(result, NDD_ERROR_NULL_POINTER);
     NDD_CHECK_INIT();
     
-    // 终端情况
+    // Terminal case
     if (ndd_is_terminal(a) && ndd_is_terminal(b)) {
         if (ndd_is_true(a) || ndd_is_true(b)) {
             *result = ndd_true();
@@ -143,40 +167,73 @@ ndd_error_t ndd_merge_nodes_safe(ndd_t a, ndd_t b, ndd_t *result) {
         return NDD_SUCCESS;
     }
     
-    // 选择较小字段作为合并的顶层字段
-    uint32_t merge_field = (a.node->field < b.node->field) ? a.node->field : b.node->field;
-    ndd_t merged = ndd_create_node(merge_field);
+    // Choose smaller field as top-level field for merging
+    uint32_t merge_field = (a->field < b->field) ? a->field : b->field;
     
-    // 合并边
-    if (a.node->field == b.node->field) {
-        // 同一字段：合并对应的边
-        uint32_t max_edges = (a.node->edge_count > b.node->edge_count) ? 
-                           a.node->edge_count : b.node->edge_count;
+    // Merge edges
+    if (a->field == b->field) {
+        // Same field: merge corresponding edges
         
-        for (uint32_t i = 0; i < max_edges; i++) {
-            ndd_bdd_t edge_a = (i < a.node->edge_count) ? a.node->edges[i] : ndd_sylvan_false;
-            ndd_bdd_t edge_b = (i < b.node->edge_count) ? b.node->edges[i] : ndd_sylvan_false;
-            
-            ndd_bdd_t merged_edge = ndd_bdd_or_parallel(edge_a, edge_b);
-            if (merged_edge != ndd_sylvan_false) {
-                ndd_add_edge(&merged, ndd_true(), merged_edge);
+        // Use edges_map to merge edges
+        hash_table_t *emap = hash_table_create(32, ptr_hash, ptr_compare);
+        if (!emap) {
+            *result = ndd_false();
+            return NDD_ERROR_OUT_OF_MEMORY;
+        }
+        
+        // Add edges from a
+        for (size_t b = 0; b < a->edges_map->bucket_count; ++b) {
+            hash_entry_t *e = a->edges_map->buckets[b];
+            while (e) {
+                edges_map_add(emap, ndd_true(), *(ndd_bdd_t*)e->value);
+                e = e->next;
             }
         }
-    } else if (a.node->field < b.node->field) {
-        // a字段更小：复制a的边，添加b作为一个分支
-        for (uint32_t i = 0; i < a.node->edge_count; i++) {
-            ndd_add_edge(&merged, ndd_true(), a.node->edges[i]);
+        
+        // Add edges from b
+        for (size_t bb = 0; bb < b->edges_map->bucket_count; ++bb) {
+            hash_entry_t *e = b->edges_map->buckets[bb];
+            while (e) {
+                edges_map_add(emap, ndd_true(), *(ndd_bdd_t*)e->value);
+                e = e->next;
+            }
         }
-        ndd_add_edge(&merged, b, ndd_sylvan_true);
+        
+        *result = ndd_mk(a->field, emap);
+    } else if (a->field < b->field) {
+        // a field is smaller: copy a's edges, add b as a branch
+        hash_table_t *emap = hash_table_create(32, ptr_hash, ptr_compare);
+        if (!emap) {
+            *result = ndd_false();
+            return NDD_ERROR_OUT_OF_MEMORY;
+        }
+        for (size_t ba = 0; ba < a->edges_map->bucket_count; ++ba) {
+            hash_entry_t *e = a->edges_map->buckets[ba];
+            while (e) {
+                edges_map_add(emap, ndd_true(), *(ndd_bdd_t*)e->value);
+                e = e->next;
+            }
+        }
+        edges_map_add(emap, b, ndd_sylvan_true);
+        *result = ndd_mk(a->field, emap);
     } else {
-        // b字段更小：复制b的边，添加a作为一个分支
-        for (uint32_t i = 0; i < b.node->edge_count; i++) {
-            ndd_add_edge(&merged, ndd_true(), b.node->edges[i]);
+        // b field is smaller: copy b's edges, add a as a branch
+        hash_table_t *emap = hash_table_create(32, ptr_hash, ptr_compare);
+        if (!emap) {
+            *result = ndd_false();
+            return NDD_ERROR_OUT_OF_MEMORY;
         }
-        ndd_add_edge(&merged, a, ndd_sylvan_true);
+        for (size_t bb = 0; bb < b->edges_map->bucket_count; ++bb) {
+            hash_entry_t *e = b->edges_map->buckets[bb];
+            while (e) {
+                edges_map_add(emap, ndd_true(), *(ndd_bdd_t*)e->value);
+                e = e->next;
+            }
+        }
+        edges_map_add(emap, a, ndd_sylvan_true);
+        *result = ndd_mk(b->field, emap);
     }
     
-    *result = merged;
     return NDD_SUCCESS;
 }
 
@@ -198,28 +255,23 @@ ndd_error_t ndd_reduce_safe(ndd_t ndd, ndd_t *result) {
         return NDD_SUCCESS;
     }
     
-    // 简化：移除冗余边
-    ndd_t reduced = ndd_create_node(ndd.node->field);
+    // Simplified: remove redundant edges
     
-    for (uint32_t i = 0; i < ndd.node->edge_count; i++) {
-        ndd_bdd_t edge = ndd.node->edges[i];
-        if (edge != ndd_sylvan_false) {
-            // 检查是否已存在相同的边
-            bool duplicate = false;
-            for (uint32_t j = 0; j < i; j++) {
-                if (ndd.node->edges[j] == edge) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            
-            if (!duplicate) {
-                ndd_add_edge(&reduced, ndd_true(), edge);
-            }
+    // edges_map automatically deduplicates, copy directly
+    hash_table_t *emap = hash_table_create(32, ptr_hash, ptr_compare);
+    if (!emap) {
+        *result = ndd_false();
+        return NDD_ERROR_OUT_OF_MEMORY;
+    }
+    for (size_t b = 0; b < ndd->edges_map->bucket_count; ++b) {
+        hash_entry_t *e = ndd->edges_map->buckets[b];
+        while (e) {
+            edges_map_add(emap, ndd_true(), *(ndd_bdd_t*)e->value);
+            e = e->next;
         }
     }
+    *result = ndd_mk(ndd->field, emap);
     
-    *result = reduced;
     return NDD_SUCCESS;
 }
 
@@ -232,7 +284,7 @@ ndd_t ndd_reduce(ndd_t ndd) {
     return result;
 }
 
-// ===== 高级逻辑操作 =====
+// ===== Advanced Logic Operations =====
 
 ndd_error_t ndd_ite_safe(ndd_t condition, ndd_t then_branch, ndd_t else_branch, ndd_t *result) {
     NDD_CHECK_NULL(result, NDD_ERROR_NULL_POINTER);
@@ -244,7 +296,7 @@ ndd_error_t ndd_ite_safe(ndd_t condition, ndd_t then_branch, ndd_t else_branch, 
     ndd_t else_part = ndd_and(not_condition, else_branch);
     ndd_t ite_result = ndd_or(then_part, else_part);
     
-    // 清理临时结果
+    // Clean up temporary results
     ndd_deref_safe(not_condition);
     ndd_deref_safe(then_part);
     ndd_deref_safe(else_part);
@@ -262,7 +314,7 @@ ndd_t ndd_ite(ndd_t condition, ndd_t then_branch, ndd_t else_branch) {
     return result;
 }
 
-// ===== 满足性检查 =====
+// ===== Satisfiability checking =====
 
 ndd_error_t ndd_is_satisfiable_safe(ndd_t ndd, bool *result) {
     NDD_CHECK_NULL(result, NDD_ERROR_NULL_POINTER);
@@ -295,12 +347,12 @@ ndd_error_t ndd_sat_count_safe(ndd_t ndd, uint64_t *result) {
         return NDD_SUCCESS;
     }
     
-    // 简化实现：递归计算
-    // 实际实现需要考虑缓存和更复杂的算法
+    // Simplified implementation: recursive calculation
+    // Actual implementation needs to consider caching and more complex algorithms
     uint64_t count = 0;
     
-    if (ndd.node && ndd.node->edge_count > 0) {
-        count = ndd.node->edge_count;  // 简化计算
+    if (ndd->edge_count > 0) {
+        count = ndd->edge_count;  // Simplified calculation
     }
     
     *result = count;
@@ -316,14 +368,14 @@ uint64_t ndd_sat_count(ndd_t ndd) {
     return result;
 }
 
-// ===== 等价性检查 =====
+// ===== Equivalence Checking =====
 
 ndd_error_t ndd_is_equal_safe(ndd_t a, ndd_t b, bool *result) {
     NDD_CHECK_NULL(result, NDD_ERROR_NULL_POINTER);
     NDD_CHECK_INIT();
     
-    // 简化检查：比较节点指针
-    *result = (a.node == b.node && a.is_terminal == b.is_terminal);
+    // Simplified check: compare node pointers
+    *result = (a == b);
     return NDD_SUCCESS;
 }
 
@@ -336,7 +388,7 @@ bool ndd_is_equal(ndd_t a, ndd_t b) {
     return result;
 }
 
-// ===== 优化配置 =====
+// ===== Optimization Configuration =====
 
 ndd_error_t ndd_set_optimization_config_safe(ndd_optimization_config_t config) {
     NDD_CHECK_INIT();
@@ -353,7 +405,7 @@ ndd_optimization_config_t ndd_get_optimization_config() {
     return g_optimization_config;
 }
 
-// ===== 约束求解器 =====
+// ===== Constraint solver =====
 
 ndd_error_t ndd_solver_create_safe(ndd_t problem, ndd_solver_t **solver) {
     NDD_CHECK_NULL(solver, NDD_ERROR_NULL_POINTER);
@@ -387,7 +439,7 @@ ndd_error_t ndd_solver_add_constraint_safe(ndd_solver_t *solver, ndd_constraint_
     NDD_CHECK_NULL(solver, NDD_ERROR_NULL_POINTER);
     NDD_CHECK_INIT();
     
-    // 重新分配约束数组
+    // Reallocate constraint array
     ndd_constraint_t *new_constraints = (ndd_constraint_t*)realloc(
         solver->constraints, 
         (solver->constraint_count + 1) * sizeof(ndd_constraint_t));

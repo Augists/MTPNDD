@@ -22,7 +22,7 @@ void operation_cache_destroy(operation_cache_t *cache) {
 }
 
 void* operation_cache_get_result(operation_cache_t *cache, uint32_t index) {
-    // 边界检查
+    // Boundary check
     if (!cache || index >= cache->cache_size) {
         return NULL;
     }
@@ -30,7 +30,7 @@ void* operation_cache_get_result(operation_cache_t *cache, uint32_t index) {
 }
 
 void operation_cache_set_result(operation_cache_t *cache, uint32_t index, void *result) {
-    // 边界检查
+    // Boundary check
     if (!cache || index >= cache->cache_size) {
         return;
     }
@@ -38,7 +38,7 @@ void operation_cache_set_result(operation_cache_t *cache, uint32_t index, void *
 }
 
 void* operation_cache_get_operand(operation_cache_t *cache, uint32_t index, uint32_t operand_index) {
-    // 边界检查
+    // Boundary check
     if (!cache || index >= cache->cache_size || operand_index >= cache->entry_size) {
         return NULL;
     }
@@ -46,7 +46,7 @@ void* operation_cache_get_operand(operation_cache_t *cache, uint32_t index, uint
 }
 
 void operation_cache_set_operand(operation_cache_t *cache, uint32_t index, uint32_t operand_index, void *operand) {
-    // 边界检查
+    // Boundary check
     if (!cache || index >= cache->cache_size || operand_index >= cache->entry_size) {
         return;
     }
@@ -72,10 +72,10 @@ int operation_cache_get_entry_unary(operation_cache_t *cache, void *operand1) {
     uint32_t hash = operation_cache_good_hash_unary(cache, operand1);
     if (operation_cache_get_operand(cache, hash, 1) == operand1) {
         cache->result = operation_cache_get_result(cache, hash);
-        return 1;  // 找到
+        return 1;  // Found
     } else {
         cache->hash_value = hash;
-        return 0;  // 未找到
+        return 0;  // Not found
     }
 }
 
@@ -89,10 +89,10 @@ int operation_cache_get_entry_binary(operation_cache_t *cache, void *operand1, v
     if ((cached_op1 == operand1 && cached_op2 == operand2) ||
         (cached_op1 == operand2 && cached_op2 == operand1)) {
         cache->result = operation_cache_get_result(cache, hash);
-        return 1;  // 找到
+        return 1;  // Found
     } else {
         cache->hash_value = hash;
-        return 0;  // 未找到
+        return 0;  // Not found
     }
 }
 

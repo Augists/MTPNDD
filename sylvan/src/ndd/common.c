@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// 动态数组实现
+// Dynamic array implementation
 dynamic_array_t* dynamic_array_create(size_t initial_capacity) {
     dynamic_array_t *array = (dynamic_array_t*)malloc(sizeof(dynamic_array_t));
     array->data = (void**)malloc(initial_capacity * sizeof(void*));
@@ -45,7 +45,7 @@ void dynamic_array_clear(dynamic_array_t *array) {
     array->size = 0;
 }
 
-// 哈希表实现
+// Hash table implementation
 hash_table_t* hash_table_create(size_t initial_bucket_count, 
                                 hash_t (*hash_func)(const void *key),
                                 int (*compare_func)(const void *a, const void *b)) {
@@ -142,7 +142,7 @@ void hash_table_clear(hash_table_t *table) {
     table->size = 0;
 }
 
-// 哈希Set实现
+// Hash set implementation
 hash_set_t* hash_set_create(size_t initial_bucket_count,
                            hash_t (*hash_func)(const void *key),
                            int (*compare_func)(const void *a, const void *b)) {
@@ -174,7 +174,7 @@ void hash_set_clear(hash_set_t *set) {
     hash_table_clear(set->table);
 }
 
-// 整数哈希表实现
+// Integer hash table implementation
 int_hash_table_t* int_hash_table_create(size_t initial_bucket_count) {
     int_hash_table_t *table = (int_hash_table_t*)malloc(sizeof(int_hash_table_t));
     table->buckets = (struct int_hash_entry_s**)calloc(initial_bucket_count, sizeof(struct int_hash_entry_s*));
@@ -266,7 +266,7 @@ void int_hash_table_clear(int_hash_table_t *table) {
     table->size = 0;
 }
 
-// 通用哈希函数
+// Common hash functions
 hash_t ptr_hash(const void *ptr) {
     uintptr_t addr = (uintptr_t)ptr;
     return (hash_t)(addr ^ (addr >> 32));

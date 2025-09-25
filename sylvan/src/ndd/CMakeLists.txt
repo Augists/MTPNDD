@@ -1,23 +1,23 @@
 cmake_minimum_required(VERSION 3.17)
 
-# NDD 项目配置
+# NDD project configuration
 project(ndd
     VERSION 1.0.0
     DESCRIPTION "Network Decision Diagram with Parallel Support"
     LANGUAGES C
 )
 
-# 设置 C 标准
+# Set C standard
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# 编译选项
+# Compilation options
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -O2 -g")
 
-# 查找依赖
+# Find dependencies
 find_package(Threads REQUIRED)
 
-# 检查 Lace 和 Sylvan 是否可用
+# Check if Lace and Sylvan are available
 if(TARGET lace::lace AND TARGET sylvan::sylvan)
     message(STATUS "✅ Found Lace and Sylvan dependencies")
     set(HAVE_LACE_SYLVAN TRUE)
@@ -26,10 +26,11 @@ else()
     set(HAVE_LACE_SYLVAN FALSE)
 endif()
 
-# 源文件
+# Source files
 set(NDD_SOURCES
     common.c
     ndd.c
+    ndd_nodetable.c
     operation_cache.c
     ndd_advanced.c
     mtpndd.c
@@ -39,13 +40,14 @@ set(NDD_SOURCES
 set(NDD_HEADERS
     common.h
     ndd.h
+    ndd_nodetable.h
     operation_cache.h
     ndd_advanced.h
     mtpndd.h
     ndd_performance_monitor.h
 )
 
-# 总是添加并行实现（包含简化模式的回退）
+# Always add parallel implementation (includes simplified mode fallback)
 list(APPEND NDD_SOURCES ndd_parallel.c)
 if(HAVE_LACE_SYLVAN)
     message(STATUS "✅ Adding parallel implementation with Lace + Sylvan")
@@ -53,16 +55,16 @@ else()
     message(STATUS "✅ Adding parallel implementation with simplified mode")
 endif()
 
-# 创建 NDD 库
+# Create NDD library
 add_library(ndd STATIC ${NDD_SOURCES} ${NDD_HEADERS})
 
-# 设置包含目录
+# Set include directories
 target_include_directories(ndd PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:include>
 )
 
-# 链接依赖
+# Link dependencies
 target_link_libraries(ndd PUBLIC Threads::Threads)
 
 if(HAVE_LACE_SYLVAN)
@@ -71,13 +73,13 @@ if(HAVE_LACE_SYLVAN)
     message(STATUS "✅ NDD linked with Lace + Sylvan")
 endif()
 
-# 设置输出目录
+# Set output directories
 set_target_properties(ndd PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib
 )
 
-# 测试程序
+# Test programs
 set(TEST_PROGRAMS
     test_memory_management
     test_parallel_verification
@@ -102,7 +104,7 @@ foreach(test_prog ${TEST_PROGRAMS})
         add_executable(${test_prog} tests/${test_prog}.c)
         target_link_libraries(${test_prog} PRIVATE ndd)
         
-        # 如果有 Lace + Sylvan，启用完整的并行测试
+        # If Lace + Sylvan available, enable full parallel testing
         if(HAVE_LACE_SYLVAN)
             target_compile_definitions(${test_prog} PRIVATE HAVE_LACE_SYLVAN=1)
         endif()
@@ -111,7 +113,24 @@ foreach(test_prog ${TEST_PROGRAMS})
     endif()
 endforeach()
 
-# 自定义目标
+# Example programs
+add_executable(nqueens_mtpndd examples/nqueens_mtpndd.c)
+target_link_libraries(nqueens_mtpndd PRIVATE ndd)
+
+add_executable(nqueens_ndd examples/nqueens_ndd.c)
+target_link_libraries(nqueens_ndd PRIVATE ndd)
+
+
+# If Lace + Sylvan available, enable full parallel support
+if(HAVE_LACE_SYLVAN)
+    target_compile_definitions(nqueens_mtpndd PRIVATE HAVE_LACE_SYLVAN=1)
+    target_compile_definitions(nqueens_ndd PRIVATE HAVE_LACE_SYLVAN=1)
+endif()
+
+message(STATUS "✅ Added example program: nqueens_mtpndd")
+message(STATUS "✅ Added example program: nqueens_ndd")
+
+# Custom targets
 add_custom_target(run_tests
     COMMAND echo "🚀 Running NDD tests..."
     COMMAND $<TARGET_FILE:test_memory_management>
@@ -129,7 +148,7 @@ if(TARGET test_parallel_verification)
     )
 endif()
 
-# 状态报告
+# Status report
 message(STATUS "")
 message(STATUS "🔧 NDD Project Configuration Summary:")
 message(STATUS "   C Standard: C${CMAKE_C_STANDARD}")

@@ -118,7 +118,7 @@ void test_parameter_validation() {
     // 测试正常的添加边操作
     result = ndd_add_edge_safe(&node_result, ndd_true(), ndd_sylvan_true);
     assert(result == NDD_SUCCESS);
-    assert(node_result.node->edge_count == 1);
+    assert(node_result->edge_count == 1);
     printf("   ✓ 正常边添加成功\n");
     
     // 清理
@@ -168,7 +168,7 @@ void test_memory_safety() {
             result = ndd_add_edge_safe(&nodes[i], ndd_true(), ndd_sylvan_true);
             assert(result == NDD_SUCCESS);
         }
-        assert(nodes[i].node->edge_count == 5);
+        assert(nodes[i]->edge_count == 5);
     }
     
     printf("   ✓ 成功创建1000个节点，每个节点5条边\n");

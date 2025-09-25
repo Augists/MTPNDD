@@ -6,30 +6,30 @@
 #include <math.h>
 #include <pthread.h>
 
-// 全局性能监控状态
+// Global performance monitoring state
 static struct {
     bool initialized;
     ndd_perf_config_t config;
     pthread_mutex_t mutex;
     
-    // 各类统计数据
+    // Various statistics data
     ndd_timing_stats_t timing;
     ndd_memory_stats_t memory;
     ndd_operation_stats_t operations;
     ndd_cache_stats_t cache;
     ndd_parallel_stats_t parallel;
     
-    // 实时监控
+    // Real-time monitoring
     ndd_perf_alert_callback_t alert_callback;
     double alert_thresholds[NDD_PERF_OP_COUNT];
     
-    // 元数据
+    // Metadata
     struct timespec start_time;
     uint64_t total_samples;
 } g_perf_state = {0};
 
 // ============================================================================
-// 工具函数 - "好品味"：没有重复代码
+// Utility functions - "Good taste": no duplicate code
 // ============================================================================
 
 static double timespec_diff_ns(const struct timespec *start, const struct timespec *end) {
@@ -70,32 +70,32 @@ static void check_alert_threshold(ndd_perf_operation_t op, double time_ms) {
 }
 
 // ============================================================================
-// 核心API实现 - "好品味"：每个函数只做一件事
+// Core API implementation - "Good taste": each function does one thing
 // ============================================================================
 
 void ndd_perf_init(const ndd_perf_config_t *config) {
     if (g_perf_state.initialized) {
-        return; // 已初始化，避免重复
+        return; // Already initialized, avoid duplication
     }
     
-    // 复制配置
+    // Copy configuration
     if (config) {
         g_perf_state.config = *config;
     } else {
         g_perf_state.config = NDD_PERF_DEFAULT_CONFIG;
     }
     
-    // 初始化互斥锁
+    // Initialize mutex
     pthread_mutex_init(&g_perf_state.mutex, NULL);
     
-    // 清零所有统计数据
+    // Zero all statistics data
     memset(&g_perf_state.timing, 0, sizeof(g_perf_state.timing));
     memset(&g_perf_state.memory, 0, sizeof(g_perf_state.memory));
     memset(&g_perf_state.operations, 0, sizeof(g_perf_state.operations));
     memset(&g_perf_state.cache, 0, sizeof(g_perf_state.cache));
     memset(&g_perf_state.parallel, 0, sizeof(g_perf_state.parallel));
     
-    // 设置初始值
+    // Set initial values
     g_perf_state.timing.min_time_ns = INFINITY;
     clock_gettime(CLOCK_MONOTONIC, &g_perf_state.start_time);
     
@@ -118,18 +118,18 @@ void ndd_perf_reset() {
     
     pthread_mutex_lock(&g_perf_state.mutex);
     
-    // 保存配置和初始化状态
+    // Save configuration and initialization state
     ndd_perf_config_t saved_config = g_perf_state.config;
     bool was_initialized = g_perf_state.initialized;
     
-    // 清零统计数据
+    // Zero statistics data
     memset(&g_perf_state.timing, 0, sizeof(g_perf_state.timing));
     memset(&g_perf_state.memory, 0, sizeof(g_perf_state.memory));
     memset(&g_perf_state.operations, 0, sizeof(g_perf_state.operations));
     memset(&g_perf_state.cache, 0, sizeof(g_perf_state.cache));
     memset(&g_perf_state.parallel, 0, sizeof(g_perf_state.parallel));
     
-    // 恢复配置
+    // Restore configuration
     g_perf_state.config = saved_config;
     g_perf_state.initialized = was_initialized;
     g_perf_state.timing.min_time_ns = INFINITY;
@@ -144,7 +144,7 @@ bool ndd_perf_is_enabled() {
 }
 
 // ============================================================================
-// 记录函数 - "好品味"：统一的模式，无特殊情况
+// Recording functions - "Good taste": unified pattern, no special cases
 // ============================================================================
 
 void ndd_perf_record_timing(ndd_perf_operation_t op, 
@@ -159,10 +159,10 @@ void ndd_perf_record_timing(ndd_perf_operation_t op,
     
     pthread_mutex_lock(&g_perf_state.mutex);
     
-    // 更新总体时间统计
+    // Update overall timing statistics
     update_timing_stats(time_ns, &g_perf_state.timing);
     
-    // 更新特定操作时间统计
+    // Update specific operation timing statistics
     switch (op) {
         case NDD_PERF_OP_AND:
             g_perf_state.timing.and_time_ns += time_ns;
@@ -186,7 +186,7 @@ void ndd_perf_record_timing(ndd_perf_operation_t op,
     g_perf_state.total_samples++;
     pthread_mutex_unlock(&g_perf_state.mutex);
     
-    // 检查告警阈值
+    // Check warning thresholds
     check_alert_threshold(op, time_ms);
 }
 
@@ -293,7 +293,7 @@ void ndd_perf_record_operation(ndd_perf_operation_t op) {
 }
 
 // ============================================================================
-// 查询函数 - "好品味"：只返回数据，不做复杂计算
+// Query function - "Good taste": only return data, no complex calculations
 // ============================================================================
 
 ndd_performance_report_t ndd_perf_get_report() {
@@ -305,14 +305,14 @@ ndd_performance_report_t ndd_perf_get_report() {
     
     pthread_mutex_lock(&g_perf_state.mutex);
     
-    // 复制基础统计数据
+    // Copy basic statistics
     report.timing = g_perf_state.timing;
     report.memory = g_perf_state.memory;
     report.operations = g_perf_state.operations;
     report.cache = g_perf_state.cache;
     report.parallel = g_perf_state.parallel;
     
-    // 计算综合指标
+    // Calculate comprehensive metrics
     struct timespec current_time;
     clock_gettime(CLOCK_MONOTONIC, &current_time);
     report.collection_time_s = timespec_diff_ns(&g_perf_state.start_time, &current_time) / 1e9;
@@ -320,13 +320,13 @@ ndd_performance_report_t ndd_perf_get_report() {
     if (report.collection_time_s > 0 && report.timing.total_operations > 0) {
         report.throughput_ops_per_sec = report.timing.total_operations / report.collection_time_s;
         
-        // 内存效率：操作数 / 内存使用量
+        // Memory efficiency: operations / memory usage
         if (report.memory.peak_allocated > 0) {
             report.memory_efficiency = report.timing.total_operations / 
                                      (double)(report.memory.peak_allocated / 1024.0); // ops per KB
         }
         
-        // 总体效率评分（0-100）
+        // Overall efficiency score (0-100)
         double cache_efficiency = report.cache.cache_hit_rate;
         double memory_waste = report.memory.peak_allocated > 0 ? 
                              (double)report.memory.current_allocated / report.memory.peak_allocated : 1.0;
@@ -390,7 +390,7 @@ ndd_parallel_stats_t ndd_perf_get_parallel_stats() {
 }
 
 // ============================================================================
-// 输出函数 - "好品味"：简洁的表格格式
+// Output function - "Good taste": concise table format
 // ============================================================================
 
 void ndd_perf_print_summary(FILE *output) {
@@ -398,17 +398,17 @@ void ndd_perf_print_summary(FILE *output) {
     
     ndd_performance_report_t report = ndd_perf_get_report();
     
-    fprintf(output, "\n🚀 MTPNDD 性能监控摘要\n");
+    fprintf(output, "\n🚀 MTPNDD Performance Monitoring Summary\n");
     fprintf(output, "==================================================\n");
-    fprintf(output, "运行时间:       %.2f 秒\n", report.collection_time_s);
-    fprintf(output, "总操作数:       %lu\n", report.timing.total_operations);
-    fprintf(output, "吞吐量:         %.0f ops/sec\n", report.throughput_ops_per_sec);
-    fprintf(output, "平均延迟:       %.3f ms\n", report.timing.avg_time_ns / 1e6);
-    fprintf(output, "缓存命中率:     %.1f%%\n", report.cache.cache_hit_rate * 100.0);
-    fprintf(output, "内存使用:       %.1f KB (峰值: %.1f KB)\n", 
+    fprintf(output, "Runtime:         %.2f seconds\n", report.collection_time_s);
+    fprintf(output, "Total Operations: %lu\n", report.timing.total_operations);
+    fprintf(output, "Throughput:       %.0f ops/sec\n", report.throughput_ops_per_sec);
+    fprintf(output, "Average Latency:  %.3f ms\n", report.timing.avg_time_ns / 1e6);
+    fprintf(output, "Cache Hit Rate:   %.1f%%\n", report.cache.cache_hit_rate * 100.0);
+    fprintf(output, "Memory Usage:     %.1f KB (Peak: %.1f KB)\n", 
             report.memory.current_allocated / 1024.0,
             report.memory.peak_allocated / 1024.0);
-    fprintf(output, "总体效率:       %.1f/100\n", report.overall_efficiency);
+    fprintf(output, "Overall Efficiency: %.1f/100\n", report.overall_efficiency);
     fprintf(output, "==================================================\n\n");
 }
 
@@ -417,52 +417,52 @@ void ndd_perf_print_report(FILE *output) {
     
     ndd_performance_report_t report = ndd_perf_get_report();
     
-    fprintf(output, "\n📊 MTPNDD 详细性能报告\n");
+    fprintf(output, "\n📊 MTPNDD Detailed Performance Report\n");
     fprintf(output, "================================================================\n");
     
-    // 时间统计
-    fprintf(output, "\n⏱️  时间统计:\n");
-    fprintf(output, "   总操作数:      %lu\n", report.timing.total_operations);
-    fprintf(output, "   总时间:        %.2f ms\n", report.timing.total_time_ns / 1e6);
-    fprintf(output, "   平均时间:      %.3f ms\n", report.timing.avg_time_ns / 1e6);
-    fprintf(output, "   最小时间:      %.3f ms\n", report.timing.min_time_ns / 1e6);
-    fprintf(output, "   最大时间:      %.3f ms\n", report.timing.max_time_ns / 1e6);
+    // Timing statistics
+    fprintf(output, "\n⏱️  Timing Statistics:\n");
+    fprintf(output, "   Total Operations: %lu\n", report.timing.total_operations);
+    fprintf(output, "   Total Time:       %.2f ms\n", report.timing.total_time_ns / 1e6);
+    fprintf(output, "   Average Time:     %.3f ms\n", report.timing.avg_time_ns / 1e6);
+    fprintf(output, "   Min Time:         %.3f ms\n", report.timing.min_time_ns / 1e6);
+    fprintf(output, "   Max Time:         %.3f ms\n", report.timing.max_time_ns / 1e6);
     
-    // 操作分类统计
-    fprintf(output, "\n🔧 操作统计:\n");
-    fprintf(output, "   AND操作:       %lu (%.1f ms)\n", 
+    // Operation category statistics
+    fprintf(output, "\n🔧 Operation Statistics:\n");
+    fprintf(output, "   AND Operations:  %lu (%.1f ms)\n", 
             report.operations.and_operations, report.timing.and_time_ns / 1e6);
-    fprintf(output, "   OR操作:        %lu (%.1f ms)\n", 
+    fprintf(output, "   OR Operations:   %lu (%.1f ms)\n", 
             report.operations.or_operations, report.timing.or_time_ns / 1e6);
-    fprintf(output, "   NOT操作:       %lu (%.1f ms)\n", 
+    fprintf(output, "   NOT Operations:  %lu (%.1f ms)\n", 
             report.operations.not_operations, report.timing.not_time_ns / 1e6);
-    fprintf(output, "   编码操作:      %lu (%.1f ms)\n", 
+    fprintf(output, "   Encoding Ops:     %lu (%.1f ms)\n", 
             report.operations.encode_operations, report.timing.encode_time_ns / 1e6);
     
-    // 内存统计
-    fprintf(output, "\n💾 内存统计:\n");
-    fprintf(output, "   当前分配:      %.1f KB\n", report.memory.current_allocated / 1024.0);
-    fprintf(output, "   峰值分配:      %.1f KB\n", report.memory.peak_allocated / 1024.0);
-    fprintf(output, "   总分配:        %.1f KB\n", report.memory.total_allocated / 1024.0);
-    fprintf(output, "   分配次数:      %lu\n", report.memory.allocation_count);
+    // Memory statistics
+    fprintf(output, "\n💾 Memory Statistics:\n");
+    fprintf(output, "   Current Allocated: %.1f KB\n", report.memory.current_allocated / 1024.0);
+    fprintf(output, "   Peak Allocated:    %.1f KB\n", report.memory.peak_allocated / 1024.0);
+    fprintf(output, "   Total Allocated:   %.1f KB\n", report.memory.total_allocated / 1024.0);
+    fprintf(output, "   Allocation Count:  %lu\n", report.memory.allocation_count);
     
-    // 缓存统计
-    fprintf(output, "\n🗄️  缓存统计:\n");
-    fprintf(output, "   缓存命中:      %lu\n", report.cache.cache_hits);
-    fprintf(output, "   缓存未命中:    %lu\n", report.cache.cache_misses);
-    fprintf(output, "   命中率:        %.1f%%\n", report.cache.cache_hit_rate * 100.0);
+    // Cache statistics
+    fprintf(output, "\n🗄️  Cache Statistics:\n");
+    fprintf(output, "   Cache Hits:       %lu\n", report.cache.cache_hits);
+    fprintf(output, "   Cache Misses:     %lu\n", report.cache.cache_misses);
+    fprintf(output, "   Hit Rate:          %.1f%%\n", report.cache.cache_hit_rate * 100.0);
     
-    // 综合评估
-    fprintf(output, "\n📈 性能评估:\n");
-    fprintf(output, "   吞吐量:        %.0f ops/sec\n", report.throughput_ops_per_sec);
-    fprintf(output, "   内存效率:      %.1f ops/KB\n", report.memory_efficiency);
-    fprintf(output, "   总体评分:      %.1f/100\n", report.overall_efficiency);
+    // Comprehensive evaluation
+    fprintf(output, "\n📈 Performance Evaluation:\n");
+    fprintf(output, "   Throughput:       %.0f ops/sec\n", report.throughput_ops_per_sec);
+    fprintf(output, "   Memory Efficiency: %.1f ops/KB\n", report.memory_efficiency);
+    fprintf(output, "   Overall Score:     %.1f/100\n", report.overall_efficiency);
     
     fprintf(output, "================================================================\n\n");
 }
 
 // ============================================================================
-// 实时监控功能
+// Real-time monitoring functionality
 // ============================================================================
 
 void ndd_perf_set_alert_threshold(ndd_perf_operation_t op, double threshold_ms) {

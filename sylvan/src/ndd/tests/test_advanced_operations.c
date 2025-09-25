@@ -7,9 +7,9 @@
 #include <time.h>
 
 void test_constraint_propagation() {
-    printf("🚀 约束传播测试开始\n");
+    printf("🚀 Constraint propagation test started\n");
     
-    // 初始化系统
+    // Initialize system
     ndd_config_t config = {
         .n_workers = 2,
         .dqsize = 10000,
@@ -19,15 +19,15 @@ void test_constraint_propagation() {
     };
     
     assert(ndd_init(&config) == 0);
-    printf("✅ NDD系统初始化成功\n");
+    printf("✅ NDD system initialization successful\n");
     
-    // 创建测试NDD
-    uint32_t field = ndd_declare_field(4);  // 4位字段
+    // Create test NDD
+    uint32_t field = ndd_declare_field(4);  // 4-bit field
     ndd_t node = ndd_create_node(field);
     
-    // 添加一些边
+    // Add some edges
     ndd_add_edge(&node, ndd_true(), ndd_sylvan_true);
-    printf("✅ 创建测试节点成功\n");
+    printf("✅ Test node creation successful\n");
     
     // 创建约束
     ndd_constraint_t constraint = {
@@ -87,7 +87,7 @@ void test_node_merging() {
         printf("✅ 节点合并成功\n");
         
         // 验证合并后的节点包含更多边
-        if (merged.node && merged.node->edge_count >= node_a.node->edge_count) {
+        if (merged && merged->edge_count >= node_a->edge_count) {
             printf("✅ 合并结果验证通过\n");
         }
     } else {
@@ -97,20 +97,20 @@ void test_node_merging() {
     // 测试节点简化
     ndd_t reduced = ndd_reduce(merged);
     if (!ndd_is_false(reduced)) {
-        printf("✅ 节点简化成功\n");
+        printf("✅ Node simplification successful\n");
     }
     
-    // 清理
+    // Cleanup
     ndd_deref_safe(node_a);
     ndd_deref_safe(node_b);
     ndd_deref_safe(merged);
     ndd_deref_safe(reduced);
     ndd_quit();
-    printf("✅ 节点合并测试完成\n\n");
+    printf("✅ Node merging test completed\n\n");
 }
 
 void test_advanced_logic() {
-    printf("🚀 高级逻辑操作测试开始\n");
+    printf("🚀 Advanced logic operation test started\n");
     
     ndd_config_t config = {
         .n_workers = 2,
@@ -121,45 +121,45 @@ void test_advanced_logic() {
     };
     
     assert(ndd_init(&config) == 0);
-    printf("✅ NDD系统初始化成功\n");
+    printf("✅ NDD system initialization successful\n");
     
-    // 创建测试条件和分支
+    // Create test condition and branches
     uint32_t field = ndd_declare_field(2);
     ndd_t condition = ndd_create_node(field);
     ndd_t then_branch = ndd_true();
     ndd_t else_branch = ndd_false();
     
     ndd_add_edge(&condition, ndd_true(), ndd_sylvan_true);
-    printf("✅ 创建ITE测试节点\n");
+    printf("✅ Created ITE test node\n");
     
-    // 测试if-then-else操作
+    // Test if-then-else operation
     ndd_t ite_result = ndd_ite(condition, then_branch, else_branch);
     
     if (!ndd_is_false(ite_result)) {
-        printf("✅ ITE操作成功\n");
+        printf("✅ ITE operation successful\n");
     } else {
-        printf("⚠️ ITE操作结果为false\n");
+        printf("⚠️ ITE operation result is false\n");
     }
     
-    // 测试满足性检查
+    // Test satisfiability check
     bool is_sat = ndd_is_satisfiable(ite_result);
-    printf("满足性检查结果: %s\n", is_sat ? "可满足" : "不可满足");
+    printf("Satisfiability check result: %s\n", is_sat ? "satisfiable" : "unsatisfiable");
     
-    // 测试满足解计数
+    // Test satisfiability count
     uint64_t sat_count = ndd_sat_count(ite_result);
-    printf("满足解数量: %lu\n", sat_count);
+    printf("Satisfiability count: %lu\n", sat_count);
     
-    // 清理
+    // Cleanup
     ndd_deref_safe(condition);
     ndd_deref_safe(ite_result);
     ndd_quit();
-    printf("✅ 高级逻辑操作测试完成\n\n");
+    printf("✅ Advanced logic operation test completed\n\n");
 }
 
 void test_optimization_config() {
-    printf("🚀 优化配置测试开始\n");
+    printf("🚀 Optimization configuration test started\n");
     
-    // 设置优化配置
+    // Set optimization configuration
     ndd_optimization_config_t config = {
         .enable_dynamic_reordering = true,
         .enable_aggressive_gc = true,
@@ -169,30 +169,30 @@ void test_optimization_config() {
     };
     
     ndd_set_optimization_config(config);
-    printf("✅ 设置优化配置\n");
+    printf("✅ Set optimization configuration\n");
     
-    // 获取配置并验证
+    // Get configuration and verify
     ndd_optimization_config_t retrieved = ndd_get_optimization_config();
     
     if (retrieved.enable_dynamic_reordering == true &&
         retrieved.cache_hit_ratio_target == 0.9) {
-        printf("✅ 优化配置设置成功\n");
+        printf("✅ Optimization configuration set successfully\n");
     } else {
-        printf("❌ 优化配置设置失败\n");
+        printf("❌ Optimization configuration setting failed\n");
     }
     
-    printf("优化配置:\n");
-    printf("  动态重排序: %s\n", retrieved.enable_dynamic_reordering ? "启用" : "禁用");
-    printf("  激进GC: %s\n", retrieved.enable_aggressive_gc ? "启用" : "禁用");
-    printf("  节点共享: %s\n", retrieved.enable_node_sharing ? "启用" : "禁用");
-    printf("  合并阈值: %u\n", retrieved.merge_threshold);
-    printf("  目标缓存命中率: %.1f%%\n", retrieved.cache_hit_ratio_target * 100);
+    printf("Optimization configuration:\n");
+    printf("  Dynamic reordering: %s\n", retrieved.enable_dynamic_reordering ? "enabled" : "disabled");
+    printf("  Aggressive GC: %s\n", retrieved.enable_aggressive_gc ? "enabled" : "disabled");
+    printf("  Node sharing: %s\n", retrieved.enable_node_sharing ? "enabled" : "disabled");
+    printf("  Merge threshold: %u\n", retrieved.merge_threshold);
+    printf("  Target cache hit ratio: %.1f%%\n", retrieved.cache_hit_ratio_target * 100);
     
-    printf("✅ 优化配置测试完成\n\n");
+    printf("✅ Optimization configuration test completed\n\n");
 }
 
 void test_constraint_solver() {
-    printf("🚀 约束求解器测试开始\n");
+    printf("🚀 Constraint solver test started\n");
     
     ndd_config_t config = {
         .n_workers = 2,
