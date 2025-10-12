@@ -1,6 +1,11 @@
-# A library for Network Decision Diagram in **Parallel**
+# MTPNDD: A library for Multi-Terminal Network Decision Diagram in **Parallel**
 
-使用 C 语言重构 NDD
+使用 C 语言重构 NDD，并实现并行和多终端节点需求
+
+## Architecture
+
+```text
+```
 
 ## Build and Run
 
@@ -23,10 +28,6 @@ cd build
 cmake ..
 make && make test
 ```
-
-## 问题分析
-
-1. 在上层也使用 Lace 框架，使用全局统一的 Lace 还是上下层分离的互不干扰？
 
 ## License
 
