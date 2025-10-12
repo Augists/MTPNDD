@@ -8,7 +8,11 @@
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
 
+#ifdef LARGE_NODETABLE
+#define NODETABLE_BUCKET_CNT 65537
+#else
 #define NODETABLE_BUCKET_CNT 1024
+#endif
 
 typedef struct mtpndd_nodetable_bucket_entry_s {
     struct mtpndd_nodetable_bucket_entry_s *next;

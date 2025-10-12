@@ -276,7 +276,8 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     g_mtpndd_config.field_info = (mtpndd_field_info_t **)malloc(sizeof(mtpndd_field_info_t*) * DEFAULT_FIELD_CAPACITY);
     g_mtpndd_config.field_info[0] = &MTPNDD_TERMINAL_FIELD; // Reserve field 0 for terminal nodes
     g_mtpndd_config.node_tables_by_field = (mtpndd_nodetable_t **)malloc(sizeof(mtpndd_nodetable_t*) * DEFAULT_FIELD_CAPACITY);
-    
+    GC_PROTECT_INIT(g_mtpndd_config.gcProtect);
+
     if (!mtpndd_lace_init()) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_PARALLEL_INIT);
     }
@@ -366,4 +367,80 @@ mtpndd_error_t mtpndd_quit() {
     mtpndd_clear_error();
 
     return MTPNDD_SUCCESS;
+}
+
+/********************************
+ * GC protection hash set
+ ********************************/
+mtpndd_error_t mtpndd_gc_protect_add(mtpndd_t *node) {
+    MTPNDD_CHECK_INIT();
+    MTPNDD_CHECK_PARAM(node != NULL, MTPNDD_ERROR_NULL_POINTER);
+    MTPNDD_CHECK_PARAM(node != &MTPNDD_TRUE && node != &MTPNDD_FALSE, MTPNDD_ERROR_INVALID_PARAM);
+
+    size_t hash = GC_PROTECT_HASH_VAL(node);
+    if (mtpndd_gc_protect_contains_with_hash(node, hash)) {
+        // already exists
+        return MTPNDD_SUCCESS;
+    }
+
+    // not found, add new entry
+    gc_protect_entry_t *entry = (gc_protect_entry_t *)malloc(sizeof(gc_protect_entry_t));
+    if (!entry) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+    }
+    entry->node = node;
+    entry->next = g_mtpndd_config.gcProtect->buckets[hash];
+    entry->prev = NULL;
+    if (g_mtpndd_config.gcProtect->buckets[hash]) {
+        g_mtpndd_config.gcProtect->buckets[hash]->prev = entry;
+    }
+    g_mtpndd_config.gcProtect->buckets[hash] = entry;
+    g_mtpndd_config.gcProtect->gc_protect_count++;
+
+    return MTPNDD_SUCCESS;
+}
+
+mtpndd_error_t mtpndd_gc_protect_remove(mtpndd_t *node) {
+    MTPNDD_CHECK_INIT();
+    MTPNDD_CHECK_PARAM(node != NULL, MTPNDD_ERROR_NULL_POINTER);
+    MTPNDD_CHECK_PARAM(node != &MTPNDD_TRUE && node != &MTPNDD_FALSE, MTPNDD_ERROR_INVALID_PARAM);
+
+    size_t hash = GC_PROTECT_HASH_VAL(node);
+    FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(g_mtpndd_config.gcProtect, hash, entry) {
+        if (entry->node == node) {
+            // found, remove it
+            if (entry->prev) {
+                entry->prev->next = entry->next;
+            } else {
+                g_mtpndd_config.gcProtect->buckets[hash] = entry->next;
+            }
+            if (entry->next) {
+                entry->next->prev = entry->prev;
+            }
+            free(entry);
+            g_mtpndd_config.gcProtect->gc_protect_count--;
+            return MTPNDD_SUCCESS;
+        }
+    }
+
+    MTPNDD_RETURN_ERROR(MTPNDD_ERROR_NULL_POINTER);
+}
+
+bool mtpndd_gc_protect_contains(mtpndd_t *node) {
+    MTPNDD_CHECK_INIT();
+    MTPNDD_CHECK_PARAM(node != NULL, false);
+    MTPNDD_CHECK_PARAM(node != &MTPNDD_TRUE && node != &MTPNDD_FALSE, false);
+
+    size_t hash = GC_PROTECT_HASH_VAL(node);
+    return mtpndd_gc_protect_contains_with_hash(node, hash);
+}
+
+bool mtpndd_gc_protect_contains_with_hash(mtpndd_t *node, size_t hash) {
+    FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(g_mtpndd_config.gcProtect, hash, entry) {
+        if (entry->node == node) {
+            return true;
+        }
+    }
+
+    return false;
 }

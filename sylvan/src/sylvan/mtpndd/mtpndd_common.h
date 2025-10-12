@@ -10,6 +10,7 @@
 #include <stddef.h>
 
 #include "mtpndd_nodetable.h"
+#include "mtpndd_node.h"
 #include "mtpndd_operation_cache.h"
 
 /********************************
@@ -156,11 +157,56 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config);
 mtpndd_error_t mtpndd_quit();
 
 /********************************
- * GC protect
+ * GC protection hash set
  ********************************/
+/**
+ * Why not use a gc_protect_label and container_of for gc protection hash set in mtpndd_node_t?
+ * It will save time when removing.
+ * But it will waste space for gc_protect_label in every node.
+ */
+#ifdef LARGE_NODETABLE
+#define GC_PROTECT_BUCKET_CNT 65537
+#else
 #define GC_PROTECT_BUCKET_CNT 1024
+#endif
 typedef struct mtpndd_gc_protect_s {
-
+    size_t gc_protect_count;
+    gc_protect_entry_t **buckets;
 } mtpndd_gc_protect_t;
+
+typedef struct gc_protect_entry_s {
+    struct gc_protect_entry_s *next;
+    struct gc_protect_entry_s *prev;
+    mtpndd_node_t *node;
+} gc_protect_entry_t;
+
+#define GC_PROTECT_INIT(gcp) do { \
+        (gcp)->gc_protect_count = 0; \
+        (gcp)->buckets = (gc_protect_entry_t **)malloc(sizeof(gc_protect_entry_t *) * GC_PROTECT_BUCKET_CNT); \
+        if (!(gcp)->buckets) { \
+            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
+            return MTPNDD_ERROR_OUT_OF_MEMORY; \
+        } \
+        for (size_t i = 0; i < GC_PROTECT_BUCKET_CNT; i++) { \
+            (gcp)->buckets[i] = NULL; \
+        } \
+    } while(0)
+
+#define GC_PROTECT_HASH_VAL(key) GC_PROTECT_HASH_PTR(key)
+#define GC_PROTECT_HASH_PTR(key) ((size_t)(uintptr_t)(key) % (GC_PROTECT_BUCKET_CNT))
+
+#define GC_PROTECT_ENTRY_EQUAL(entry, key) ((entry->node) == (key))
+
+#define FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(gcp, bucket_idx, entry) \
+    for (gc_protect_entry_t *entry = gcp->buckets[bucket_idx]; \
+        entry; \
+        entry = entry->next)
+#define FOR_EACH_ENTRY_IN_ALL_GC_PROTECT_BUCKETS(gcp, entry) \
+    for (size_t _bkt = 0; _bkt < GC_PROTECT_BUCKET_CNT; _bkt++) \
+        FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(gcp, _bkt, entry)
+
+mtpndd_error_t mtpndd_gc_protect_add(mtpndd_t *node);
+mtpndd_error_t mtpndd_gc_protect_remove(mtpndd_t *node);
+bool mtpndd_gc_protect_contains(mtpndd_t *node);
 
 #endif // MTPNDD_COMMON_H
