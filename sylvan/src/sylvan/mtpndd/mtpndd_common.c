@@ -372,6 +372,10 @@ mtpndd_error_t mtpndd_quit() {
 /********************************
  * GC protection hash set
  ********************************/
+void mtpndd_gc_protect_clear() {
+    GC_PROTECT_CLEAR(g_mtpndd_config.gcProtect);
+}
+
 mtpndd_error_t mtpndd_gc_protect_add(mtpndd_t *node) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_PARAM(node != NULL, MTPNDD_ERROR_NULL_POINTER);

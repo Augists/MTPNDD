@@ -191,6 +191,18 @@ typedef struct gc_protect_entry_s {
             (gcp)->buckets[i] = NULL; \
         } \
     } while(0)
+#define GC_PROTECT_CLEAR(gcp) do { \
+        for (size_t i = 0; i < GC_PROTECT_BUCKET_CNT; i++) { \
+            gc_protect_entry_t *entry = (gcp)->buckets[i]; \
+            while (entry) { \
+                gc_protect_entry_t *next_entry = entry->next; \
+                free(entry); \
+                entry = next_entry; \
+            } \
+            (gcp)->buckets[i] = NULL; \
+        } \
+        (gcp)->gc_protect_count = 0; \
+    } while(0)
 
 #define GC_PROTECT_HASH_VAL(key) GC_PROTECT_HASH_PTR(key)
 #define GC_PROTECT_HASH_PTR(key) ((size_t)(uintptr_t)(key) % (GC_PROTECT_BUCKET_CNT))
@@ -205,6 +217,7 @@ typedef struct gc_protect_entry_s {
     for (size_t _bkt = 0; _bkt < GC_PROTECT_BUCKET_CNT; _bkt++) \
         FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(gcp, _bkt, entry)
 
+void mtpndd_gc_protect_clear();
 mtpndd_error_t mtpndd_gc_protect_add(mtpndd_t *node);
 mtpndd_error_t mtpndd_gc_protect_remove(mtpndd_t *node);
 bool mtpndd_gc_protect_contains(mtpndd_t *node);
