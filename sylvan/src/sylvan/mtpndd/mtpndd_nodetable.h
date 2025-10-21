@@ -5,8 +5,10 @@
 #ifndef MTPNDD_NODETABLE_H
 #define MTPNDD_NODETABLE_H
 
+#include <pthread.h>
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
+#include <bits/pthreadtypes.h>
 
 #ifdef LARGE_NODETABLE
 #define NODETABLE_BUCKET_CNT 65537
@@ -25,10 +27,11 @@ typedef struct mtpndd_nodetable_bucket_entry_s {
 typedef struct mtpndd_nodetable_s {
     size_t nodetable_bucket_count;
     mtpndd_nodetable_bucket_entry_t **buckets;
+    pthread_rwlock_t *bucket_locks;
 } mtpndd_nodetable_t;
 
-#define NODETABLE_HASH_VAL(key, nodetable) NODETABLE_HASH_PTR(key, nodetable)
-#define NODETABLE_HASH_PTR(key, nodetable) ((size_t)(uintptr_t)(key) % (nodetable->nodetable_bucket_count))
+static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable);
+#define NODETABLE_HASH_VAL(key, nodetable) nodetable_hash_edges((key), (nodetable))
 
 // TODO: compare all children with their labels
 #define NODETABLE_BUCKET_ENTRY_EQUAL(entry, keyEdges) ((entry->edges) == (keyEdges))

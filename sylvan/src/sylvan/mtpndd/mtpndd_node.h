@@ -30,13 +30,14 @@ typedef struct edge_bucket_entry_s {
     struct edge_bucket_entry_s *next;
     struct edge_bucket_entry_s *prev;
     mtpndd_node_t *child;
-    mtpndd_bdd_t label;
+    _Atomic(mtpndd_bdd_t) label;
 } edge_bucket_entry_t;
 
 // mtpndd_t* child -> mtpndd_bdd_t label
 typedef struct mtpndd_edge_s {
     size_t edge_count;
     edge_bucket_entry_t **buckets;
+    atomic_flag *bucket_locks;
 } mtpndd_edge_t;
 
 #define EDGE_MAP_INIT(emap) do { \
@@ -46,8 +47,15 @@ typedef struct mtpndd_edge_s {
             mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
             return MTPNDD_ERROR_OUT_OF_MEMORY; \
         } \
+        (emap)->bucket_locks = (atomic_flag *)malloc(sizeof(atomic_flag) * EDGE_BUCKET_CNT); \
+        if (!(emap)->bucket_locks) { \
+            free((emap)->buckets); \
+            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
+            return MTPNDD_ERROR_OUT_OF_MEMORY; \
+        } \
         for (size_t i = 0; i < EDGE_BUCKET_CNT; i++) { \
             (emap)->buckets[i] = NULL; \
+            atomic_flag_clear_explicit(&(emap)->bucket_locks[i], memory_order_relaxed); \
         } \
     } while(0)
 #define EDGE_MAP_DEEP_CLONE(emap, emap_copy) do { \
@@ -57,8 +65,15 @@ typedef struct mtpndd_edge_s {
             mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
             return MTPNDD_ERROR_OUT_OF_MEMORY; \
         } \
+        (emap_copy)->bucket_locks = (atomic_flag *)malloc(sizeof(atomic_flag) * EDGE_BUCKET_CNT); \
+        if (!(emap_copy)->bucket_locks) { \
+            free((emap_copy)->buckets); \
+            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
+            return MTPNDD_ERROR_OUT_OF_MEMORY; \
+        } \
         for (size_t i = 0; i < EDGE_BUCKET_CNT; i++) { \
             (emap_copy)->buckets[i] = NULL; \
+            atomic_flag_clear_explicit(&(emap_copy)->bucket_locks[i], memory_order_relaxed); \
             edge_bucket_entry_t *entry; \
             FOR_EACH_ENTRY_IN_BUCKET(emap, i, entry) { \
                 edge_bucket_entry_t *new_entry = (edge_bucket_entry_t *)malloc(sizeof(edge_bucket_entry_t)); \
@@ -67,7 +82,8 @@ typedef struct mtpndd_edge_s {
                     return MTPNDD_ERROR_OUT_OF_MEMORY; \
                 } \
                 new_entry->child = mtpndd_ref(entry->child); \
-                new_entry->label = sylvan_ref(entry->label); \
+                mtpndd_bdd_t _cloned_label = atomic_load_explicit(&entry->label, memory_order_relaxed); \
+                atomic_store_explicit(&new_entry->label, sylvan_ref(_cloned_label), memory_order_relaxed); \
                 /* Insert into bucket at the front */ \
                 new_entry->next = (emap_copy)->buckets[i]; \
                 new_entry->prev = NULL; \
@@ -79,8 +95,8 @@ typedef struct mtpndd_edge_s {
         } \
     } while(0)
 
-#define EDGE_MAP_HASH_VAL(key) EDGE_MAP_HASH_PTR(key)
-#define EDGE_MAP_HASH_PTR(key) ((size_t)(uintptr_t)(key) % (EDGE_BUCKET_CNT))
+static inline size_t edge_map_hash_child(const mtpndd_node_t *child);
+#define EDGE_MAP_HASH_VAL(key) edge_map_hash_child(key)
 
 #define EDGE_BUCKET_ENTRY_EQUAL(entry, key) ((entry->child) == (key))
 

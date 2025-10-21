@@ -7,6 +7,43 @@
 #include "mtpndd_node.h"
 #include "sylvan.h"
 
+static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable)
+{
+    if (!key || !nodetable || nodetable->nodetable_bucket_count == 0) {
+        return 0;
+    }
+
+    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
+    hash ^= (uint64_t)key->edge_count;
+    hash *= 1099511628211ULL; /* FNV prime */
+
+    edge_bucket_entry_t **buckets = key->buckets;
+    if (buckets) {
+        hash ^= (uint64_t)(uintptr_t)buckets;
+        hash *= 1099511628211ULL;
+
+        size_t bucket_capacity = EDGE_BUCKET_CNT;
+        size_t sample_limit = key->edge_count < 4 ? key->edge_count : 4;
+        size_t samples = 0;
+
+        for (size_t i = 0; i < bucket_capacity && samples < sample_limit; ++i) {
+            edge_bucket_entry_t *entry = buckets[i];
+            if (!entry) continue;
+
+            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            hash ^= (uint64_t)label;
+            hash *= 1099511628211ULL;
+
+            hash ^= (uint64_t)(uintptr_t)entry->child;
+            hash *= 1099511628211ULL;
+
+            ++samples;
+        }
+    }
+
+    return (size_t)(hash % nodetable->nodetable_bucket_count);
+}
+
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
     if (!table) return NULL;
@@ -20,21 +57,49 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
         free(table);
         return NULL;
     }
-    for (size_t i = 0; i < NODETABLE_BUCKET_CNT; i++)
+    table->bucket_locks = (pthread_rwlock_t *)malloc(NODETABLE_BUCKET_CNT * sizeof(pthread_rwlock_t));
+    if (!table->bucket_locks) {
+        free(table->buckets);
+        free(table);
+        return NULL;
+    }
+
+    for (size_t i = 0; i < NODETABLE_BUCKET_CNT; i++) {
         table->buckets[i] = NULL;
+        if (pthread_rwlock_init(&table->bucket_locks[i], NULL) != 0) {
+            for (size_t j = 0; j < i; j++) {
+                pthread_rwlock_destroy(&table->bucket_locks[j]);
+            }
+            free(table->bucket_locks);
+            free(table->buckets);
+            free(table);
+            return NULL;
+        }
+    }
 
     return table;
 }
 
 mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge_t *edges) {
     size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
-    mtpndd_nodetable_bucket_entry_t *entry;
-    FOR_EACH_ENTRY_IN_NODETABLE_BUCKET(nodetable, hash, entry) {
+    pthread_rwlock_t *bucket_lock = &nodetable->bucket_locks[hash];
+    mtpndd_node_t *found = NULL;
+
+    if (pthread_rwlock_rdlock(bucket_lock) != 0) {
+        mtpndd_set_error(MTPNDD_ERROR_THREAD_SAFETY, __func__, __LINE__);
+        return NULL;
+    }
+
+    for (mtpndd_nodetable_bucket_entry_t *entry = nodetable->buckets[hash];
+         entry; entry = entry->next) {
         if (NODETABLE_BUCKET_ENTRY_EQUAL(entry, edges)) {
-            return entry->node;
+            found = entry->node;
+            break;
         }
     }
-    return NULL;
+
+    pthread_rwlock_unlock(bucket_lock);
+    return found;
 }
 
 /********************************
@@ -111,7 +176,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, only_entry) {
             if (only_entry) break;
         }
-        if (only_entry->label == sylvan_true) {
+        if (atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
             *result = only_entry->child;
             return MTPNDD_SUCCESS;
         }
@@ -120,7 +185,8 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     mtpndd_node_t *node = find_node_in_nodetable(nodetable, edges);
     if (node) {
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
-            sylvan_deref(entry->label);
+            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            sylvan_deref(label);
         }
         *result = node;
         return MTPNDD_SUCCESS;
@@ -155,12 +221,52 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     }
     new_entry->edges = edges;
     new_entry->node = node;
+    pthread_rwlock_t *bucket_lock = &nodetable->bucket_locks[hash];
+    if (pthread_rwlock_wrlock(bucket_lock) != 0) {
+        free(new_entry);
+        free(node);
+        FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
+            if (!mtpndd_is_terminal(entry->child)) {
+                mtpndd_deref(entry->child);
+            }
+            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            sylvan_deref(label);
+        }
+        mtpndd_set_error(MTPNDD_ERROR_THREAD_SAFETY, __func__, __LINE__);
+        return MTPNDD_ERROR_THREAD_SAFETY;
+    }
+
+    mtpndd_nodetable_bucket_entry_t *existing_entry = nodetable->buckets[hash];
+    while (existing_entry) {
+        if (NODETABLE_BUCKET_ENTRY_EQUAL(existing_entry, edges)) {
+            break;
+        }
+        existing_entry = existing_entry->next;
+    }
+
+    if (existing_entry) {
+        mtpndd_node_t *existing_node = existing_entry->node;
+        pthread_rwlock_unlock(bucket_lock);
+        free(new_entry);
+        free(node);
+        FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
+            if (!mtpndd_is_terminal(entry->child)) {
+                mtpndd_deref(entry->child);
+            }
+            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            sylvan_deref(label);
+        }
+        *result = existing_node;
+        return MTPNDD_SUCCESS;
+    }
+
     new_entry->next = nodetable->buckets[hash];
     new_entry->prev = NULL;
     if (nodetable->buckets[hash]) {
         nodetable->buckets[hash]->prev = new_entry;
     }
     nodetable->buckets[hash] = new_entry;
+    pthread_rwlock_unlock(bucket_lock);
     g_mtpndd_stats.node_count++;
     *result = node;
     return MTPNDD_SUCCESS;
