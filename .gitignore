@@ -1,6 +1,5 @@
 # Project exclude paths
 .idea/
-.vscode/
 /datasets/
 /target/
 nqueen.txt
@@ -43,8 +42,6 @@ target/
 
 # IDE and editor files
 **/*.iml
-.idea/
-.vscode/
 **/.cproject
 **/.project
 **/.settings/

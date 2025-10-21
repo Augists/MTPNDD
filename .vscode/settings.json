@@ -1,0 +1,20 @@
+{
+    "java.compile.nullAnalysis.mode": "automatic",
+    "cmake.sourceDirectory": "/home/augists/PNDD/sylvan",
+    "files.associations": {
+        "sylvan_bdd.h": "c",
+        "cstdint": "c",
+        "pthread.h": "c",
+        "mtpndd_common.h": "c",
+        "mtpndd_nodetable.h": "c",
+        "random": "c",
+        "cstdlib": "c",
+        "mtpndd_node.h": "c",
+        "functional": "c",
+        "format": "c",
+        "istream": "c",
+        "ranges": "c",
+        "streambuf": "c",
+        "variant": "c"
+    }
+}
