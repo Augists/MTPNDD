@@ -212,7 +212,7 @@ mtpndd_assignment_satisfies(const mtpndd_t *node, const bool *assignment)
     if (mtpndd_is_false((mtpndd_t *)node)) {
         return false;
     }
-    edge_bucket_entry_t *entry = NULL;
+    edge_bucket_entry_t *entry;
     FOR_EACH_ENTRY_IN_ALL_BUCKETS(node->edges, entry) {
         mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_acquire);
         if (label == sylvan_false) {

@@ -6,25 +6,22 @@
 #define MTPNDD_NODE_H
 
 #include <stdatomic.h>
+#include <lace.h>
 #include "mtpndd_common.h"
 
 /********************************
  * MTPNDD node definition
  ********************************/
-#define mtpndd_t mtpndd_node_t
-
-typedef uint64_t mtpndd_bdd_t;
-
-typedef struct mtpndd_node_s {
-	mtpndd_field_info_t *field;
-	mtpndd_edge_t *edges;
-	atomic_uint_fast64_t ref_count;
-} mtpndd_node_t;
+struct mtpndd_node_s {
+    mtpndd_field_info_t *field;
+    struct mtpndd_edge_s *edges;
+    atomic_uint_fast64_t ref_count;
+};
 
 /********************************
  * MTPNDD edge definition
  ********************************/
-uint8_t EDGE_BUCKET_CNT = 8;
+static const uint8_t EDGE_BUCKET_CNT = 8;
 
 typedef struct edge_bucket_entry_s {
     struct edge_bucket_entry_s *next;
@@ -34,11 +31,11 @@ typedef struct edge_bucket_entry_s {
 } edge_bucket_entry_t;
 
 // mtpndd_t* child -> mtpndd_bdd_t label
-typedef struct mtpndd_edge_s {
+struct mtpndd_edge_s {
     size_t edge_count;
     edge_bucket_entry_t **buckets;
     atomic_flag *bucket_locks;
-} mtpndd_edge_t;
+};
 
 #define EDGE_MAP_INIT(emap) do { \
         (emap)->edge_count = 0; \
@@ -58,55 +55,25 @@ typedef struct mtpndd_edge_s {
             atomic_flag_clear_explicit(&(emap)->bucket_locks[i], memory_order_relaxed); \
         } \
     } while(0)
-#define EDGE_MAP_DEEP_CLONE(emap, emap_copy) do { \
-        (emap_copy)->edge_count = (emap)->edge_count; \
-        (emap_copy)->buckets = (edge_bucket_entry_t **)malloc(sizeof(edge_bucket_entry_t *) * EDGE_BUCKET_CNT); \
-        if (!(emap_copy)->buckets) { \
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
-            return MTPNDD_ERROR_OUT_OF_MEMORY; \
-        } \
-        (emap_copy)->bucket_locks = (atomic_flag *)malloc(sizeof(atomic_flag) * EDGE_BUCKET_CNT); \
-        if (!(emap_copy)->bucket_locks) { \
-            free((emap_copy)->buckets); \
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
-            return MTPNDD_ERROR_OUT_OF_MEMORY; \
-        } \
-        for (size_t i = 0; i < EDGE_BUCKET_CNT; i++) { \
-            (emap_copy)->buckets[i] = NULL; \
-            atomic_flag_clear_explicit(&(emap_copy)->bucket_locks[i], memory_order_relaxed); \
-            edge_bucket_entry_t *entry; \
-            FOR_EACH_ENTRY_IN_BUCKET(emap, i, entry) { \
-                edge_bucket_entry_t *new_entry = (edge_bucket_entry_t *)malloc(sizeof(edge_bucket_entry_t)); \
-                if (!new_entry) { \
-                    mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
-                    return MTPNDD_ERROR_OUT_OF_MEMORY; \
-                } \
-                new_entry->child = mtpndd_ref(entry->child); \
-                mtpndd_bdd_t _cloned_label = atomic_load_explicit(&entry->label, memory_order_relaxed); \
-                atomic_store_explicit(&new_entry->label, sylvan_ref(_cloned_label), memory_order_relaxed); \
-                /* Insert into bucket at the front */ \
-                new_entry->next = (emap_copy)->buckets[i]; \
-                new_entry->prev = NULL; \
-                if ((emap_copy)->buckets[i]) { \
-                    (emap_copy)->buckets[i]->prev = new_entry; \
-                } \
-                (emap_copy)->buckets[i] = new_entry; \
-            } \
-        } \
-    } while(0)
 
-static inline size_t edge_map_hash_child(const mtpndd_node_t *child);
+static inline size_t edge_map_hash_child(const mtpndd_node_t *child) {
+    size_t hash = mtpndd_hash_node_identity(child);
+    return EDGE_BUCKET_CNT ? (hash % EDGE_BUCKET_CNT) : 0;
+}
+
 #define EDGE_MAP_HASH_VAL(key) edge_map_hash_child(key)
 
 #define EDGE_BUCKET_ENTRY_EQUAL(entry, key) ((entry->child) == (key))
 
 #define FOR_EACH_ENTRY_IN_BUCKET(emap, bucket_idx, entry) \
-    for (edge_bucket_entry_t *entry = emap->buckets[bucket_idx]; \
-        entry; \
-        entry = entry->next)
+    for ((entry) = (emap)->buckets[bucket_idx] ? (emap)->buckets[bucket_idx]->next : NULL; \
+        (entry) && (entry) != (emap)->buckets[bucket_idx]; \
+        (entry) = (entry)->next)
 #define FOR_EACH_ENTRY_IN_ALL_BUCKETS(emap, entry) \
     for (size_t _bkt = 0; _bkt < EDGE_BUCKET_CNT; _bkt++) \
-        FOR_EACH_ENTRY_IN_BUCKET(emap, _bkt, entry)
+        for ((entry) = (emap)->buckets[_bkt] ? (emap)->buckets[_bkt]->next : NULL; \
+            (entry) && (entry) != (emap)->buckets[_bkt]; \
+            (entry) = (entry)->next)
 
 edge_bucket_entry_t *find_edge_entry(mtpndd_edge_t *edge, mtpndd_node_t *key);
 mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpndd_bdd_t label_bdd);
@@ -114,12 +81,26 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
 /********************************
  * MTPNDD terminal nodes
  ********************************/
-static mtpndd_t MTPNDD_TRUE = {&MTPNDD_TERMINAL_FIELD, NULL, UINT64_MAX};
-static mtpndd_t MTPNDD_FALSE = {&MTPNDD_TERMINAL_FIELD, NULL, UINT64_MAX};
+extern mtpndd_t MTPNDD_TRUE;
+extern mtpndd_t MTPNDD_FALSE;
 
 bool mtpndd_is_true(mtpndd_t *ndd);
 bool mtpndd_is_false(mtpndd_t *ndd);
 bool mtpndd_is_terminal(mtpndd_t *ndd);
+
+/********************************
+ * MTPNDD operations (sub task)
+ ********************************/
+VOID_TASK_DECL_3(mtpndd_and_rec_same_field_task, edge_bucket_entry_t *, edge_bucket_entry_t *, mtpndd_edge_t *);
+VOID_TASK_DECL_3(mtpndd_and_rec_diff_field_task, edge_bucket_entry_t *, mtpndd_t *, mtpndd_edge_t *);
+TASK_DECL_3(mtpndd_error_t, mtpndd_and_rec, mtpndd_t *, mtpndd_t *, mtpndd_t **);
+VOID_TASK_DECL_5(mtpndd_or_rec_same_field_task, edge_bucket_entry_t *, edge_bucket_entry_t *, mtpndd_edge_t *, mtpndd_edge_t *, mtpndd_edge_t *);
+VOID_TASK_DECL_4(mtpndd_or_rec_diff_field_task, edge_bucket_entry_t *, mtpndd_t *, mtpndd_edge_t *, _Atomic(mtpndd_bdd_t) *);
+TASK_DECL_3(mtpndd_error_t, mtpndd_or_rec, mtpndd_t *, mtpndd_t *, mtpndd_t **);
+VOID_TASK_DECL_3(mtpndd_not_rec_task, edge_bucket_entry_t *, mtpndd_edge_t *, _Atomic(mtpndd_bdd_t) *);
+TASK_DECL_2(mtpndd_error_t, mtpndd_not_rec, mtpndd_t *, mtpndd_t **);
+VOID_TASK_DECL_3(mtpndd_exist_rec_task, edge_bucket_entry_t *, mtpndd_edge_t *, uint32_t);
+TASK_DECL_3(mtpndd_error_t, mtpndd_exist_rec, mtpndd_t *, uint32_t, mtpndd_t **);
 
 /********************************
  * MTPNDD operations
@@ -129,5 +110,11 @@ mtpndd_t *mtpndd_or(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_not(mtpndd_t *a);
 mtpndd_t *mtpndd_diff(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_exist(mtpndd_t *a, uint32_t field);
+
+/********************************
+ * MTPNDD <-> MTBDD convertion
+ ********************************/
+mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result);
+mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result);
 
 #endif // MTPNDD_NODE_H

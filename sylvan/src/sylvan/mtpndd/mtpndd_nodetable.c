@@ -3,46 +3,16 @@
 // Copyright (C) XJTU ANTS Netverify Lab
 
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
 #include "mtpndd_nodetable.h"
 #include "mtpndd_node.h"
 #include "sylvan.h"
 
-static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable)
-{
-    if (!key || !nodetable || nodetable->nodetable_bucket_count == 0) {
-        return 0;
-    }
+static void gc(void);
+static void grow(void);
 
-    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-    hash ^= (uint64_t)key->edge_count;
-    hash *= 1099511628211ULL; /* FNV prime */
-
-    edge_bucket_entry_t **buckets = key->buckets;
-    if (buckets) {
-        hash ^= (uint64_t)(uintptr_t)buckets;
-        hash *= 1099511628211ULL;
-
-        size_t bucket_capacity = EDGE_BUCKET_CNT;
-        size_t sample_limit = key->edge_count < 4 ? key->edge_count : 4;
-        size_t samples = 0;
-
-        for (size_t i = 0; i < bucket_capacity && samples < sample_limit; ++i) {
-            edge_bucket_entry_t *entry = buckets[i];
-            if (!entry) continue;
-
-            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
-            hash ^= (uint64_t)label;
-            hash *= 1099511628211ULL;
-
-            hash ^= (uint64_t)(uintptr_t)entry->child;
-            hash *= 1099511628211ULL;
-
-            ++samples;
-        }
-    }
-
-    return (size_t)(hash % nodetable->nodetable_bucket_count);
-}
+static void gcOrGrow(void);
 
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
@@ -153,7 +123,7 @@ mtpndd_error_t mtpndd_protect(mtpndd_t *node) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return MTPNDD_ERROR_NULL_POINTER;
     }
-    node->ref_count = UINT64_MAX;
+    atomic_init(&node->ref_count, UINT64_MAX);
     return MTPNDD_SUCCESS;
 }
 
@@ -162,7 +132,7 @@ mtpndd_error_t mtpndd_unprotect(mtpndd_t *node) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return MTPNDD_ERROR_NULL_POINTER;
     }
-    node->ref_count = 0;
+    atomic_init(&node->ref_count, 0);
     return MTPNDD_SUCCESS;
 }
 
@@ -172,17 +142,22 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         return MTPNDD_SUCCESS;
     } else if (edges->edge_count == 1) {
         edge_bucket_entry_t *only_entry = NULL;
-        //
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, only_entry) {
-            if (only_entry) break;
+        for (size_t i = 0; i < EDGE_BUCKET_CNT && !only_entry; ++i) {
+            edge_bucket_entry_t *head = edges->buckets[i];
+            if (!head) continue;
+            edge_bucket_entry_t *walker = head->next;
+            if (walker && walker != head) {
+                only_entry = walker;
+            }
         }
-        if (atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
+        if (only_entry && atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
             *result = only_entry->child;
             return MTPNDD_SUCCESS;
         }
     }
     mtpndd_nodetable_t *nodetable = g_mtpndd_config.node_tables_by_field[field];
     mtpndd_node_t *node = find_node_in_nodetable(nodetable, edges);
+    edge_bucket_entry_t *entry = NULL;
     if (node) {
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
@@ -208,9 +183,9 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
-    node->field = &g_mtpndd_config.field_info[field];
+    node->field = g_mtpndd_config.field_info[field];
     node->edges = edges;
-    node->ref_count = 0;
+    atomic_init(&node->ref_count, 0);
     // 4. insert into nodetable
     size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
     mtpndd_nodetable_bucket_entry_t *new_entry = (mtpndd_nodetable_bucket_entry_t *)malloc(sizeof(mtpndd_nodetable_bucket_entry_t));
@@ -272,7 +247,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     return MTPNDD_SUCCESS;
 }
 
-void gcOrGrow() {
+static void gcOrGrow(void) {
     gc();
     if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
             < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
@@ -281,11 +256,13 @@ void gcOrGrow() {
     // TODO: clear op cache
 }
 
-void gc() {
+static void gc(void) {
     // protect temporary nodes during NDD operations
-    // TODO
+    // TODO: stop the world and stop lace and gc
+
+    // TODO: gc pre hook and post hook like sylvan
 }
 
-void grow() {
+static void grow(void) {
     g_mtpndd_pal_config.mtpndd_nodetable_size *= 2;
 }

@@ -32,8 +32,8 @@ add_subdirectory(src)
 if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     # If we are in the root, add some options to build examples/tests
     option(SYLVAN_BUILD_EXAMPLES "Build example tools" ON)
-    option(SYLVAN_BUILD_DOCS "Build documentation" ON)
-    option(SYLVAN_BUILD_TESTS "Build tests" ON)
+    option(SYLVAN_BUILD_DOCS "Build documentation" OFF)
+    option(SYLVAN_BUILD_TESTS "Build tests" OFF)
 
     # Build examples
     if(SYLVAN_BUILD_EXAMPLES)

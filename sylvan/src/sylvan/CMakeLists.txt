@@ -149,3 +149,4 @@ export(EXPORT sylvan-targets
     NAMESPACE sylvan::
 )
 
+add_subdirectory(mtpndd)

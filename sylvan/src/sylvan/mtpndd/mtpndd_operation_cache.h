@@ -5,6 +5,8 @@
 #ifndef MTPNDD_OPERATION_CACHE_H
 #define MTPNDD_OPERATION_CACHE_H
 
+#include <stddef.h>
+
 typedef struct mtpndd_op_cache_s {
 } mtpndd_op_cache_t;
 
