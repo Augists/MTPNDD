@@ -19,6 +19,7 @@ static inline mtpndd_bdd_t mtpndd_edge_label_load(edge_bucket_entry_t *entry);
 static inline void mtpndd_residual_apply_mask(edge_bucket_entry_t *entry, mtpndd_bdd_t mask);
 static inline mtpndd_error_t mtpndd_edge_map_init_local(mtpndd_edge_t *edges);
 static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest);
+static void mtpndd_edge_map_reset(mtpndd_edge_t *edges);
 static void mtpndd_edge_map_free(mtpndd_edge_t *edges);
 
 size_t mtpndd_hash_node_identity(const mtpndd_node_t *node)
@@ -52,6 +53,9 @@ static inline mtpndd_error_t mtpndd_edge_map_init_local(mtpndd_edge_t *edges)
 static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest)
 {
     dest->edge_count = source->edge_count;
+    dest->buckets = NULL;
+    dest->bucket_locks = NULL;
+
     dest->buckets = (edge_bucket_entry_t **)malloc(sizeof(edge_bucket_entry_t *) * EDGE_BUCKET_CNT);
     if (!dest->buckets) {
         return MTPNDD_ERROR_OUT_OF_MEMORY;
@@ -66,36 +70,55 @@ static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mt
     for (size_t i = 0; i < EDGE_BUCKET_CNT; ++i) {
         dest->buckets[i] = NULL;
         atomic_flag_clear_explicit(&dest->bucket_locks[i], memory_order_relaxed);
+    }
 
-        edge_bucket_entry_t *entry = source->buckets ? source->buckets[i] : NULL;
-        edge_bucket_entry_t *tail = NULL;
-        while (entry) {
+    if (!source->buckets) {
+        return MTPNDD_SUCCESS;
+    }
+
+    for (size_t i = 0; i < EDGE_BUCKET_CNT; ++i) {
+        edge_bucket_entry_t *src_head = source->buckets[i];
+        if (!src_head) {
+            continue;
+        }
+
+        edge_bucket_entry_t *dst_head = (edge_bucket_entry_t *)malloc(sizeof(edge_bucket_entry_t));
+        if (!dst_head) {
+            mtpndd_edge_map_reset(dest);
+            return MTPNDD_ERROR_OUT_OF_MEMORY;
+        }
+        dst_head->next = dst_head;
+        dst_head->prev = dst_head;
+        dst_head->child = NULL;
+        atomic_store_explicit(&dst_head->label, sylvan_false, memory_order_relaxed);
+        dest->buckets[i] = dst_head;
+
+        edge_bucket_entry_t *tail = dst_head;
+        edge_bucket_entry_t *entry = src_head->next;
+        while (entry && entry != src_head) {
             edge_bucket_entry_t *new_entry = (edge_bucket_entry_t *)malloc(sizeof(edge_bucket_entry_t));
             if (!new_entry) {
-                mtpndd_edge_map_free(dest);
+                mtpndd_edge_map_reset(dest);
                 return MTPNDD_ERROR_OUT_OF_MEMORY;
             }
-            new_entry->next = NULL;
-            new_entry->prev = tail;
             new_entry->child = entry->child;
-            if (!mtpndd_is_terminal(entry->child)) {
-                mtpndd_error_t ref_status = mtpndd_ref(entry->child);
+            if (new_entry->child && !mtpndd_is_terminal(new_entry->child)) {
+                mtpndd_error_t ref_status = mtpndd_ref(new_entry->child);
                 if (ref_status != MTPNDD_SUCCESS) {
                     free(new_entry);
-                    mtpndd_edge_map_free(dest);
+                    mtpndd_edge_map_reset(dest);
                     return ref_status;
                 }
             }
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
             atomic_store_explicit(&new_entry->label, sylvan_ref(label), memory_order_relaxed);
 
-            if (!dest->buckets[i]) {
-                dest->buckets[i] = new_entry;
-            }
-            if (tail) {
-                tail->next = new_entry;
-            }
+            new_entry->prev = tail;
+            new_entry->next = dst_head;
+            tail->next = new_entry;
+            dst_head->prev = new_entry;
             tail = new_entry;
+
             entry = entry->next;
         }
     }
@@ -103,7 +126,7 @@ static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mt
     return MTPNDD_SUCCESS;
 }
 
-static void mtpndd_edge_map_free(mtpndd_edge_t *edges) {
+static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
     if (!edges) {
         return;
     }
@@ -128,10 +151,20 @@ static void mtpndd_edge_map_free(mtpndd_edge_t *edges) {
             free(head);
         }
         free(edges->buckets);
+        edges->buckets = NULL;
     }
     if (edges->bucket_locks) {
         free(edges->bucket_locks);
+        edges->bucket_locks = NULL;
     }
+    edges->edge_count = 0;
+}
+
+static void mtpndd_edge_map_free(mtpndd_edge_t *edges) {
+    if (!edges) {
+        return;
+    }
+    mtpndd_edge_map_reset(edges);
     free(edges);
 }
 
@@ -466,22 +499,26 @@ TASK_IMPL_3(mtpndd_error_t, mtpndd_or_rec, mtpndd_t *, a, mtpndd_t *, b, mtpndd_
             mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
             return MTPNDD_ERROR_OUT_OF_MEMORY;
         }
+        residualA->edge_count = 0;
+        residualA->buckets = NULL;
+        residualA->bucket_locks = NULL;
         if (mtpndd_edge_map_deep_clone(a->edges, residualA) != MTPNDD_SUCCESS) {
-            free(residualA);
+            mtpndd_edge_map_free(residualA);
             mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
             return MTPNDD_ERROR_OUT_OF_MEMORY;
         }
         mtpndd_edge_t *residualB = (mtpndd_edge_t *)malloc(sizeof(mtpndd_edge_t));
         if (!residualB) {
             mtpndd_edge_map_free(residualA);
-            free(residualA);
             mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
             return MTPNDD_ERROR_OUT_OF_MEMORY;
         }
+        residualB->edge_count = 0;
+        residualB->buckets = NULL;
+        residualB->bucket_locks = NULL;
         if (mtpndd_edge_map_deep_clone(b->edges, residualB) != MTPNDD_SUCCESS) {
             mtpndd_edge_map_free(residualA);
-            free(residualA);
-            free(residualB);
+            mtpndd_edge_map_free(residualB);
             mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
             return MTPNDD_ERROR_OUT_OF_MEMORY;
         }
@@ -518,8 +555,6 @@ TASK_IMPL_3(mtpndd_error_t, mtpndd_or_rec, mtpndd_t *, a, mtpndd_t *, b, mtpndd_
         }
         mtpndd_edge_map_free(residualA);
         mtpndd_edge_map_free(residualB);
-        free(residualA);
-        free(residualB);
     } else {
         // Different fields
         if (a->field->field_id > b->field->field_id) {

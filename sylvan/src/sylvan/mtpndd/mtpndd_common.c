@@ -590,7 +590,9 @@ void mtpndd_gc_protect_clear() {
 mtpndd_error_t mtpndd_gc_protect_add(mtpndd_t *node) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_PARAM(node != NULL, MTPNDD_ERROR_NULL_POINTER);
-    MTPNDD_CHECK_PARAM(node != &MTPNDD_TRUE && node != &MTPNDD_FALSE, MTPNDD_ERROR_INVALID_PARAM);
+    if (node == &MTPNDD_TRUE || node == &MTPNDD_FALSE) {
+        return MTPNDD_SUCCESS;
+    }
 
     gc_protect_entry_t *entry = (gc_protect_entry_t *)malloc(sizeof(gc_protect_entry_t));
     if (!entry) {
