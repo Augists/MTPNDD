@@ -7,6 +7,7 @@
 #include "mtpndd_nodetable.h"
 #include "mtpndd_operation_cache.h"
 #include "sylvan.h"
+#include "sylvan_mtbdd.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <lace.h>
@@ -327,7 +328,19 @@ TASK_IMPL_3(mtpndd_error_t, mtpndd_and_rec, mtpndd_t *, a, mtpndd_t *, b, mtpndd
         return MTPNDD_SUCCESS;
     }
 
-    // TODO: and cache
+    mtpndd_node_t *cache_a = a;
+    mtpndd_node_t *cache_b = b;
+    if ((uintptr_t)cache_a > (uintptr_t)cache_b) {
+        mtpndd_node_t *tmp = cache_a;
+        cache_a = cache_b;
+        cache_b = tmp;
+    }
+    mtpndd_op_cache_t *and_cache = g_mtpndd_config.and_cache;
+    mtpndd_node_t *cached = mtpndd_op_cache_lookup_binary(and_cache, cache_a, cache_b);
+    if (cached) {
+        *result = cached;
+        return MTPNDD_SUCCESS;
+    }
 
     size_t count=0;
     mtpndd_t *res_node = NULL;
@@ -382,7 +395,7 @@ TASK_IMPL_3(mtpndd_error_t, mtpndd_and_rec, mtpndd_t *, a, mtpndd_t *, b, mtpndd
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
 
-    // TODO: add and cache
+    mtpndd_op_cache_store_binary(and_cache, cache_a, cache_b, res_node);
 
     *result = res_node;
     return MTPNDD_SUCCESS;
@@ -477,7 +490,19 @@ TASK_IMPL_3(mtpndd_error_t, mtpndd_or_rec, mtpndd_t *, a, mtpndd_t *, b, mtpndd_
         return MTPNDD_SUCCESS;
     }
 
-    // TODO: or cache
+    mtpndd_node_t *cache_a = a;
+    mtpndd_node_t *cache_b = b;
+    if ((uintptr_t)cache_a > (uintptr_t)cache_b) {
+        mtpndd_node_t *tmp = cache_a;
+        cache_a = cache_b;
+        cache_b = tmp;
+    }
+    mtpndd_op_cache_t *or_cache = g_mtpndd_config.or_cache;
+    mtpndd_node_t *cached = mtpndd_op_cache_lookup_binary(or_cache, cache_a, cache_b);
+    if (cached) {
+        *result = cached;
+        return MTPNDD_SUCCESS;
+    }
 
     size_t count=0;
     mtpndd_t *res_node = NULL;
@@ -581,7 +606,7 @@ TASK_IMPL_3(mtpndd_error_t, mtpndd_or_rec, mtpndd_t *, a, mtpndd_t *, b, mtpndd_
     mtpndd_mk(a->field->field_id, res_edges, &res_node);
     mtpndd_gc_protect_add(res_node);
 
-    // TODO: add or cache
+    mtpndd_op_cache_store_binary(or_cache, cache_a, cache_b, res_node);
 
     *result = res_node;
     return MTPNDD_SUCCESS;
@@ -623,7 +648,12 @@ TASK_IMPL_2(mtpndd_error_t, mtpndd_not_rec, mtpndd_t *, a, mtpndd_t **, result) 
         return MTPNDD_SUCCESS;
     }
 
-    // TODO: not cache
+    mtpndd_op_cache_t *not_cache = g_mtpndd_config.not_cache;
+    mtpndd_node_t *cached = mtpndd_op_cache_lookup_unary(not_cache, a);
+    if (cached) {
+        *result = cached;
+        return MTPNDD_SUCCESS;
+    }
 
     mtpndd_edge_t *res_edges = (mtpndd_edge_t *)malloc(sizeof(mtpndd_edge_t));
     if (!res_edges) {
@@ -654,7 +684,7 @@ TASK_IMPL_2(mtpndd_error_t, mtpndd_not_rec, mtpndd_t *, a, mtpndd_t **, result) 
     mtpndd_mk(a->field->field_id, res_edges, &res_node);
     mtpndd_gc_protect_add(res_node);
 
-    // TODO: add not cache
+    mtpndd_op_cache_store_unary(not_cache, a, res_node);
 
     *result = res_node;
     return MTPNDD_SUCCESS;
@@ -1245,4 +1275,36 @@ mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result) {
 
     *result = tmp;
     return MTPNDD_SUCCESS;
+}
+
+static size_t mtpndd_total_bdd_vars(void) {
+    size_t total = 0;
+    for (uint32_t i = 1; i <= g_mtpndd_config.field_count; ++i) {
+        mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
+        if (!field) {
+            continue;
+        }
+        size_t end = (size_t)field->start_var + field->bit_width;
+        if (end > total) {
+            total = end;
+        }
+    }
+    return total;
+}
+
+double mtpndd_satcount(mtpndd_t *node) {
+    MTPNDD_CHECK_INIT();
+    MTPNDD_CHECK_NULL(node, MTPNDD_ERROR_NULL_POINTER);
+
+    mtpndd_bdd_t bdd = sylvan_false;
+    mtpndd_error_t status = mtpndd_to_mtbdd(node, &bdd);
+    if (status != MTPNDD_SUCCESS) {
+        return status;
+    }
+
+    size_t nvars = mtpndd_total_bdd_vars();
+    double count = mtbdd_satcount(bdd, nvars);
+    sylvan_deref(bdd);
+
+    return count;
 }

@@ -1,17 +1,17 @@
 #include "mtpndd.h"
 #include "sylvan.h"
 #include "sylvan_table.h"
+#include "sylvan_mtbdd.h"
 
-#include <limits.h>
+#include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdatomic.h>
+#include <time.h>
 
-static inline size_t
-cell_index(size_t row, size_t col, size_t size)
-{
+static inline size_t cell_index(size_t row, size_t col, size_t size) {
     return row * size + col;
 }
 
@@ -23,21 +23,15 @@ typedef struct {
     mtpndd_t *formula;
 } nqueens_ctx_t;
 
-static inline mtpndd_t *
-true_node(void)
-{
+static inline mtpndd_t *true_node(void) {
     return &MTPNDD_TRUE;
 }
 
-static inline mtpndd_t *
-false_node(void)
-{
+static inline mtpndd_t *false_node(void) {
     return &MTPNDD_FALSE;
 }
 
-static bool
-nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size)
-{
+static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
     ctx->size = size;
     ctx->fields = (const mtpndd_field_info_t **)calloc(size, sizeof(*ctx->fields));
     ctx->positive = (mtpndd_t **)calloc(size * size, sizeof(*ctx->positive));
@@ -67,9 +61,7 @@ nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size)
     return true;
 }
 
-static void
-nqueens_ctx_destroy(nqueens_ctx_t *ctx)
-{
+static void nqueens_ctx_destroy(nqueens_ctx_t *ctx) {
     free(ctx->fields);
     free(ctx->positive);
     free(ctx->negative);
@@ -80,9 +72,7 @@ nqueens_ctx_destroy(nqueens_ctx_t *ctx)
     ctx->size = 0;
 }
 
-static mtpndd_t *
-build_row_constraint(const nqueens_ctx_t *ctx, size_t row)
-{
+static mtpndd_t *build_row_constraint(const nqueens_ctx_t *ctx, size_t row) {
     mtpndd_t *at_least_one = false_node();
     for (size_t col = 0; col < ctx->size; ++col) {
         size_t idx = cell_index(row, col, ctx->size);
@@ -111,9 +101,7 @@ build_row_constraint(const nqueens_ctx_t *ctx, size_t row)
     return mtpndd_and(at_least_one, at_most_one);
 }
 
-static mtpndd_t *
-build_nqueens_formula(nqueens_ctx_t *ctx)
-{
+static mtpndd_t *build_nqueens_formula(nqueens_ctx_t *ctx) {
     mtpndd_t *formula = true_node();
 
     for (size_t row = 0; row < ctx->size; ++row) {
@@ -182,68 +170,7 @@ build_nqueens_formula(nqueens_ctx_t *ctx)
     return formula;
 }
 
-static bool
-bdd_eval(BDD bdd, const bool *assignment)
-{
-    bool invert = false;
-    while (true) {
-        if (bdd == sylvan_true) {
-            return !invert;
-        }
-        if (bdd == sylvan_false) {
-            return invert;
-        }
-        if (bdd & sylvan_complement) {
-            invert = !invert;
-            bdd ^= sylvan_complement;
-            continue;
-        }
-        uint32_t var = sylvan_var(bdd);
-        bdd = assignment[var] ? sylvan_high(bdd) : sylvan_low(bdd);
-    }
-}
-
-static bool
-mtpndd_assignment_satisfies(const mtpndd_t *node, const bool *assignment)
-{
-    if (mtpndd_is_true((mtpndd_t *)node)) {
-        return true;
-    }
-    if (mtpndd_is_false((mtpndd_t *)node)) {
-        return false;
-    }
-    edge_bucket_entry_t *entry;
-    FOR_EACH_ENTRY_IN_ALL_BUCKETS(node->edges, entry) {
-        mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_acquire);
-        if (label == sylvan_false) {
-            continue;
-        }
-        if (bdd_eval(label, assignment) && mtpndd_assignment_satisfies(entry->child, assignment)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void
-fill_assignment_bits(const nqueens_ctx_t *ctx, uint64_t mask, bool *assignment, size_t count)
-{
-    for (size_t i = 0; i < count; ++i) {
-        assignment[i] = false;
-    }
-    for (size_t row = 0; row < ctx->size; ++row) {
-        const mtpndd_field_info_t *field = ctx->fields[row];
-        uint32_t start = field->start_var;
-        for (size_t col = 0; col < ctx->size; ++col) {
-            size_t bit = cell_index(row, col, ctx->size);
-            assignment[start + col] = ((mask >> bit) & 1u) != 0;
-        }
-    }
-}
-
-static size_t
-total_variable_count(const nqueens_ctx_t *ctx)
-{
+static size_t total_variable_count(const nqueens_ctx_t *ctx) {
     size_t max = 0;
     for (size_t row = 0; row < ctx->size; ++row) {
         const mtpndd_field_info_t *field = ctx->fields[row];
@@ -255,42 +182,7 @@ total_variable_count(const nqueens_ctx_t *ctx)
     return max;
 }
 
-static size_t
-brute_force_solution_count(const nqueens_ctx_t *ctx)
-{
-    size_t total_cells = ctx->size * ctx->size;
-    if (total_cells >= 63) {
-        return SIZE_MAX;
-    }
-    uint64_t limit = 1ULL << total_cells;
-    size_t var_count = total_variable_count(ctx);
-    bool *assignment = (bool *)malloc(var_count * sizeof(bool));
-    if (!assignment) {
-        return SIZE_MAX;
-    }
-
-    size_t solutions = 0;
-    for (uint64_t mask = 0; mask < limit; ++mask) {
-        fill_assignment_bits(ctx, mask, assignment, var_count);
-        if (mtpndd_assignment_satisfies(ctx->formula, assignment)) {
-            ++solutions;
-        }
-    }
-
-    free(assignment);
-    return solutions;
-}
-
-static size_t
-nqueens_satcount_stub(const nqueens_ctx_t *ctx)
-{
-    (void)ctx;
-    return SIZE_MAX;
-}
-
-static size_t
-expected_solutions(size_t size)
-{
+static uint64_t expected_solutions(size_t size) {
     switch (size) {
     case 1:
         return 1;
@@ -299,20 +191,54 @@ expected_solutions(size_t size)
         return 0;
     case 4:
         return 2;
+    case 5:
+        return 10;
+    case 6:
+        return 4;
+    case 7:
+        return 40;
+    case 8:
+        return 92;
+    case 9:
+        return 352;
+    case 10:
+        return 724;
+    case 11:
+        return 2680;
+    case 12:
+        return 14200;
     default:
-        return SIZE_MAX;
+        return UINT64_MAX;
     }
 }
 
-static bool
-run_case(size_t size)
-{
+typedef struct {
+    size_t size;
+    uint64_t expected;
+    uint64_t solutions;
+    double seconds;
+    uint64_t mtpndd_nodes;
+    uint64_t mtpndd_edges;
+    uint64_t cache_hits;
+    uint64_t cache_misses;
+    size_t sylvan_nodes;
+    size_t sylvan_table_filled;
+    size_t sylvan_table_total;
+} nqueens_metrics_t;
+
+static double timespec_to_seconds(const struct timespec *start, const struct timespec *end) {
+    time_t sec_diff = end->tv_sec - start->tv_sec;
+    long nsec_diff = end->tv_nsec - start->tv_nsec;
+    return (double)sec_diff + (double)nsec_diff / 1e9;
+}
+
+static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     mtpndd_pal_config_t config = {
         .n_workers = 1,
         .lace_dqsize = 1024,
-        .bdd_nodetable_size = 1 << 15,
-        .mtpndd_nodetable_size = 1 << 13,
-        .op_cache_size = 1 << 15,
+        .bdd_nodetable_size = (size <= 8) ? (1 << 17) : (1 << 19),
+        .mtpndd_nodetable_size = (size <= 8) ? (1 << 16) : (1 << 18),
+        .op_cache_size = (size <= 8) ? (1 << 17) : (1 << 19),
         .quick_growth_threshold = 0.1,
     };
 
@@ -330,22 +256,61 @@ run_case(size_t size)
         goto cleanup;
     }
 
+    struct timespec start = {0}, finish = {0};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
     if (!build_nqueens_formula(&ctx)) {
         fprintf(stderr, "Failed to build formula for size %zu.\n", size);
         goto cleanup;
     }
 
-    size_t enumerated = brute_force_solution_count(&ctx);
-    size_t expected = expected_solutions(size);
-    if (expected == SIZE_MAX || enumerated != expected) {
-        fprintf(stderr, "Unexpected solution count for size %zu: got %zu, expected %zu.\n",
-                size, enumerated, expected);
+    double satcount_value = mtpndd_satcount(ctx.formula);
+
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+    double elapsed = timespec_to_seconds(&start, &finish);
+
+    uint64_t solutions = (uint64_t)llround(satcount_value);
+    uint64_t expected = expected_solutions(size);
+    if (expected != UINT64_MAX && solutions != expected) {
+        fprintf(stderr, "Unexpected solution count for size %zu: got %" PRIu64 ", expected %" PRIu64 ".\n",
+                size, solutions, expected);
         goto cleanup;
     }
 
-    if (nqueens_satcount_stub(&ctx) != SIZE_MAX) {
-        fprintf(stderr, "Satcount stub returned unexpected value for size %zu.\n", size);
+    mtpndd_bdd_t bdd_stats = sylvan_false;
+    if (mtpndd_to_mtbdd(ctx.formula, &bdd_stats) != MTPNDD_SUCCESS) {
+        fprintf(stderr, "mtpndd_to_mtbdd failed for size %zu: %s\n", size,
+                mtpndd_error_string(mtpndd_get_last_error().code));
         goto cleanup;
+    }
+
+    size_t sylvan_nodes = sylvan_nodecount(bdd_stats);
+    double satcount_verify = mtbdd_satcount(bdd_stats, total_variable_count(&ctx));
+    uint64_t satcount_check = (uint64_t)llround(satcount_verify);
+    sylvan_deref(bdd_stats);
+
+    if (satcount_check != solutions) {
+        fprintf(stderr, "Satcount mismatch for size %zu: API %" PRIu64 ", direct %" PRIu64 ".\n",
+                size, solutions, satcount_check);
+        goto cleanup;
+    }
+
+    size_t table_filled = 0;
+    size_t table_total = 0;
+    sylvan_table_usage(&table_filled, &table_total);
+
+    if (metrics) {
+        metrics->size = size;
+        metrics->expected = expected;
+        metrics->solutions = solutions;
+        metrics->seconds = elapsed;
+        metrics->mtpndd_nodes = g_mtpndd_stats.node_count;
+        metrics->mtpndd_edges = g_mtpndd_stats.edge_count;
+        metrics->cache_hits = g_mtpndd_stats.cache_hits;
+        metrics->cache_misses = g_mtpndd_stats.cache_misses;
+        metrics->sylvan_nodes = sylvan_nodes;
+        metrics->sylvan_table_filled = table_filled;
+        metrics->sylvan_table_total = table_total;
     }
 
     ok = true;
@@ -359,14 +324,54 @@ cleanup:
     return ok;
 }
 
-int
-main(void)
-{
-    const size_t tests[] = {1, 2, 3, 4};
-    for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-        if (!run_case(tests[i])) {
+int main(void) {
+    const size_t n_min = 3;
+    const size_t n_max = 12;
+    const size_t total_runs = n_max - n_min + 1;
+    nqueens_metrics_t metrics[total_runs];
+
+    size_t recorded = 0;
+    for (size_t n = n_min; n <= n_max; ++n) {
+        if (!run_case(n, &metrics[recorded])) {
+            return EXIT_FAILURE;
+        }
+        recorded++;
+    }
+
+    printf("N-Queens results (n = %zu..%zu)\n", n_min, n_max);
+    printf(" n  solutions  expected   time(s)  MTPNDD(nodes/edges)  cache(h/m,hit%%)  Sylvan(nodes)  table(filled/total)\n");
+    for (size_t i = 0; i < recorded; ++i) {
+        const nqueens_metrics_t *m = &metrics[i];
+        double cache_ratio = (m->cache_hits + m->cache_misses) ?
+                (double)m->cache_hits / (double)(m->cache_hits + m->cache_misses) * 100.0 : 0.0;
+        double table_ratio = m->sylvan_table_total ?
+                (double)m->sylvan_table_filled / (double)m->sylvan_table_total * 100.0 : 0.0;
+        char expected_buf[32];
+        if (m->expected == UINT64_MAX) {
+            expected_buf[0] = '-';
+            expected_buf[1] = '\0';
+        } else {
+            snprintf(expected_buf, sizeof(expected_buf), "%" PRIu64, m->expected);
+        }
+        printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 "/%-10" PRIu64 "  %10" PRIu64 "/%-10" PRIu64 " (%.1f%%) %12zu  %8zu/%-8zu (%.1f%%)\n",
+               m->size,
+               m->solutions,
+               expected_buf,
+               m->seconds,
+               m->mtpndd_nodes,
+               m->mtpndd_edges,
+               m->cache_hits,
+               m->cache_misses,
+               cache_ratio,
+               m->sylvan_nodes,
+               m->sylvan_table_filled,
+               m->sylvan_table_total,
+               table_ratio);
+        if (m->expected != UINT64_MAX && m->solutions != m->expected) {
+            fprintf(stderr, "Mismatch detected for n=%zu.\n", m->size);
             return EXIT_FAILURE;
         }
     }
+
     return EXIT_SUCCESS;
 }

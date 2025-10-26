@@ -44,6 +44,17 @@ static void print_ip(uint32_t ip) {
            ip & 0xFFu);
 }
 
+static void print_ip_list(const char *label, const uint32_t *ips, size_t count) {
+    printf(">> %s: ", label);
+    for (size_t i = 0; i < count; ++i) {
+        print_ip(ips[i]);
+        if (i + 1 != count) {
+            printf(", ");
+        }
+    }
+    printf("\n");
+}
+
 static mtpndd_bdd_t build_octet_bdd(uint32_t field_id, uint8_t octet) {
     // 对单个 8bit 字段生成精确匹配的 BDD
     mtpndd_bdd_t acc = sylvan_ref(sylvan_true);
@@ -73,6 +84,19 @@ static mtpndd_bdd_t build_ip_exact_bdd(const uint32_t field_ids[4], uint32_t ip)
     return acc;
 }
 
+static mtpndd_bdd_t build_ip_set_bdd(const uint32_t field_ids[4], const uint32_t *ips, size_t count) {
+    // 按照 IP 集合逐个构造精确匹配的 BDD，然后通过 OR 叠加为一个集合
+    mtpndd_bdd_t acc = sylvan_ref(sylvan_false);
+    for (size_t i = 0; i < count; ++i) {
+        mtpndd_bdd_t single = build_ip_exact_bdd(field_ids, ips[i]);
+        mtpndd_bdd_t next = sylvan_ref(sylvan_or(acc, single));
+        sylvan_deref(acc);
+        sylvan_deref(single);
+        acc = next;
+    }
+    return acc;
+}
+
 // TODO: 1. check parallel
 // TODO: 2. check multi-terminal
 
@@ -96,17 +120,22 @@ int main(void) {
     }
 
     srand(42);
-    uint32_t ip_a = generate_random_ip();
-    uint32_t ip_b = generate_random_ip();
-    printf(">> sample IP A: ");
-    print_ip(ip_a);
-    printf("\n");
-    printf(">> sample IP B: ");
-    print_ip(ip_b);
-    printf("\n");
+    const size_t ip_set_size = 32;
+    uint32_t ip_set_a[ip_set_size];
+    uint32_t ip_set_b[ip_set_size];
 
-    mtpndd_bdd_t ip_a_bdd = build_ip_exact_bdd(ip_field_ids, ip_a);
-    mtpndd_bdd_t ip_b_bdd = build_ip_exact_bdd(ip_field_ids, ip_b);
+    // 生成两组随机 IP 集合，用于模拟业务场景中的地址列表
+    for (size_t i = 0; i < ip_set_size; ++i) {
+        ip_set_a[i] = generate_random_ip();
+        ip_set_b[i] = generate_random_ip();
+    }
+
+    print_ip_list("IP group A", ip_set_a, ip_set_size);
+    print_ip_list("IP group B", ip_set_b, ip_set_size);
+
+    // 将 IP 集合转换为 Sylvan 的 BDD 表示，后续可直接进行布尔运算
+    mtpndd_bdd_t ip_a_bdd = build_ip_set_bdd(ip_field_ids, ip_set_a, ip_set_size);
+    mtpndd_bdd_t ip_b_bdd = build_ip_set_bdd(ip_field_ids, ip_set_b, ip_set_size);
 
     mtpndd_t *ip_a_node = NULL;
     mtpndd_t *ip_b_node = NULL;
@@ -114,6 +143,7 @@ int main(void) {
     assert_success(mtbdd_to_mtpndd(ip_b_bdd, &ip_b_node));
     // TODO: 需要实现mtpndd的printDot来验证mtpndd结果的正确性
 
+    // 对集合完成 roundtrip 检查，确保转换流程无信息丢失
     mtpndd_bdd_t ip_a_back = sylvan_false;
     mtpndd_bdd_t ip_b_back = sylvan_false;
     assert_success(mtpndd_to_mtbdd(ip_a_node, &ip_a_back));
@@ -122,7 +152,7 @@ int main(void) {
     assert(ip_b_back == ip_b_bdd);
     sylvan_deref(ip_a_back);
     sylvan_deref(ip_b_back);
-    printf(">> single IP roundtrip ok\n");
+    printf(">> IP set roundtrip ok\n");
 
     mtpndd_bdd_t expected_union = sylvan_ref(sylvan_or(ip_a_bdd, ip_b_bdd));
     mtpndd_bdd_t expected_intersection = sylvan_ref(sylvan_and(ip_a_bdd, ip_b_bdd));

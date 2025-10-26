@@ -6,16 +6,36 @@
 #define MTPNDD_OPERATION_CACHE_H
 
 #include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <pthread.h>
+
+struct mtpndd_node_s;
+typedef struct mtpndd_node_s mtpndd_node_t;
+
+typedef struct mtpndd_op_cache_entry_s {
+    mtpndd_node_t *operands[2];
+    mtpndd_node_t *result;
+} mtpndd_op_cache_entry_t;
 
 typedef struct mtpndd_op_cache_s {
+    mtpndd_op_cache_entry_t *entries;
+    pthread_rwlock_t *locks;
+    size_t capacity;
+    size_t mask;
+    uint8_t arity;
 } mtpndd_op_cache_t;
 
-int mtpndd_op_cache_initialize(
+bool mtpndd_op_cache_initialize(
         size_t size,
         mtpndd_op_cache_t **and_cache,
         mtpndd_op_cache_t **or_cache,
         mtpndd_op_cache_t **not_cache);
 void mtpndd_op_cache_destroy();
 void mtpndd_op_cache_clear(mtpndd_op_cache_t *cache);
+mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, mtpndd_node_t *rhs);
+void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, mtpndd_node_t *rhs, mtpndd_node_t *result);
+mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operand);
+void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operand, mtpndd_node_t *result);
 
 #endif // MTPNDD_OPERATION_CACHE_H
