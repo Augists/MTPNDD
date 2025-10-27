@@ -375,8 +375,7 @@ mtpndd_stats_t *mtpndd_get_stats() {
 }
 
 bool mtpndd_is_initialized() {
-    return g_mtpndd_pal_config.n_workers > 0
-            || g_mtpndd_pal_config.lace_dqsize > 0
+    return g_mtpndd_pal_config.lace_dqsize > 0
             || g_mtpndd_pal_config.bdd_nodetable_size > 0
             || g_mtpndd_pal_config.mtpndd_nodetable_size > 0
             || g_mtpndd_pal_config.op_cache_size > 0
@@ -389,7 +388,7 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     }
 
     if (config == NULL || !(
-            config->n_workers > 0
+            config->n_workers >= 0
             && config->lace_dqsize > 0
             && config->bdd_nodetable_size > 0
             && config->mtpndd_nodetable_size > 0

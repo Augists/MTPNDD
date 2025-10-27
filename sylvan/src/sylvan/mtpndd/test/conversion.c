@@ -103,7 +103,7 @@ static mtpndd_bdd_t build_ip_set_bdd(const uint32_t field_ids[4], const uint32_t
 int main(void) {
     // 初始化 MTPNDD 运行时
     mtpndd_pal_config_t config = {
-        .n_workers = 1,
+        .n_workers = 0,
         .lace_dqsize = 1 << 18,
         .bdd_nodetable_size = 1 << 16,
         .mtpndd_nodetable_size = 1 << 14,

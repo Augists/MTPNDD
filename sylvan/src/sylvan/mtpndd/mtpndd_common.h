@@ -78,7 +78,7 @@ void mtpndd_clear_error();
  * Global config definitions
  ********************************/
 typedef struct mtpndd_pal_config_s {
-    uint32_t n_workers;
+    int32_t n_workers;
     size_t lace_dqsize;
     size_t bdd_nodetable_size;
     size_t mtpndd_nodetable_size;

@@ -248,7 +248,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t cache_size = (size <= 7) ? (1 << 18) : (size <= 9) ? (1 << 20) : (1 << 23);
 
     mtpndd_pal_config_t config = {
-        .n_workers = 1,
+        .n_workers = 0,
         .lace_dqsize = 1024,
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,
