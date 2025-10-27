@@ -2,60 +2,55 @@
 #include "sylvan.h"
 #include "sylvan_table.h"
 #include "sylvan_mtbdd.h"
+#include "sylvan_bdd.h"
 
 #include <inttypes.h>
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 
-static inline size_t cell_index(size_t row, size_t col, size_t size) {
-    return row * size + col;
+static uint32_t ceil_log2_uint(uint32_t value) {
+    if (value <= 1) {
+        return 1;
+    }
+#if defined(__GNUC__)
+    return 32u - (uint32_t)__builtin_clz(value - 1);
+#else
+    uint32_t bits = 0;
+    uint32_t v = value - 1;
+    while (v) {
+        v >>= 1u;
+        bits++;
+    }
+    return bits;
+#endif
 }
 
 typedef struct {
     size_t size;
     const mtpndd_field_info_t **fields;
-    mtpndd_t **positive;
-    mtpndd_t **negative;
     mtpndd_t *formula;
 } nqueens_ctx_t;
-
-static inline mtpndd_t *true_node(void) {
-    return &MTPNDD_TRUE;
-}
-
-static inline mtpndd_t *false_node(void) {
-    return &MTPNDD_FALSE;
-}
 
 static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
     ctx->size = size;
     ctx->fields = (const mtpndd_field_info_t **)calloc(size, sizeof(*ctx->fields));
-    ctx->positive = (mtpndd_t **)calloc(size * size, sizeof(*ctx->positive));
-    ctx->negative = (mtpndd_t **)calloc(size * size, sizeof(*ctx->negative));
 
-    if (!ctx->fields || !ctx->positive || !ctx->negative) {
+    if (!ctx->fields) {
         return false;
     }
 
+    uint32_t bit_width = ceil_log2_uint((uint32_t)size);
     for (size_t row = 0; row < size; ++row) {
-        mtpndd_declare_field((uint32_t)size);
+        mtpndd_declare_field(bit_width);
         const mtpndd_field_info_t *info = mtpndd_get_field_info((uint32_t)(row + 1));
         if (!info) {
             return false;
         }
         ctx->fields[row] = info;
-        for (size_t col = 0; col < size; ++col) {
-            size_t idx = cell_index(row, col, size);
-            ctx->positive[idx] = mtpndd_get_var((uint32_t)(row + 1), (uint32_t)col);
-            ctx->negative[idx] = mtpndd_get_not_var((uint32_t)(row + 1), (uint32_t)col);
-            if (!ctx->positive[idx] || !ctx->negative[idx]) {
-                return false;
-            }
-        }
     }
 
     return true;
@@ -63,111 +58,124 @@ static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
 
 static void nqueens_ctx_destroy(nqueens_ctx_t *ctx) {
     free(ctx->fields);
-    free(ctx->positive);
-    free(ctx->negative);
     ctx->fields = NULL;
-    ctx->positive = NULL;
-    ctx->negative = NULL;
     ctx->formula = NULL;
     ctx->size = 0;
 }
 
-static mtpndd_t *build_row_constraint(const nqueens_ctx_t *ctx, size_t row) {
-    mtpndd_t *at_least_one = false_node();
-    for (size_t col = 0; col < ctx->size; ++col) {
-        size_t idx = cell_index(row, col, ctx->size);
-        at_least_one = mtpndd_or(at_least_one, ctx->positive[idx]);
-        if (!at_least_one) {
-            return NULL;
-        }
-    }
-
-    mtpndd_t *at_most_one = true_node();
-    for (size_t col = 0; col < ctx->size; ++col) {
-        for (size_t other = col + 1; other < ctx->size; ++other) {
-            size_t idx_a = cell_index(row, col, ctx->size);
-            size_t idx_b = cell_index(row, other, ctx->size);
-            mtpndd_t *pair_ok = mtpndd_or(ctx->negative[idx_a], ctx->negative[idx_b]);
-            if (!pair_ok) {
-                return NULL;
-            }
-            at_most_one = mtpndd_and(at_most_one, pair_ok);
-            if (!at_most_one) {
-                return NULL;
-            }
-        }
-    }
-
-    return mtpndd_and(at_least_one, at_most_one);
+static inline void bdd_and_assign(mtpndd_bdd_t *target, mtpndd_bdd_t constraint) {
+    mtpndd_bdd_t next = sylvan_ref(sylvan_and(*target, constraint));
+    sylvan_deref(*target);
+    sylvan_deref(constraint);
+    *target = next;
 }
 
-static mtpndd_t *build_nqueens_formula(nqueens_ctx_t *ctx) {
-    mtpndd_t *formula = true_node();
+static mtpndd_bdd_t build_value_equals_bdd(const mtpndd_field_info_t *field, uint32_t value) {
+    mtpndd_bdd_t result = sylvan_true;
+    sylvan_ref(result);
+    for (uint32_t bit = 0; bit < field->bit_width; ++bit) {
+        mtpndd_bdd_t literal = (value & (1u << bit)) ? field->bdd_vars[bit] : field->bdd_not_vars[bit];
+        mtpndd_bdd_t next = sylvan_ref(sylvan_and(result, literal));
+        sylvan_deref(result);
+        result = next;
+    }
+    return result;
+}
 
-    for (size_t row = 0; row < ctx->size; ++row) {
-        mtpndd_t *row_constraint = build_row_constraint(ctx, row);
-        if (!row_constraint) {
-            return NULL;
+static mtpndd_bdd_t build_row_domain_bdd(const nqueens_ctx_t *ctx, size_t row) {
+    const mtpndd_field_info_t *field = ctx->fields[row];
+    uint32_t max_value = (uint32_t)ctx->size;
+    uint32_t limit = 1u << field->bit_width;
+
+    if (limit == max_value) {
+        mtpndd_bdd_t identity = sylvan_true;
+        sylvan_ref(identity);
+        return identity;
+    }
+
+    mtpndd_bdd_t domain = sylvan_true;
+    sylvan_ref(domain);
+    for (uint32_t value = max_value; value < limit; ++value) {
+        mtpndd_bdd_t eq = build_value_equals_bdd(field, value);
+        mtpndd_bdd_t not_eq = sylvan_ref(sylvan_not(eq));
+        sylvan_deref(eq);
+        bdd_and_assign(&domain, not_eq);
+    }
+    return domain;
+}
+
+static mtpndd_bdd_t build_rows_not_equal_bdd(const nqueens_ctx_t *ctx, size_t row_a, size_t row_b) {
+    const mtpndd_field_info_t *field_a = ctx->fields[row_a];
+    const mtpndd_field_info_t *field_b = ctx->fields[row_b];
+    mtpndd_bdd_t eq = sylvan_true;
+    sylvan_ref(eq);
+    for (uint32_t bit = 0; bit < field_a->bit_width; ++bit) {
+        mtpndd_bdd_t same = sylvan_ref(sylvan_not(sylvan_xor(field_a->bdd_vars[bit], field_b->bdd_vars[bit])));
+        mtpndd_bdd_t next = sylvan_ref(sylvan_and(eq, same));
+        sylvan_deref(eq);
+        sylvan_deref(same);
+        eq = next;
+    }
+    mtpndd_bdd_t not_equal = sylvan_ref(sylvan_not(eq));
+    sylvan_deref(eq);
+    return not_equal;
+}
+
+static void forbid_value_pair(mtpndd_bdd_t *accum,
+        const mtpndd_field_info_t *field_a, uint32_t value_a,
+        const mtpndd_field_info_t *field_b, uint32_t value_b) {
+    mtpndd_bdd_t eq_a = build_value_equals_bdd(field_a, value_a);
+    mtpndd_bdd_t eq_b = build_value_equals_bdd(field_b, value_b);
+    mtpndd_bdd_t both = sylvan_ref(sylvan_and(eq_a, eq_b));
+    sylvan_deref(eq_a);
+    sylvan_deref(eq_b);
+    mtpndd_bdd_t not_both = sylvan_ref(sylvan_not(both));
+    sylvan_deref(both);
+    bdd_and_assign(accum, not_both);
+}
+
+static mtpndd_bdd_t build_diagonal_pair_constraint(const nqueens_ctx_t *ctx, size_t row_a, size_t row_b) {
+    const mtpndd_field_info_t *field_a = ctx->fields[row_a];
+    const mtpndd_field_info_t *field_b = ctx->fields[row_b];
+    mtpndd_bdd_t constraint = sylvan_true;
+    sylvan_ref(constraint);
+    size_t delta = row_b - row_a;
+
+    for (size_t col = 0; col < ctx->size; ++col) {
+        size_t diag_down = col + delta;
+        if (diag_down < ctx->size) {
+            forbid_value_pair(&constraint, field_a, (uint32_t)col, field_b, (uint32_t)diag_down);
         }
-        formula = mtpndd_and(formula, row_constraint);
-        if (!formula) {
-            return NULL;
+        if (col >= delta) {
+            size_t diag_up = col - delta;
+            forbid_value_pair(&constraint, field_a, (uint32_t)col, field_b, (uint32_t)diag_up);
         }
     }
 
-    for (size_t col = 0; col < ctx->size; ++col) {
-        for (size_t row_a = 0; row_a < ctx->size; ++row_a) {
-            for (size_t row_b = row_a + 1; row_b < ctx->size; ++row_b) {
-                size_t idx_a = cell_index(row_a, col, ctx->size);
-                size_t idx_b = cell_index(row_b, col, ctx->size);
-                mtpndd_t *no_shared_col = mtpndd_or(ctx->negative[idx_a], ctx->negative[idx_b]);
-                if (!no_shared_col) {
-                    return NULL;
-                }
-                formula = mtpndd_and(formula, no_shared_col);
-                if (!formula) {
-                    return NULL;
-                }
-            }
-        }
+    return constraint;
+}
+
+static bool build_nqueens_bdd(nqueens_ctx_t *ctx, mtpndd_bdd_t *out_formula) {
+    mtpndd_bdd_t formula = sylvan_true;
+    sylvan_ref(formula);
+
+    for (size_t row = 0; row < ctx->size; ++row) {
+        mtpndd_bdd_t domain = build_row_domain_bdd(ctx, row);
+        bdd_and_assign(&formula, domain);
     }
 
     for (size_t row_a = 0; row_a < ctx->size; ++row_a) {
         for (size_t row_b = row_a + 1; row_b < ctx->size; ++row_b) {
-            size_t delta = row_b - row_a;
-            for (size_t col = 0; col < ctx->size; ++col) {
-                size_t diag_col = col + delta;
-                if (diag_col < ctx->size) {
-                    size_t idx_a = cell_index(row_a, col, ctx->size);
-                    size_t idx_b = cell_index(row_b, diag_col, ctx->size);
-                    mtpndd_t *no_desc_diag = mtpndd_or(ctx->negative[idx_a], ctx->negative[idx_b]);
-                    if (!no_desc_diag) {
-                        return NULL;
-                    }
-                    formula = mtpndd_and(formula, no_desc_diag);
-                    if (!formula) {
-                        return NULL;
-                    }
-                }
-                if (col >= delta) {
-                    size_t diag_col_up = col - delta;
-                    size_t idx_a = cell_index(row_a, col, ctx->size);
-                    size_t idx_b = cell_index(row_b, diag_col_up, ctx->size);
-                    mtpndd_t *no_asc_diag = mtpndd_or(ctx->negative[idx_a], ctx->negative[idx_b]);
-                    if (!no_asc_diag) {
-                        return NULL;
-                    }
-                    formula = mtpndd_and(formula, no_asc_diag);
-                    if (!formula) {
-                        return NULL;
-                    }
-                }
-            }
+            mtpndd_bdd_t diff = build_rows_not_equal_bdd(ctx, row_a, row_b);
+            bdd_and_assign(&formula, diff);
+
+            mtpndd_bdd_t diag = build_diagonal_pair_constraint(ctx, row_a, row_b);
+            bdd_and_assign(&formula, diag);
         }
     }
 
-    ctx->formula = formula;
-    return formula;
+    *out_formula = formula;
+    return true;
 }
 
 static size_t total_variable_count(const nqueens_ctx_t *ctx) {
@@ -233,12 +241,18 @@ static double timespec_to_seconds(const struct timespec *start, const struct tim
 }
 
 static bool run_case(size_t size, nqueens_metrics_t *metrics) {
+    printf("== solving n=%zu\n", size);
+    fflush(stdout);
+    size_t bdd_size = (size <= 7) ? (1 << 19) : (size <= 9) ? (1 << 22) : (1 << 25);
+    size_t ndd_size = (size <= 7) ? (1 << 18) : (size <= 9) ? (1 << 20) : (1 << 23);
+    size_t cache_size = (size <= 7) ? (1 << 18) : (size <= 9) ? (1 << 20) : (1 << 23);
+
     mtpndd_pal_config_t config = {
         .n_workers = 1,
         .lace_dqsize = 1024,
-        .bdd_nodetable_size = (size <= 8) ? (1 << 17) : (1 << 19),
-        .mtpndd_nodetable_size = (size <= 8) ? (1 << 16) : (1 << 18),
-        .op_cache_size = (size <= 8) ? (1 << 17) : (1 << 19),
+        .bdd_nodetable_size = bdd_size,
+        .mtpndd_nodetable_size = ndd_size,
+        .op_cache_size = cache_size,
         .quick_growth_threshold = 0.1,
     };
 
@@ -259,12 +273,35 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     struct timespec start = {0}, finish = {0};
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    if (!build_nqueens_formula(&ctx)) {
+    printf(".. building formula\n");
+    fflush(stdout);
+    mtpndd_bdd_t formula_bdd = sylvan_false;
+    bool formula_bdd_valid = false;
+    if (!build_nqueens_bdd(&ctx, &formula_bdd)) {
         fprintf(stderr, "Failed to build formula for size %zu.\n", size);
         goto cleanup;
     }
+    formula_bdd_valid = true;
 
+    mtpndd_t *formula_node = NULL;
+    if (mtbdd_to_mtpndd(formula_bdd, &formula_node) != MTPNDD_SUCCESS) {
+        fprintf(stderr, "mtbdd_to_mtpndd failed for size %zu: %s\n", size,
+                mtpndd_error_string(mtpndd_get_last_error().code));
+        if (formula_bdd_valid) {
+            sylvan_deref(formula_bdd);
+            formula_bdd_valid = false;
+        }
+        goto cleanup;
+    }
+    ctx.formula = formula_node;
+    printf(".. formula built\n");
+    fflush(stdout);
+
+    printf(".. running mtpndd_satcount\n");
+    fflush(stdout);
     double satcount_value = mtpndd_satcount(ctx.formula);
+    printf(".. satcount done\n");
+    fflush(stdout);
 
     clock_gettime(CLOCK_MONOTONIC, &finish);
     double elapsed = timespec_to_seconds(&start, &finish);
@@ -277,21 +314,17 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         goto cleanup;
     }
 
-    mtpndd_bdd_t bdd_stats = sylvan_false;
-    if (mtpndd_to_mtbdd(ctx.formula, &bdd_stats) != MTPNDD_SUCCESS) {
-        fprintf(stderr, "mtpndd_to_mtbdd failed for size %zu: %s\n", size,
-                mtpndd_error_string(mtpndd_get_last_error().code));
-        goto cleanup;
-    }
-
-    size_t sylvan_nodes = sylvan_nodecount(bdd_stats);
-    double satcount_verify = mtbdd_satcount(bdd_stats, total_variable_count(&ctx));
+    size_t sylvan_nodes = sylvan_nodecount(formula_bdd);
+    double satcount_verify = mtbdd_satcount(formula_bdd, total_variable_count(&ctx));
     uint64_t satcount_check = (uint64_t)llround(satcount_verify);
-    sylvan_deref(bdd_stats);
 
     if (satcount_check != solutions) {
         fprintf(stderr, "Satcount mismatch for size %zu: API %" PRIu64 ", direct %" PRIu64 ".\n",
                 size, solutions, satcount_check);
+        if (formula_bdd_valid) {
+            sylvan_deref(formula_bdd);
+            formula_bdd_valid = false;
+        }
         goto cleanup;
     }
 
@@ -316,6 +349,9 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     ok = true;
 
 cleanup:
+    if (formula_bdd_valid) {
+        sylvan_deref(formula_bdd);
+    }
     nqueens_ctx_destroy(&ctx);
     if (mtpndd_quit() != MTPNDD_SUCCESS) {
         fprintf(stderr, "mtpndd_quit reported an error for size %zu.\n", size);
@@ -335,6 +371,11 @@ int main(void) {
         if (!run_case(n, &metrics[recorded])) {
             return EXIT_FAILURE;
         }
+        printf("== result n=%zu -> solutions=%" PRIu64 ", time=%.3f s\n",
+               metrics[recorded].size,
+               metrics[recorded].solutions,
+               metrics[recorded].seconds);
+        fflush(stdout);
         recorded++;
     }
 
