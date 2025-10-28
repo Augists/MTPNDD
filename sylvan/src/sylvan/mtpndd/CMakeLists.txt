@@ -11,6 +11,11 @@ target_include_directories(mtpndd
 )
 target_compile_options(mtpndd PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
+option(MTPNDD_ENABLE_RECORDING "Enable MTPNDD recording instrumentation" OFF)
+if(MTPNDD_ENABLE_RECORDING)
+    target_compile_definitions(mtpndd PUBLIC ENABLE_RECORDING)
+endif()
+
 if(TARGET sylvan::sylvan)
     target_link_libraries(mtpndd PUBLIC sylvan::sylvan)
 else()

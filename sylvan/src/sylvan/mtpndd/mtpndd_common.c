@@ -13,6 +13,7 @@
 #include "sylvan.h"
 #include "sylvan_table.h"
 #include <pthread.h>
+#include <stdatomic.h>
 
 /********************************
  * Global singletons
@@ -31,12 +32,24 @@ mtpndd_config_t g_mtpndd_config = {
     .gcProtect = NULL,
 };
 
+#define MTPNDD_GC_HOOK_CAPACITY 16
+static mtpndd_gc_hook_t g_mtpndd_gc_prehooks[MTPNDD_GC_HOOK_CAPACITY] = {0};
+static mtpndd_gc_hook_t g_mtpndd_gc_posthooks[MTPNDD_GC_HOOK_CAPACITY] = {0};
+static _Atomic size_t g_mtpndd_gc_prehook_count = 0;
+static _Atomic size_t g_mtpndd_gc_posthook_count = 0;
+
 /********************************
  * Internal helpers
  ********************************/
 static bool mtpndd_lace_init(void);
 static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges);
 static bool mtpndd_gc_protect_contains_with_hash(mtpndd_t *node, size_t hash);
+static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count);
+
+/********************************
+ * Error handling system
+ ********************************/
+static __thread mtpndd_error_info_t g_last_error = {MTPNDD_SUCCESS, NULL, NULL, 0};
 
 /********************************
  * Default configurations
@@ -49,11 +62,6 @@ static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges)
     EDGE_MAP_INIT(edges);
     return MTPNDD_SUCCESS;
 }
-
-/********************************
- * Error handling system
- ********************************/
-static __thread mtpndd_error_info_t g_last_error = {MTPNDD_SUCCESS, NULL, NULL, 0};
 
 const char* mtpndd_error_messages[] = {
     "Success",
@@ -95,6 +103,52 @@ void mtpndd_clear_error() {
     g_last_error.message = NULL;
     g_last_error.function = NULL;
     g_last_error.line = 0;
+}
+
+void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook) {
+    if (!hook) {
+        return;
+    }
+    size_t idx = __atomic_load_n(&g_mtpndd_gc_prehook_count, __ATOMIC_RELAXED);
+    if (idx >= MTPNDD_GC_HOOK_CAPACITY) {
+        return;
+    }
+    g_mtpndd_gc_prehooks[idx] = hook;
+    __atomic_store_n(&g_mtpndd_gc_prehook_count, idx + 1, __ATOMIC_RELAXED);
+}
+
+void mtpndd_gc_hook_postgc(mtpndd_gc_hook_t hook) {
+    if (!hook) {
+        return;
+    }
+    size_t idx = __atomic_load_n(&g_mtpndd_gc_posthook_count, __ATOMIC_RELAXED);
+    if (idx >= MTPNDD_GC_HOOK_CAPACITY) {
+        return;
+    }
+    g_mtpndd_gc_posthooks[idx] = hook;
+    __atomic_store_n(&g_mtpndd_gc_posthook_count, idx + 1, __ATOMIC_RELAXED);
+}
+
+static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count) {
+    if (!hooks) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        mtpndd_gc_hook_t hook = hooks[i];
+        if (hook) {
+            hook();
+        }
+    }
+}
+
+void mtpndd_gc_run_prehooks(void) {
+    size_t count = __atomic_load_n(&g_mtpndd_gc_prehook_count, __ATOMIC_RELAXED);
+    mtpndd_gc_run_hooks(g_mtpndd_gc_prehooks, count);
+}
+
+void mtpndd_gc_run_posthooks(void) {
+    size_t count = __atomic_load_n(&g_mtpndd_gc_posthook_count, __ATOMIC_RELAXED);
+    mtpndd_gc_run_hooks(g_mtpndd_gc_posthooks, count);
 }
 
 /********************************

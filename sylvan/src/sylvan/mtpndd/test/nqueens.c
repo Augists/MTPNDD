@@ -226,9 +226,11 @@ typedef struct {
     uint64_t solutions;
     double seconds;
     uint64_t mtpndd_nodes;
+#ifdef ENABLE_RECORDING
     uint64_t mtpndd_edges;
     uint64_t cache_hits;
     uint64_t cache_misses;
+#endif
     size_t sylvan_nodes;
     size_t sylvan_table_filled;
     size_t sylvan_table_total;
@@ -345,9 +347,11 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         metrics->solutions = solutions;
         metrics->seconds = elapsed;
         metrics->mtpndd_nodes = g_mtpndd_stats.node_count;
+#ifdef ENABLE_RECORDING
         metrics->mtpndd_edges = g_mtpndd_stats.edge_count;
         metrics->cache_hits = g_mtpndd_stats.cache_hits;
         metrics->cache_misses = g_mtpndd_stats.cache_misses;
+#endif
         metrics->sylvan_nodes = sylvan_nodes;
         metrics->sylvan_table_filled = table_filled;
         metrics->sylvan_table_total = table_total;
@@ -387,11 +391,17 @@ int main(void) {
     }
 
     printf("N-Queens results (n = %zu..%zu)\n", n_min, n_max);
+#ifdef ENABLE_RECORDING
     printf(" n  solutions  expected   time(s)  MTPNDD(nodes/edges)  cache(h/m,hit%%)  Sylvan(nodes)  table(filled/total)\n");
+#else
+    printf(" n  solutions  expected   time(s)  MTPNDD(nodes)  Sylvan(nodes)  table(filled/total)\n");
+#endif
     for (size_t i = 0; i < recorded; ++i) {
         const nqueens_metrics_t *m = &metrics[i];
+#ifdef ENABLE_RECORDING
         double cache_ratio = (m->cache_hits + m->cache_misses) ?
                 (double)m->cache_hits / (double)(m->cache_hits + m->cache_misses) * 100.0 : 0.0;
+#endif
         double table_ratio = m->sylvan_table_total ?
                 (double)m->sylvan_table_filled / (double)m->sylvan_table_total * 100.0 : 0.0;
         char expected_buf[32];
@@ -401,6 +411,7 @@ int main(void) {
         } else {
             snprintf(expected_buf, sizeof(expected_buf), "%" PRIu64, m->expected);
         }
+#ifdef ENABLE_RECORDING
         printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 "/%-10" PRIu64 "  %10" PRIu64 "/%-10" PRIu64 " (%.1f%%) %12zu  %8zu/%-8zu (%.1f%%)\n",
                m->size,
                m->solutions,
@@ -415,6 +426,18 @@ int main(void) {
                m->sylvan_table_filled,
                m->sylvan_table_total,
                table_ratio);
+#else
+        printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 "            %12zu  %8zu/%-8zu (%.1f%%)\n",
+               m->size,
+               m->solutions,
+               expected_buf,
+               m->seconds,
+               m->mtpndd_nodes,
+               m->sylvan_nodes,
+               m->sylvan_table_filled,
+               m->sylvan_table_total,
+               table_ratio);
+#endif
         if (m->expected != UINT64_MAX && m->solutions != m->expected) {
             fprintf(stderr, "Mismatch detected for n=%zu.\n", m->size);
             return EXIT_FAILURE;

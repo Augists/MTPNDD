@@ -14,6 +14,9 @@
 #include <inttypes.h>
 #include <lace.h>
 #include <lace14.h>
+#ifdef ENABLE_RECORDING
+#include <time.h>
+#endif
 
 mtpndd_t MTPNDD_TRUE = {0};
 mtpndd_t MTPNDD_FALSE = {0};
@@ -210,6 +213,11 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     mtpndd_bdd_t old_label = sylvan_false;
     size_t hash = EDGE_MAP_HASH_VAL(edges, descendant);
     atomic_flag *bucket_lock = &edges->bucket_locks[hash];
+#ifdef ENABLE_RECORDING
+    struct timespec lock_wait_start = {0};
+    bool lock_wait_started = false;
+    uint64_t lock_spin_count = 0;
+#endif
     while (atomic_flag_test_and_set_explicit(bucket_lock, memory_order_acquire)) {
 #if defined(__GNUC__) || defined(__clang__)
 #if defined(__x86_64__) || defined(__i386__)
@@ -218,11 +226,30 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
         __asm__ __volatile__("yield");
 #endif
 #endif
+#ifdef ENABLE_RECORDING
+        if (!lock_wait_started) {
+            clock_gettime(CLOCK_MONOTONIC, &lock_wait_start);
+            lock_wait_started = true;
+        }
+        lock_spin_count++;
+#endif
     }
+#ifdef ENABLE_RECORDING
+    if (lock_wait_started) {
+        struct timespec lock_wait_end = {0};
+        clock_gettime(CLOCK_MONOTONIC, &lock_wait_end);
+        MTPNDD_STAT_ADD(edge_lock_spins, lock_spin_count);
+        MTPNDD_STAT_ADD(edge_lock_wait_ns, mtpndd_timespec_diff_ns(&lock_wait_start, &lock_wait_end));
+    }
+#endif
 
     mtpndd_error_t status = MTPNDD_SUCCESS;
     edge_bucket_entry_t *entry = NULL;
     edge_bucket_entry_t *bucket_head = edges->buckets[hash];
+#ifdef ENABLE_RECORDING
+    bool created_entry = false;
+    bool collision_on_insert = false;
+#endif
 
     if (bucket_head == NULL) {
         // Empty bucket, cannot find existing entry
@@ -244,6 +271,9 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
             goto unlock_and_return;
         }
         entry->child = descendant;
+#ifdef ENABLE_RECORDING
+        created_entry = true;
+#endif
     } else {
         entry = find_edge_entry(edges, descendant);
         if (entry) {
@@ -262,6 +292,10 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
                 goto unlock_and_return;
             }
             entry->child = descendant;
+#ifdef ENABLE_RECORDING
+            created_entry = true;
+            collision_on_insert = true;
+#endif
         }
     }
 
@@ -278,6 +312,17 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     bucket_head->next = entry;
 
     edges->edge_count++;
+#ifdef ENABLE_RECORDING
+    if (created_entry) {
+        MTPNDD_STAT_ADD(edges_inserted, 1);
+        MTPNDD_STAT_ADD(total_edge_entries, 1);
+        if (collision_on_insert) {
+            MTPNDD_STAT_ADD(edge_collisions, 1);
+        }
+        MTPNDD_STAT_MAX(max_edges_per_node, edges->edge_count);
+        __atomic_add_fetch(&g_mtpndd_stats.edge_count, 1, __ATOMIC_RELAXED);
+    }
+#endif
 
 unlock_and_return:
     atomic_flag_clear_explicit(bucket_lock, memory_order_release);
@@ -1137,6 +1182,13 @@ mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result) {
         mtpndd_to_mtbdd_cache_destroy(&cache);
         return status;
     }
+#ifdef ENABLE_RECORDING
+    if (status == MTPNDD_SUCCESS) {
+        uint64_t nodecount = sylvan_nodecount(tmp);
+        __atomic_store_n(&g_mtpndd_stats.bdd_node_count, nodecount, __ATOMIC_RELAXED);
+        MTPNDD_STAT_ADD(bdd_nodes_processed, nodecount);
+    }
+#endif
 
     mtpndd_bdd_t final = sylvan_ref(tmp);
     mtpndd_to_mtbdd_cache_destroy(&cache);
@@ -1257,6 +1309,12 @@ static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cach
 mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_NULL(result, MTPNDD_ERROR_NULL_POINTER);
+
+#ifdef ENABLE_RECORDING
+    uint64_t bdd_nodecount = sylvan_nodecount(bdd);
+    __atomic_store_n(&g_mtpndd_stats.bdd_node_count, bdd_nodecount, __ATOMIC_RELAXED);
+    MTPNDD_STAT_ADD(bdd_nodes_processed, bdd_nodecount);
+#endif
 
     mtbdd_to_mtpndd_cache_t cache;
     mtpndd_error_t status = mtbdd_to_mtpndd_cache_init(&cache, 64);

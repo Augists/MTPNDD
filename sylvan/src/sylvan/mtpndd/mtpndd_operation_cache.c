@@ -157,9 +157,19 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
     pthread_rwlock_rdlock(&cache->locks[idx]);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     mtpndd_node_t *result = NULL;
-    if (entry->operands[0] == lhs && entry->operands[1] == rhs && entry->result) {
+    bool hit = (entry->operands[0] == lhs && entry->operands[1] == rhs && entry->result);
+#ifdef ENABLE_RECORDING
+    if (hit) {
+        result = entry->result;
+        __atomic_add_fetch(&g_mtpndd_stats.cache_hits, 1, __ATOMIC_RELAXED);
+    } else {
+        __atomic_add_fetch(&g_mtpndd_stats.cache_misses, 1, __ATOMIC_RELAXED);
+    }
+#else
+    if (hit) {
         result = entry->result;
     }
+#endif
     pthread_rwlock_unlock(&cache->locks[idx]);
     return result;
 }
@@ -188,9 +198,19 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
     pthread_rwlock_rdlock(&cache->locks[idx]);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     mtpndd_node_t *result = NULL;
-    if (entry->operands[0] == operand && entry->result) {
+    bool hit = (entry->operands[0] == operand && entry->result);
+#ifdef ENABLE_RECORDING
+    if (hit) {
+        result = entry->result;
+        __atomic_add_fetch(&g_mtpndd_stats.cache_hits, 1, __ATOMIC_RELAXED);
+    } else {
+        __atomic_add_fetch(&g_mtpndd_stats.cache_misses, 1, __ATOMIC_RELAXED);
+    }
+#else
+    if (hit) {
         result = entry->result;
     }
+#endif
     pthread_rwlock_unlock(&cache->locks[idx]);
     return result;
 }

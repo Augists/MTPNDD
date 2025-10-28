@@ -8,6 +8,9 @@
 #include "mtpndd_nodetable.h"
 #include "mtpndd_node.h"
 #include "sylvan.h"
+#ifdef ENABLE_RECORDING
+#include <time.h>
+#endif
 
 static void gc(void);
 static void grow(void);
@@ -168,6 +171,9 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
             sylvan_deref(label);
         }
+#ifdef ENABLE_RECORDING
+        MTPNDD_STAT_ADD(nodes_reused, 1);
+#endif
         *result = node;
         return MTPNDD_SUCCESS;
     }
@@ -217,6 +223,9 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     }
 
     mtpndd_nodetable_bucket_entry_t *existing_entry = nodetable->buckets[hash];
+#ifdef ENABLE_RECORDING
+    bool bucket_had_entries = existing_entry != NULL;
+#endif
     while (existing_entry) {
         if (NODETABLE_BUCKET_ENTRY_EQUAL(existing_entry, edges)) {
             break;
@@ -236,6 +245,12 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
             sylvan_deref(label);
         }
+#ifdef ENABLE_RECORDING
+        if (bucket_had_entries) {
+            MTPNDD_STAT_ADD(nodetable_collisions, 1);
+        }
+        MTPNDD_STAT_ADD(nodes_reused, 1);
+#endif
         *result = existing_node;
         return MTPNDD_SUCCESS;
     }
@@ -247,13 +262,28 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     }
     nodetable->buckets[hash] = new_entry;
     pthread_rwlock_unlock(bucket_lock);
-    g_mtpndd_stats.node_count++;
+    __atomic_add_fetch(&g_mtpndd_stats.node_count, 1, __ATOMIC_RELAXED);
+#ifdef ENABLE_RECORDING
+    MTPNDD_STAT_ADD(nodes_created, 1);
+    if (bucket_had_entries) {
+        MTPNDD_STAT_ADD(nodetable_collisions, 1);
+    }
+#endif
     *result = node;
     return MTPNDD_SUCCESS;
 }
 
 static void gcOrGrow(void) {
+#ifdef ENABLE_RECORDING
+    struct timespec gc_timer_start = {0};
+    clock_gettime(CLOCK_MONOTONIC, &gc_timer_start);
+#endif
     gc();
+#ifdef ENABLE_RECORDING
+    struct timespec gc_timer_end = {0};
+    clock_gettime(CLOCK_MONOTONIC, &gc_timer_end);
+    MTPNDD_STAT_ADD(gc_time_ns, mtpndd_timespec_diff_ns(&gc_timer_start, &gc_timer_end));
+#endif
     if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
             < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
         grow();
@@ -262,10 +292,15 @@ static void gcOrGrow(void) {
 }
 
 static void gc(void) {
+#ifdef ENABLE_RECORDING
+    __atomic_add_fetch(&g_mtpndd_stats.gc_count, 1, __ATOMIC_RELAXED);
+#endif
+    mtpndd_gc_run_prehooks();
     // protect temporary nodes during NDD operations
     // TODO: stop the world and stop lace and gc
 
     // TODO: gc pre hook and post hook like sylvan
+    mtpndd_gc_run_posthooks();
 }
 
 static void grow(void) {

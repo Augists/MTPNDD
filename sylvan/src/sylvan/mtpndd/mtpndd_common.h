@@ -12,6 +12,10 @@
 #include <stdatomic.h>
 #include <pthread.h>
 
+#ifdef ENABLE_RECORDING
+#include <time.h>
+#endif
+
 struct mtpndd_node_s;
 struct mtpndd_edge_s;
 struct mtpndd_nodetable_s;
@@ -128,15 +132,67 @@ static inline size_t mtpndd_config_gc_bucket_count(void) {
 
 typedef struct mtpndd_stats_s {
     uint64_t node_count;
+#ifdef ENABLE_RECORDING
     uint64_t edge_count;
     uint64_t bdd_node_count;
     uint64_t cache_hits;
     uint64_t cache_misses;
     uint64_t gc_count;
-    double parallel_efficiency;
+    uint64_t nodes_created;
+    uint64_t nodes_reused;
+    uint64_t edges_inserted;
+    uint64_t edge_collisions;
+    uint64_t nodetable_collisions;
+    uint64_t edge_lock_spins;
+    uint64_t edge_lock_wait_ns;
+    uint64_t gc_time_ns;
+    uint64_t total_edge_entries;
+    uint64_t max_edges_per_node;
+    uint64_t bdd_nodes_processed;
+#endif
 } mtpndd_stats_t;
 
 extern mtpndd_stats_t g_mtpndd_stats;
+
+#ifdef ENABLE_RECORDING
+static inline void mtpndd_stat_add(uint64_t *field, uint64_t value) {
+    __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
+}
+
+static inline void mtpndd_stat_set(uint64_t *field, uint64_t value) {
+    __atomic_store_n(field, value, __ATOMIC_RELAXED);
+}
+
+static inline void mtpndd_stat_max(uint64_t *field, uint64_t value) {
+    uint64_t current = __atomic_load_n(field, __ATOMIC_RELAXED);
+    while (value > current && !__atomic_compare_exchange_n(field, &current, value, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        /* retry with updated current */
+    }
+}
+
+static inline uint64_t mtpndd_timespec_diff_ns(const struct timespec *start_ts, const struct timespec *end_ts) {
+    uint64_t sec = (uint64_t)end_ts->tv_sec - (uint64_t)start_ts->tv_sec;
+    int64_t nsec = end_ts->tv_nsec - start_ts->tv_nsec;
+    return sec * 1000000000ull + (uint64_t)nsec;
+}
+
+#define MTPNDD_STAT_ADD(field, value) mtpndd_stat_add(&g_mtpndd_stats.field, (uint64_t)(value))
+#define MTPNDD_STAT_SET(field, value) mtpndd_stat_set(&g_mtpndd_stats.field, (uint64_t)(value))
+#define MTPNDD_STAT_MAX(field, value) mtpndd_stat_max(&g_mtpndd_stats.field, (uint64_t)(value))
+#define MTPNDD_RECORD_TIME_START(var) struct timespec var = {0}; clock_gettime(CLOCK_MONOTONIC, &(var))
+#define MTPNDD_RECORD_TIME_END(field, start_var) \
+    do { \
+        struct timespec _mtpndd_time_end = {0}; \
+        clock_gettime(CLOCK_MONOTONIC, &_mtpndd_time_end); \
+        MTPNDD_STAT_ADD(field, mtpndd_timespec_diff_ns(&(start_var), &_mtpndd_time_end)); \
+    } while(0)
+#else
+#define MTPNDD_STAT_ADD(field, value) ((void)0)
+#define MTPNDD_STAT_SET(field, value) ((void)0)
+#define MTPNDD_STAT_MAX(field, value) ((void)0)
+#define MTPNDD_RECORD_TIME_START(var) ((void)0)
+#define MTPNDD_RECORD_TIME_END(field, start_var) ((void)0)
+#endif
 
 typedef struct mtpndd_field_info_s {
     uint32_t field_id;
@@ -193,6 +249,15 @@ bool mtpndd_is_initialized();
 
 mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config);
 mtpndd_error_t mtpndd_quit();
+
+/********************************
+ * GC hooks
+ ********************************/
+typedef void (*mtpndd_gc_hook_t)(void);
+void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook);
+void mtpndd_gc_hook_postgc(mtpndd_gc_hook_t hook);
+void mtpndd_gc_run_prehooks(void);
+void mtpndd_gc_run_posthooks(void);
 
 /********************************
  * GC protection hash set
