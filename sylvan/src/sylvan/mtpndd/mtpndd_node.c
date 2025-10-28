@@ -10,6 +10,8 @@
 #include "sylvan_mtbdd.h"
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <inttypes.h>
 #include <lace.h>
 #include <lace14.h>
 
@@ -1307,4 +1309,196 @@ double mtpndd_satcount(mtpndd_t *node) {
     sylvan_deref(bdd);
 
     return count;
+}
+
+/********************************
+ * DOT visualization utilities
+ ********************************/
+typedef struct mtpndd_dot_visit_s {
+    const mtpndd_node_t *node;
+    size_t id;
+    struct mtpndd_dot_visit_s *next;
+} mtpndd_dot_visit_t;
+
+typedef struct {
+    mtpndd_dot_visit_t *visited;
+    size_t next_id;
+    const mtpndd_t *root;
+    bool error;
+} mtpndd_dot_ctx_t;
+
+static void mtpndd_dot_ctx_cleanup(mtpndd_dot_ctx_t *ctx) {
+    if (!ctx) {
+        return;
+    }
+    mtpndd_dot_visit_t *entry = ctx->visited;
+    while (entry) {
+        mtpndd_dot_visit_t *next = entry->next;
+        free(entry);
+        entry = next;
+    }
+    ctx->visited = NULL;
+    ctx->next_id = 0;
+    ctx->error = false;
+}
+
+static size_t mtpndd_dot_ctx_get_id(mtpndd_dot_ctx_t *ctx, const mtpndd_node_t *node, bool *is_new) {
+    if (!ctx || !node) {
+        if (is_new) {
+            *is_new = false;
+        }
+        return 0;
+    }
+
+    for (mtpndd_dot_visit_t *entry = ctx->visited; entry; entry = entry->next) {
+        if (entry->node == node) {
+            if (is_new) {
+                *is_new = false;
+            }
+            return entry->id;
+        }
+    }
+
+    mtpndd_dot_visit_t *entry = (mtpndd_dot_visit_t *)malloc(sizeof(mtpndd_dot_visit_t));
+    if (!entry) {
+        ctx->error = true;
+        if (is_new) {
+            *is_new = false;
+        }
+        return 0;
+    }
+
+    entry->node = node;
+    entry->id = ctx->next_id++;
+    entry->next = ctx->visited;
+    ctx->visited = entry;
+
+    if (is_new) {
+        *is_new = true;
+    }
+    return entry->id;
+}
+
+static void mtpndd_dot_format_edge_label(mtpndd_bdd_t label, char *buffer, size_t buffer_size) {
+    if (!buffer || buffer_size == 0) {
+        return;
+    }
+    if (label == sylvan_true) {
+        (void)snprintf(buffer, buffer_size, "TRUE");
+    } else if (label == sylvan_false) {
+        (void)snprintf(buffer, buffer_size, "FALSE");
+    } else {
+        (void)snprintf(buffer, buffer_size, "0x%" PRIx64, (uint64_t)label);
+    }
+}
+
+static void mtpndd_dot_emit_node(FILE *out, const mtpndd_t *node, size_t node_id, bool highlight_root) {
+    if (!out || !node) {
+        return;
+    }
+
+    if (mtpndd_is_true((mtpndd_t *)node)) {
+        (void)fprintf(out,
+                "    n%zu [label=\"TRUE\", shape=box, style=\"filled\", fillcolor=\"#dff0d8\", peripheries=%d];\n",
+                node_id,
+                highlight_root ? 2 : 1);
+        return;
+    }
+
+    if (mtpndd_is_false((mtpndd_t *)node)) {
+        (void)fprintf(out,
+                "    n%zu [label=\"FALSE\", shape=box, style=\"filled\", fillcolor=\"#f2dede\", peripheries=%d];\n",
+                node_id,
+                highlight_root ? 2 : 1);
+        return;
+    }
+
+    const mtpndd_field_info_t *field = node->field;
+    size_t edge_count = (node->edges != NULL) ? node->edges->edge_count : 0;
+    uint32_t field_id = field ? field->field_id : 0;
+    uint32_t bit_width = field ? field->bit_width : 0;
+
+    (void)fprintf(out,
+            "    n%zu [label=\"Field %u\\nBits %u\\nEdges %zu\", shape=ellipse, peripheries=%d];\n",
+            node_id,
+            field_id,
+            bit_width,
+            edge_count,
+            highlight_root ? 2 : 1);
+}
+
+static void mtpndd_fprint_dot_rec(FILE *out, mtpndd_t *node, mtpndd_dot_ctx_t *ctx) {
+    if (!out || !node || !ctx || ctx->error) {
+        return;
+    }
+
+    bool is_new = false;
+    size_t node_id = mtpndd_dot_ctx_get_id(ctx, node, &is_new);
+    if (ctx->error || !is_new) {
+        return;
+    }
+
+    mtpndd_dot_emit_node(out, node, node_id, node == ctx->root);
+
+    if (!node->edges || node->edges->edge_count == 0) {
+        return;
+    }
+
+    edge_bucket_entry_t *entry = NULL;
+    FOR_EACH_ENTRY_IN_ALL_BUCKETS(node->edges, entry) {
+        if (!entry || !entry->child) {
+            continue;
+        }
+        mtpndd_t *child = entry->child;
+        bool child_is_new = false;
+        size_t child_id = mtpndd_dot_ctx_get_id(ctx, child, &child_is_new);
+        if (ctx->error) {
+            return;
+        }
+
+        char label_buffer[32] = {0};
+        mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+        mtpndd_dot_format_edge_label(label, label_buffer, sizeof(label_buffer));
+
+        (void)fprintf(out,
+                "    n%zu -> n%zu [label=\"%s\"];\n",
+                node_id,
+                child_id,
+                label_buffer);
+
+        if (child_is_new) {
+            mtpndd_fprint_dot_rec(out, child, ctx);
+        }
+    }
+}
+
+void mtpndd_fprint_dot(FILE *out, mtpndd_t *root) {
+    if (!root) {
+        return;
+    }
+    if (!out) {
+        out = stdout;
+    }
+
+    mtpndd_dot_ctx_t ctx = {
+        .visited = NULL,
+        .next_id = 0,
+        .root = root,
+        .error = false
+    };
+
+    (void)fprintf(out, "digraph MTPNDD {\n");
+    (void)fprintf(out, "    rankdir=TB;\n");
+    (void)fprintf(out, "    node [fontname=\"Helvetica\"];\n");
+    (void)fprintf(out, "    edge [fontname=\"Helvetica\"];\n");
+
+    mtpndd_fprint_dot_rec(out, root, &ctx);
+
+    (void)fprintf(out, "}\n");
+
+    mtpndd_dot_ctx_cleanup(&ctx);
+}
+
+void mtpndd_print_dot(mtpndd_t *root) {
+    mtpndd_fprint_dot(stdout, root);
 }
