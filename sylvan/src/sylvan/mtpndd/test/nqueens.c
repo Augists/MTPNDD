@@ -247,6 +247,10 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t ndd_size = (size <= 7) ? (1 << 18) : (size <= 9) ? (1 << 20) : (1 << 23);
     size_t cache_size = (size <= 7) ? (1 << 18) : (size <= 9) ? (1 << 20) : (1 << 23);
 
+    size_t edge_bucket_count = (size <= 7) ? 32 : (size <= 9) ? 128 : 512;
+    size_t nodetable_bucket_count = ndd_size;
+    size_t gc_bucket_count = (size <= 7) ? 512 : (size <= 9) ? 2048 : 8192;
+
     mtpndd_pal_config_t config = {
         .n_workers = 0,
         .lace_dqsize = 1024,
@@ -254,6 +258,9 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = cache_size,
         .quick_growth_threshold = 0.1,
+        .edge_bucket_count = edge_bucket_count,
+        .nodetable_bucket_count = nodetable_bucket_count,
+        .gc_bucket_count = gc_bucket_count,
     };
 
     if (mtpndd_init(&config) != MTPNDD_SUCCESS) {

@@ -10,12 +10,6 @@
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
 
-#ifdef LARGE_NODETABLE
-#define NODETABLE_BUCKET_CNT 65537
-#else
-#define NODETABLE_BUCKET_CNT 1024
-#endif
-
 /********************************
  * MTPNDD nodetable
  ********************************/

@@ -108,6 +108,9 @@ int main(void) {
         .bdd_nodetable_size = 1 << 16,
         .mtpndd_nodetable_size = 1 << 14,
         .op_cache_size = 1 << 12,
+        .edge_bucket_count = 32,
+        .nodetable_bucket_count = 1 << 12,
+        .gc_bucket_count = 1 << 12,
     };
     assert_success(mtpndd_init(&config));
     printf(">> mtpndd_init succeeded\n");

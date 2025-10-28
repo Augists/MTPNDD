@@ -56,21 +56,28 @@ static inline mtpndd_error_t mtpndd_edge_map_init_local(mtpndd_edge_t *edges)
 static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest)
 {
     dest->edge_count = source->edge_count;
+    dest->bucket_count = source->bucket_count;
     dest->buckets = NULL;
     dest->bucket_locks = NULL;
 
-    dest->buckets = (edge_bucket_entry_t **)malloc(sizeof(edge_bucket_entry_t *) * EDGE_BUCKET_CNT);
+    size_t bucket_cnt = source->bucket_count ? source->bucket_count : mtpndd_config_edge_bucket_count();
+    if (bucket_cnt == 0) {
+        bucket_cnt = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
+    }
+    dest->bucket_count = bucket_cnt;
+
+    dest->buckets = (edge_bucket_entry_t **)malloc(sizeof(edge_bucket_entry_t *) * bucket_cnt);
     if (!dest->buckets) {
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
-    dest->bucket_locks = (atomic_flag *)malloc(sizeof(atomic_flag) * EDGE_BUCKET_CNT);
+    dest->bucket_locks = (atomic_flag *)malloc(sizeof(atomic_flag) * bucket_cnt);
     if (!dest->bucket_locks) {
         free(dest->buckets);
         dest->buckets = NULL;
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
 
-    for (size_t i = 0; i < EDGE_BUCKET_CNT; ++i) {
+    for (size_t i = 0; i < bucket_cnt; ++i) {
         dest->buckets[i] = NULL;
         atomic_flag_clear_explicit(&dest->bucket_locks[i], memory_order_relaxed);
     }
@@ -79,7 +86,7 @@ static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mt
         return MTPNDD_SUCCESS;
     }
 
-    for (size_t i = 0; i < EDGE_BUCKET_CNT; ++i) {
+    for (size_t i = 0; i < bucket_cnt; ++i) {
         edge_bucket_entry_t *src_head = source->buckets[i];
         if (!src_head) {
             continue;
@@ -134,7 +141,8 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
         return;
     }
     if (edges->buckets) {
-        for (size_t i = 0; i < EDGE_BUCKET_CNT; ++i) {
+        size_t bucket_cnt = edges->bucket_count;
+        for (size_t i = 0; i < bucket_cnt; ++i) {
             edge_bucket_entry_t *head = edges->buckets[i];
             if (!head) {
                 continue;
@@ -161,6 +169,7 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
         edges->bucket_locks = NULL;
     }
     edges->edge_count = 0;
+    edges->bucket_count = 0;
 }
 
 static void mtpndd_edge_map_free(mtpndd_edge_t *edges) {
@@ -180,7 +189,7 @@ edge_bucket_entry_t *find_edge_entry(mtpndd_edge_t *edge, mtpndd_node_t *key) {
         return NULL;
     }
     
-    size_t hash = EDGE_MAP_HASH_VAL(key);
+    size_t hash = EDGE_MAP_HASH_VAL(edge, key);
     
     edge_bucket_entry_t *entry = NULL;
     FOR_EACH_ENTRY_IN_BUCKET(edge, hash, entry) {
@@ -199,7 +208,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     }
 
     mtpndd_bdd_t old_label = sylvan_false;
-    size_t hash = EDGE_MAP_HASH_VAL(descendant);
+    size_t hash = EDGE_MAP_HASH_VAL(edges, descendant);
     atomic_flag *bucket_lock = &edges->bucket_locks[hash];
     while (atomic_flag_test_and_set_explicit(bucket_lock, memory_order_acquire)) {
 #if defined(__GNUC__) || defined(__clang__)
@@ -1062,7 +1071,8 @@ static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t *node, mtpndd_to_mtbdd_cache_
 
     mtpndd_bdd_t acc = sylvan_ref(sylvan_false);
     mtpndd_error_t status = MTPNDD_SUCCESS;
-    for (size_t bucket = 0; bucket < EDGE_BUCKET_CNT; ++bucket) {
+    size_t bucket_cnt = (node->edges != NULL) ? node->edges->bucket_count : 0;
+    for (size_t bucket = 0; bucket < bucket_cnt; ++bucket) {
         edge_bucket_entry_t *head = node->edges->buckets[bucket];
         if (!head) {
             continue;
@@ -1221,23 +1231,9 @@ static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cach
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
-    edges->edge_count = 0;
-    edges->buckets = (edge_bucket_entry_t **)malloc(sizeof(edge_bucket_entry_t *) * EDGE_BUCKET_CNT);
-    if (!edges->buckets) {
+    if (mtpndd_edge_map_init_local(edges) != MTPNDD_SUCCESS) {
         free(edges);
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    edges->bucket_locks = (atomic_flag *)malloc(sizeof(atomic_flag) * EDGE_BUCKET_CNT);
-    if (!edges->bucket_locks) {
-        free(edges->buckets);
-        free(edges);
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    for (size_t i = 0; i < EDGE_BUCKET_CNT; ++i) {
-        edges->buckets[i] = NULL;
-        atomic_flag_clear_explicit(&edges->bucket_locks[i], memory_order_relaxed);
     }
 
     mtpndd_error_t status = mtbdd_to_mtpndd_collect(bdd, field, 0, sylvan_true, cache, edges);

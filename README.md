@@ -29,6 +29,24 @@ cmake ..
 make && make test
 ```
 
+可通过 `mtpndd_pal_config_t` 提供的可选字段调整内部哈希表的桶数量：
+
+```c
+mtpndd_pal_config_t config = {
+    .n_workers = 0,
+    .lace_dqsize = 1 << 18,
+    .bdd_nodetable_size = 1 << 16,
+    .mtpndd_nodetable_size = 1 << 14,
+    .op_cache_size = 1 << 12,
+    .edge_bucket_count = 32,          // 默认为 8
+    .nodetable_bucket_count = 1 << 12, // 默认为 1024 或 65537 (LARGE_NODETABLE)
+    .gc_bucket_count = 1 << 12         // 默认为 1024 或 65537
+};
+mtpndd_init(&config);
+```
+
+未配置时会自动使用默认值，适合小规模问题。对于节点/边数量巨大的场景，可以按需增大桶数量以降低哈希冲突。
+
 ## Visualization
 
 调用 `mtpndd_print_dot(root)` 或 `mtpndd_fprint_dot(file, root)` 可以把当前节点为根的 NDD 导出为 DOT 描述。例如：

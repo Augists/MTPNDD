@@ -18,23 +18,27 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
     if (!table) return NULL;
     memset(table, 0, sizeof(mtpndd_nodetable_t));
-    table->nodetable_bucket_count = NODETABLE_BUCKET_CNT;
+    size_t bucket_cnt = mtpndd_config_nodetable_bucket_count();
+    if (bucket_cnt == 0) {
+        bucket_cnt = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
+    }
+    table->nodetable_bucket_count = bucket_cnt;
 
-    table->buckets = 
+    table->buckets =
             (mtpndd_nodetable_bucket_entry_t **)malloc(
-                NODETABLE_BUCKET_CNT * sizeof(mtpndd_nodetable_bucket_entry_t *));
+                bucket_cnt * sizeof(mtpndd_nodetable_bucket_entry_t *));
     if (!table->buckets) {
         free(table);
         return NULL;
     }
-    table->bucket_locks = (pthread_rwlock_t *)malloc(NODETABLE_BUCKET_CNT * sizeof(pthread_rwlock_t));
+    table->bucket_locks = (pthread_rwlock_t *)malloc(bucket_cnt * sizeof(pthread_rwlock_t));
     if (!table->bucket_locks) {
         free(table->buckets);
         free(table);
         return NULL;
     }
 
-    for (size_t i = 0; i < NODETABLE_BUCKET_CNT; i++) {
+    for (size_t i = 0; i < bucket_cnt; i++) {
         table->buckets[i] = NULL;
         if (pthread_rwlock_init(&table->bucket_locks[i], NULL) != 0) {
             for (size_t j = 0; j < i; j++) {
@@ -142,7 +146,8 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         return MTPNDD_SUCCESS;
     } else if (edges->edge_count == 1) {
         edge_bucket_entry_t *only_entry = NULL;
-        for (size_t i = 0; i < EDGE_BUCKET_CNT && !only_entry; ++i) {
+        size_t bucket_cnt = edges->bucket_count;
+        for (size_t i = 0; i < bucket_cnt && !only_entry; ++i) {
             edge_bucket_entry_t *head = edges->buckets[i];
             if (!head) continue;
             edge_bucket_entry_t *walker = head->next;
