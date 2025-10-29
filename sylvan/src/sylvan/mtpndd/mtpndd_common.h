@@ -133,22 +133,22 @@ static inline size_t mtpndd_config_gc_bucket_count(void) {
 typedef struct mtpndd_stats_s {
     uint64_t node_count;
 #ifdef ENABLE_RECORDING
-    uint64_t edge_count;
-    uint64_t bdd_node_count;
-    uint64_t cache_hits;
-    uint64_t cache_misses;
-    uint64_t gc_count;
-    uint64_t nodes_created;
-    uint64_t nodes_reused;
-    uint64_t edges_inserted;
-    uint64_t edge_collisions;
-    uint64_t nodetable_collisions;
-    uint64_t edge_lock_spins;
-    uint64_t edge_lock_wait_ns;
-    uint64_t gc_time_ns;
-    uint64_t total_edge_entries;
     uint64_t max_edges_per_node;
-    uint64_t bdd_nodes_processed;
+    uint64_t bdd_nodes_converted;
+    uint64_t cache_lookup_hits;
+    uint64_t cache_lookup_misses;
+    uint64_t gc_runs;
+    uint64_t nodes_created_total;
+    uint64_t nodes_reused_total;
+    uint64_t nodes_collected_last;
+    uint64_t edge_insert_total;
+    uint64_t edge_collision_total;
+    uint64_t nodetable_collision_total;
+    uint64_t edge_lock_spin_total;
+    uint64_t edge_lock_wait_time_ns;
+    uint64_t gc_pause_time_ns;
+    uint64_t edge_entry_total;
+    uint64_t bdd_nodes_processed_total;
 #endif
 } mtpndd_stats_t;
 

@@ -227,7 +227,7 @@ typedef struct {
     double seconds;
     uint64_t mtpndd_nodes;
 #ifdef ENABLE_RECORDING
-    uint64_t mtpndd_edges;
+    uint64_t mtpndd_max_edges;
     uint64_t cache_hits;
     uint64_t cache_misses;
 #endif
@@ -348,9 +348,9 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         metrics->seconds = elapsed;
         metrics->mtpndd_nodes = g_mtpndd_stats.node_count;
 #ifdef ENABLE_RECORDING
-        metrics->mtpndd_edges = g_mtpndd_stats.edge_count;
-        metrics->cache_hits = g_mtpndd_stats.cache_hits;
-        metrics->cache_misses = g_mtpndd_stats.cache_misses;
+        metrics->mtpndd_max_edges = g_mtpndd_stats.max_edges_per_node;
+        metrics->cache_hits = g_mtpndd_stats.cache_lookup_hits;
+        metrics->cache_misses = g_mtpndd_stats.cache_lookup_misses;
 #endif
         metrics->sylvan_nodes = sylvan_nodes;
         metrics->sylvan_table_filled = table_filled;
@@ -392,7 +392,7 @@ int main(void) {
 
     printf("N-Queens results (n = %zu..%zu)\n", n_min, n_max);
 #ifdef ENABLE_RECORDING
-    printf(" n  solutions  expected   time(s)  MTPNDD(nodes/edges)  cache(h/m,hit%%)  Sylvan(nodes)  table(filled/total)\n");
+    printf(" n  solutions  expected   time(s)  MTPNDD(nodes/maxEdges)  cache(h/m,hit%%)  Sylvan(nodes)  table(filled/total)\n");
 #else
     printf(" n  solutions  expected   time(s)  MTPNDD(nodes)  Sylvan(nodes)  table(filled/total)\n");
 #endif
@@ -418,7 +418,7 @@ int main(void) {
                expected_buf,
                m->seconds,
                m->mtpndd_nodes,
-               m->mtpndd_edges,
+               m->mtpndd_max_edges,
                m->cache_hits,
                m->cache_misses,
                cache_ratio,

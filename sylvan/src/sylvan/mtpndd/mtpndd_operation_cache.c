@@ -161,9 +161,9 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
 #ifdef ENABLE_RECORDING
     if (hit) {
         result = entry->result;
-        __atomic_add_fetch(&g_mtpndd_stats.cache_hits, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
     } else {
-        __atomic_add_fetch(&g_mtpndd_stats.cache_misses, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
     }
 #else
     if (hit) {
@@ -202,9 +202,9 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
 #ifdef ENABLE_RECORDING
     if (hit) {
         result = entry->result;
-        __atomic_add_fetch(&g_mtpndd_stats.cache_hits, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
     } else {
-        __atomic_add_fetch(&g_mtpndd_stats.cache_misses, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
     }
 #else
     if (hit) {

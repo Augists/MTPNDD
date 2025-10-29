@@ -82,6 +82,7 @@ static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd
             (entry) = (entry)->next)
 
 edge_bucket_entry_t *find_edge_entry(mtpndd_edge_t *edge, mtpndd_node_t *key);
+void mtpndd_edge_map_free(mtpndd_edge_t *edges);
 mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpndd_bdd_t label_bdd);
 
 /********************************

@@ -8,6 +8,7 @@
 #include "mtpndd_nodetable.h"
 #include "mtpndd_node.h"
 #include "sylvan.h"
+#include "sylvan_common.h"
 #ifdef ENABLE_RECORDING
 #include <time.h>
 #endif
@@ -16,6 +17,10 @@ static void gc(void);
 static void grow(void);
 
 static void gcOrGrow(void);
+static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out);
+static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count);
+static size_t mtpndd_gc_sweep(void);
+static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node);
 
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
@@ -172,7 +177,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
             sylvan_deref(label);
         }
 #ifdef ENABLE_RECORDING
-        MTPNDD_STAT_ADD(nodes_reused, 1);
+        MTPNDD_STAT_ADD(nodes_reused_total, 1);
 #endif
         *result = node;
         return MTPNDD_SUCCESS;
@@ -247,9 +252,9 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         }
 #ifdef ENABLE_RECORDING
         if (bucket_had_entries) {
-            MTPNDD_STAT_ADD(nodetable_collisions, 1);
+            MTPNDD_STAT_ADD(nodetable_collision_total, 1);
         }
-        MTPNDD_STAT_ADD(nodes_reused, 1);
+        MTPNDD_STAT_ADD(nodes_reused_total, 1);
 #endif
         *result = existing_node;
         return MTPNDD_SUCCESS;
@@ -264,9 +269,9 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     pthread_rwlock_unlock(bucket_lock);
     __atomic_add_fetch(&g_mtpndd_stats.node_count, 1, __ATOMIC_RELAXED);
 #ifdef ENABLE_RECORDING
-    MTPNDD_STAT_ADD(nodes_created, 1);
+    MTPNDD_STAT_ADD(nodes_created_total, 1);
     if (bucket_had_entries) {
-        MTPNDD_STAT_ADD(nodetable_collisions, 1);
+        MTPNDD_STAT_ADD(nodetable_collision_total, 1);
     }
 #endif
     *result = node;
@@ -282,7 +287,7 @@ static void gcOrGrow(void) {
 #ifdef ENABLE_RECORDING
     struct timespec gc_timer_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_end);
-    MTPNDD_STAT_ADD(gc_time_ns, mtpndd_timespec_diff_ns(&gc_timer_start, &gc_timer_end));
+    MTPNDD_STAT_ADD(gc_pause_time_ns, mtpndd_timespec_diff_ns(&gc_timer_start, &gc_timer_end));
 #endif
     if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
             < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
@@ -293,14 +298,168 @@ static void gcOrGrow(void) {
 
 static void gc(void) {
 #ifdef ENABLE_RECORDING
-    __atomic_add_fetch(&g_mtpndd_stats.gc_count, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_mtpndd_stats.gc_runs, 1, __ATOMIC_RELAXED);
 #endif
     mtpndd_gc_run_prehooks();
-    // protect temporary nodes during NDD operations
-    // TODO: stop the world and stop lace and gc
 
-    // TODO: gc pre hook and post hook like sylvan
+    int suspended_workers = 0;
+    if (lace_workers() > 0) {
+        lace_suspend();
+        suspended_workers = 1;
+    }
+
+    mtpndd_node_t **gc_roots = NULL;
+    size_t gc_root_count = mtpndd_gc_collect_roots(&gc_roots);
+    size_t reclaimed = mtpndd_gc_sweep();
+    mtpndd_gc_release_roots(gc_roots, gc_root_count);
+
+    if (reclaimed > 0) {
+#ifdef ENABLE_RECORDING
+        MTPNDD_STAT_SET(nodes_collected_last, reclaimed);
+#endif
+        __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
+    }
+
+    if (suspended_workers) {
+        lace_resume();
+    }
+
+    sylvan_gc();
+
     mtpndd_gc_run_posthooks();
+}
+
+static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
+    if (roots_out == NULL) {
+        return 0;
+    }
+    *roots_out = NULL;
+
+    mtpndd_gc_protect_t *gc_protect = g_mtpndd_config.gcProtect;
+    if (!gc_protect || !gc_protect->buckets || gc_protect->bucket_count == 0) {
+        return 0;
+    }
+
+    mtpndd_node_t **buffer = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    size_t bucket_count = gc_protect->bucket_count;
+
+    for (size_t i = 0; i < bucket_count; ++i) {
+        if (GC_PROTECT_BUCKET_RDLOCK(gc_protect, i) != 0) {
+            continue;
+        }
+
+        gc_protect_entry_t *entry = gc_protect->buckets[i];
+        while (entry) {
+            mtpndd_node_t *node = entry->node;
+            if (node) {
+                if (mtpndd_ref(node) == MTPNDD_SUCCESS) {
+                    if (count == capacity) {
+                        size_t new_capacity = capacity ? capacity * 2 : 64;
+                        mtpndd_node_t **new_buffer = (mtpndd_node_t **)realloc(buffer, new_capacity * sizeof(mtpndd_node_t *));
+                        if (!new_buffer) {
+                            mtpndd_gc_release_roots(buffer, count);
+                            GC_PROTECT_BUCKET_UNLOCK(gc_protect, i);
+                            *roots_out = NULL;
+                            return 0;
+                        }
+                        buffer = new_buffer;
+                        capacity = new_capacity;
+                    }
+                    buffer[count++] = node;
+                }
+            }
+            entry = entry->next;
+        }
+
+        GC_PROTECT_BUCKET_UNLOCK(gc_protect, i);
+    }
+
+    *roots_out = buffer;
+    return count;
+}
+
+static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count) {
+    if (!roots) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        mtpndd_node_t *node = roots[i];
+        if (node) {
+            mtpndd_deref(node);
+        }
+    }
+    free(roots);
+}
+
+static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node) {
+    if (entry->prev) {
+        entry->prev->next = entry->next;
+    } else {
+        table->buckets[bucket_idx] = entry->next;
+    }
+    if (entry->next) {
+        entry->next->prev = entry->prev;
+    }
+
+    mtpndd_edge_t *edges = node->edges;
+    if (edges && edges->buckets) {
+        size_t edge_bucket_count = edges->bucket_count;
+        for (size_t eb = 0; eb < edge_bucket_count; ++eb) {
+            edge_bucket_entry_t *head = edges->buckets[eb];
+            if (!head) {
+                continue;
+            }
+            edge_bucket_entry_t *edge_entry = head->next;
+            while (edge_entry && edge_entry != head) {
+                mtpndd_node_t *child = edge_entry->child;
+                if (child && !mtpndd_is_terminal(child)) {
+                    mtpndd_deref(child);
+                }
+                edge_entry = edge_entry->next;
+            }
+        }
+    }
+    mtpndd_edge_map_free(edges);
+
+    free(node);
+    free(entry);
+}
+
+static size_t mtpndd_gc_sweep(void) {
+    size_t reclaimed = 0;
+
+    for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
+        mtpndd_nodetable_t *nodetable = g_mtpndd_config.node_tables_by_field[field];
+        if (!nodetable) {
+            continue;
+        }
+
+        size_t bucket_count = nodetable->nodetable_bucket_count;
+        for (size_t i = 0; i < bucket_count; ++i) {
+            pthread_rwlock_t *bucket_lock = &nodetable->bucket_locks[i];
+            if (pthread_rwlock_wrlock(bucket_lock) != 0) {
+                continue;
+            }
+
+            mtpndd_nodetable_bucket_entry_t *entry = nodetable->buckets[i];
+            while (entry) {
+                mtpndd_nodetable_bucket_entry_t *next_entry = entry->next;
+                mtpndd_node_t *node = entry->node;
+                uint64_t refc = atomic_load_explicit(&node->ref_count, memory_order_relaxed);
+                if (refc == 0) {
+                    mtpndd_release_node(nodetable, i, entry, node);
+                    reclaimed++;
+                }
+                entry = next_entry;
+            }
+
+            pthread_rwlock_unlock(bucket_lock);
+        }
+    }
+
+    return reclaimed;
 }
 
 static void grow(void) {

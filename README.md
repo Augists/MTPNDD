@@ -4,8 +4,7 @@
 
 ## Architecture
 
-```text
-```
+![architecture](docs/mtpndd_architecture_en.png)
 
 ## Build and Run
 
@@ -19,15 +18,27 @@ for macOS,
 brew install sphinx-doc
 ```
 
-* Sylvan with Lace
+### MTPNDD with Sylvan and Lace
 
 ```bash
 cd sylvan
 mkdir build
 cd build
-cmake ..
-make && make test
+cmake .. #-DMTPNDD_ENABLE_RECORDING=ON
+make
 ```
+
+### JNI
+
+```bash
+cd jni
+cmake -B build -DMTPNDD_LIBRARY_PATH=/absolute/path/to/libmtpndd.a
+cmake --build build      # 得到 build/libmtpnddjni.so
+
+mvn package              # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar
+```
+
+### Configuration
 
 可通过 `mtpndd_pal_config_t` 提供的可选字段调整内部哈希表的桶数量：
 

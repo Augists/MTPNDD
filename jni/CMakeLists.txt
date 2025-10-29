@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.17)
+project(mtpndd_jni C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+find_package(JNI REQUIRED)
+
+set(MTPNDD_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../sylvan/src/sylvan/mtpndd" CACHE PATH "Path to MTPNDD public headers")
+set(MTPNDD_LIBRARY_PATH "" CACHE FILEPATH "Path to libmtpndd (static or shared library)")
+
+if(NOT EXISTS "${MTPNDD_INCLUDE_DIR}/mtpndd.h")
+    message(FATAL_ERROR "MTPNDD headers not found in ${MTPNDD_INCLUDE_DIR}. Set MTPNDD_INCLUDE_DIR to the directory containing mtpndd.h")
+endif()
+
+if(NOT MTPNDD_LIBRARY_PATH)
+    message(FATAL_ERROR "Please set MTPNDD_LIBRARY_PATH to point to libmtpndd (e.g. /path/to/libmtpndd.a or .so)")
+endif()
+
+add_library(mtpnddjni SHARED src/main/native/mtpndd_jni.c)
+target_include_directories(mtpnddjni
+    PRIVATE
+        ${JNI_INCLUDE_DIRS}
+        ${MTPNDD_INCLUDE_DIR}
+)
+target_link_libraries(mtpnddjni PRIVATE ${MTPNDD_LIBRARY_PATH})
+
+set_target_properties(mtpnddjni PROPERTIES OUTPUT_NAME "mtpnddjni")
