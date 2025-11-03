@@ -107,10 +107,14 @@ int main(void) {
         .lace_dqsize = 1 << 18,
         .bdd_nodetable_size = 1 << 16,
         .mtpndd_nodetable_size = 1 << 14,
-        .op_cache_size = 1 << 12,
-        .edge_bucket_count = 32,
-        .nodetable_bucket_count = 1 << 12,
-        .gc_bucket_count = 1 << 12,
+    .op_cache_size = 1 << 12,
+    .edge_bucket_count = 32,
+    .nodetable_bucket_count = 1 << 12,
+    .gc_bucket_count = 1 << 12,
+    .node_slab_capacity = 1024,
+    .edge_entry_slab_capacity = 4096,
+    .nodetable_entry_slab_capacity = 2048,
+    .edge_map_slab_capacity = 1024,
     };
     assert_success(mtpndd_init(&config));
     printf(">> mtpndd_init succeeded\n");

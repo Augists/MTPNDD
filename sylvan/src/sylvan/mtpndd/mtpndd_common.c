@@ -6,6 +6,7 @@
 #include "mtpndd_node.h"
 #include "mtpndd_nodetable.h"
 #include "mtpndd_operation_cache.h"
+#include "mtpndd_memory_pool.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +46,57 @@ static bool mtpndd_lace_init(void);
 static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges);
 static bool mtpndd_gc_protect_contains_with_hash(mtpndd_t *node, size_t hash);
 static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count);
+
+static void mtpndd_field_info_teardown(mtpndd_field_info_t *field) {
+    if (!field) {
+        return;
+    }
+    uint32_t width = field->bit_width;
+    if (field->mtpndd_vars) {
+        for (uint32_t i = 0; i < width; ++i) {
+            mtpndd_node_t *node = field->mtpndd_vars[i];
+            if (node) {
+                if (node->edges) {
+                    mtpndd_edge_map_free(node->edges);
+                    node->edges = NULL;
+                }
+                mtpndd_memory_release_node(node);
+                field->mtpndd_vars[i] = NULL;
+            }
+        }
+        free(field->mtpndd_vars);
+        field->mtpndd_vars = NULL;
+    }
+    if (field->mtpndd_not_vars) {
+        for (uint32_t i = 0; i < width; ++i) {
+            mtpndd_node_t *node = field->mtpndd_not_vars[i];
+            if (node) {
+                if (node->edges) {
+                    mtpndd_edge_map_free(node->edges);
+                    node->edges = NULL;
+                }
+                mtpndd_memory_release_node(node);
+                field->mtpndd_not_vars[i] = NULL;
+            }
+        }
+        free(field->mtpndd_not_vars);
+        field->mtpndd_not_vars = NULL;
+    }
+    if (field->bdd_vars) {
+        for (uint32_t i = 0; i < width; ++i) {
+            sylvan_unprotect(field->bdd_vars + i);
+        }
+        free(field->bdd_vars);
+        field->bdd_vars = NULL;
+    }
+    if (field->bdd_not_vars) {
+        for (uint32_t i = 0; i < width; ++i) {
+            sylvan_unprotect(field->bdd_not_vars + i);
+        }
+        free(field->bdd_not_vars);
+        field->bdd_not_vars = NULL;
+    }
+}
 
 /********************************
  * Error handling system
@@ -218,8 +270,20 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
     }
 
 #define FREE_BDD_VARS() do { \
-        free(new_field->bdd_vars); \
-        free(new_field->bdd_not_vars); \
+        if (new_field->bdd_vars) { \
+            for (uint32_t _k = 0; _k < (bit_width); ++_k) { \
+                sylvan_unprotect(new_field->bdd_vars + _k); \
+            } \
+            free(new_field->bdd_vars); \
+            new_field->bdd_vars = NULL; \
+        } \
+        if (new_field->bdd_not_vars) { \
+            for (uint32_t _k = 0; _k < (bit_width); ++_k) { \
+                sylvan_unprotect(new_field->bdd_not_vars + _k); \
+            } \
+            free(new_field->bdd_not_vars); \
+            new_field->bdd_not_vars = NULL; \
+        } \
         free(new_field); \
     } while(0)
 #define FREE_MTPNDD_VARS() do { \
@@ -229,21 +293,21 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
     } while(0)
 #define FREE_MTPNDD_VARS_WITH_NODES(i) do { \
         for (uint32_t j = 0; j < (i); j++) { \
-            if (new_field->mtpndd_vars[j]) { \
+            if (new_field->mtpndd_vars && new_field->mtpndd_vars[j]) { \
                 if (new_field->mtpndd_vars[j]->edges) { \
-                    free(new_field->mtpndd_vars[j]->edges->bucket_locks); \
-                    free(new_field->mtpndd_vars[j]->edges->buckets); \
-                    free(new_field->mtpndd_vars[j]->edges); \
+                    mtpndd_edge_map_free(new_field->mtpndd_vars[j]->edges); \
+                    new_field->mtpndd_vars[j]->edges = NULL; \
                 } \
-                free(new_field->mtpndd_vars[j]); \
+                mtpndd_memory_release_node(new_field->mtpndd_vars[j]); \
+                new_field->mtpndd_vars[j] = NULL; \
             } \
-            if (new_field->mtpndd_not_vars[j]) { \
+            if (new_field->mtpndd_not_vars && new_field->mtpndd_not_vars[j]) { \
                 if (new_field->mtpndd_not_vars[j]->edges) { \
-                    free(new_field->mtpndd_not_vars[j]->edges->bucket_locks); \
-                    free(new_field->mtpndd_not_vars[j]->edges->buckets); \
-                    free(new_field->mtpndd_not_vars[j]->edges); \
+                    mtpndd_edge_map_free(new_field->mtpndd_not_vars[j]->edges); \
+                    new_field->mtpndd_not_vars[j]->edges = NULL; \
                 } \
-                free(new_field->mtpndd_not_vars[j]); \
+                mtpndd_memory_release_node(new_field->mtpndd_not_vars[j]); \
+                new_field->mtpndd_not_vars[j] = NULL; \
             } \
         } \
         FREE_MTPNDD_VARS(); \
@@ -276,8 +340,8 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
     memset(new_field->mtpndd_not_vars, 0, sizeof(mtpndd_node_t *) * bit_width);
     mtpndd_error_t err = MTPNDD_SUCCESS;
     for (uint32_t i = 0; i < bit_width; i++) {
-        new_field->mtpndd_vars[i] = (mtpndd_node_t *)malloc(sizeof(mtpndd_node_t));
-        new_field->mtpndd_not_vars[i] = (mtpndd_node_t *)malloc(sizeof(mtpndd_node_t));
+        new_field->mtpndd_vars[i] = mtpndd_memory_acquire_node();
+        new_field->mtpndd_not_vars[i] = mtpndd_memory_acquire_node();
         if (!new_field->mtpndd_vars[i] || !new_field->mtpndd_not_vars[i]) {
             FREE_MTPNDD_VARS_WITH_NODES(bit_width);
             MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
@@ -286,11 +350,12 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
         memset(new_field->mtpndd_not_vars[i], 0, sizeof(mtpndd_node_t));
 
         new_field->mtpndd_vars[i]->field = new_field;
-        new_field->mtpndd_vars[i]->edges = (mtpndd_edge_t *)malloc(sizeof(mtpndd_edge_t));
+        new_field->mtpndd_vars[i]->edges = mtpndd_memory_acquire_edge_map();
         if (!new_field->mtpndd_vars[i]->edges) {
             FREE_MTPNDD_VARS_WITH_NODES(bit_width);
             MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         }
+        memset(new_field->mtpndd_vars[i]->edges, 0, sizeof(mtpndd_edge_t));
         err = mtpndd_edge_map_init(new_field->mtpndd_vars[i]->edges);
         if (err != MTPNDD_SUCCESS) {
             FREE_MTPNDD_VARS_WITH_NODES(bit_width);
@@ -299,11 +364,12 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
         atomic_init(&new_field->mtpndd_vars[i]->ref_count, 0);
 
         new_field->mtpndd_not_vars[i]->field = new_field;
-        new_field->mtpndd_not_vars[i]->edges = (mtpndd_edge_t *)malloc(sizeof(mtpndd_edge_t));
+        new_field->mtpndd_not_vars[i]->edges = mtpndd_memory_acquire_edge_map();
         if (!new_field->mtpndd_not_vars[i]->edges) {
             FREE_MTPNDD_VARS_WITH_NODES(bit_width);
             MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         }
+        memset(new_field->mtpndd_not_vars[i]->edges, 0, sizeof(mtpndd_edge_t));
         err = mtpndd_edge_map_init(new_field->mtpndd_not_vars[i]->edges);
         if (err != MTPNDD_SUCCESS) {
             FREE_MTPNDD_VARS_WITH_NODES(bit_width);
@@ -457,9 +523,13 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     g_mtpndd_pal_config.mtpndd_nodetable_size = config->mtpndd_nodetable_size;
     g_mtpndd_pal_config.op_cache_size = config->op_cache_size;
     g_mtpndd_pal_config.quick_growth_threshold = DEFAULT_QUICK_GROWTH_THRESHOLD;
-    g_mtpndd_pal_config.edge_bucket_count = config->edge_bucket_count ? config->edge_bucket_count : MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
-    g_mtpndd_pal_config.nodetable_bucket_count = config->nodetable_bucket_count ? config->nodetable_bucket_count : MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
-    g_mtpndd_pal_config.gc_bucket_count = config->gc_bucket_count ? config->gc_bucket_count : MTPNDD_DEFAULT_GC_BUCKET_COUNT;
+    g_mtpndd_pal_config.edge_bucket_count = config->edge_bucket_count;
+    g_mtpndd_pal_config.nodetable_bucket_count = config->nodetable_bucket_count;
+    g_mtpndd_pal_config.gc_bucket_count = config->gc_bucket_count;
+    g_mtpndd_pal_config.node_slab_capacity = config->node_slab_capacity;
+    g_mtpndd_pal_config.edge_entry_slab_capacity = config->edge_entry_slab_capacity;
+    g_mtpndd_pal_config.nodetable_entry_slab_capacity = config->nodetable_entry_slab_capacity;
+    g_mtpndd_pal_config.edge_map_slab_capacity = config->edge_map_slab_capacity;
 
     MTPNDD_TRUE.field = &MTPNDD_TERMINAL_FIELD;
     MTPNDD_TRUE.edges = NULL;
@@ -555,6 +625,12 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INITIALIZE_FAILED);
     }
 
+    mtpndd_error_t pool_status = mtpndd_memory_pools_init();
+    if (pool_status != MTPNDD_SUCCESS) {
+        mtpndd_op_cache_destroy();
+        MTPNDD_RETURN_ERROR(pool_status);
+    }
+
 #ifdef ENABLE_RECORDING
     // Before and after garbage collection, call gc_start and gc_end
     sylvan_gc_hook_pregc(TASK(sylvan_gc_start));
@@ -599,10 +675,16 @@ mtpndd_error_t mtpndd_quit() {
 
     // free every fields and their node tables
     for (uint32_t i = 1; i <= g_mtpndd_config.field_count; i++) {
-        free(g_mtpndd_config.field_info[i]);
-        g_mtpndd_config.field_info[i] = NULL;
-        free(g_mtpndd_config.node_tables_by_field[i]);
-        g_mtpndd_config.node_tables_by_field[i] = NULL;
+        mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
+        if (field) {
+            mtpndd_field_info_teardown(field);
+            free(field);
+            g_mtpndd_config.field_info[i] = NULL;
+        }
+        if (g_mtpndd_config.node_tables_by_field[i]) {
+            free(g_mtpndd_config.node_tables_by_field[i]);
+            g_mtpndd_config.node_tables_by_field[i] = NULL;
+        }
     }
     free(g_mtpndd_config.field_info);
     g_mtpndd_config.field_info = NULL;
@@ -612,6 +694,7 @@ mtpndd_error_t mtpndd_quit() {
     g_mtpndd_config.field_capacity = 0;
 
     mtpndd_op_cache_destroy();
+    mtpndd_memory_pools_shutdown();
 
     if (g_mtpndd_config.gcProtect) {
         GC_PROTECT_CLEAR(g_mtpndd_config.gcProtect);

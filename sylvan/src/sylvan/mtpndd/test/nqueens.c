@@ -252,6 +252,10 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t edge_bucket_count = (size <= 7) ? 32 : (size <= 9) ? 128 : 512;
     size_t nodetable_bucket_count = ndd_size;
     size_t gc_bucket_count = (size <= 7) ? 512 : (size <= 9) ? 2048 : 8192;
+    size_t node_slab_capacity = (size <= 7) ? 1024 : (size <= 9) ? 2048 : 4096;
+    size_t edge_entry_slab_capacity = (size <= 7) ? 2048 : (size <= 9) ? 4096 : 8192;
+    size_t nodetable_entry_slab_capacity = (size <= 7) ? 1024 : (size <= 9) ? 2048 : 4096;
+    size_t edge_map_slab_capacity = (size <= 7) ? 512 : (size <= 9) ? 1024 : 2048;
 
     mtpndd_pal_config_t config = {
         .n_workers = 0,
@@ -263,6 +267,10 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .edge_bucket_count = edge_bucket_count,
         .nodetable_bucket_count = nodetable_bucket_count,
         .gc_bucket_count = gc_bucket_count,
+        .node_slab_capacity = node_slab_capacity,
+        .edge_entry_slab_capacity = edge_entry_slab_capacity,
+        .nodetable_entry_slab_capacity = nodetable_entry_slab_capacity,
+        .edge_map_slab_capacity = edge_map_slab_capacity,
     };
 
     if (mtpndd_init(&config) != MTPNDD_SUCCESS) {

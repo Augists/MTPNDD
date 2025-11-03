@@ -49,14 +49,20 @@ mtpndd_pal_config_t config = {
     .bdd_nodetable_size = 1 << 16,
     .mtpndd_nodetable_size = 1 << 14,
     .op_cache_size = 1 << 12,
-    .edge_bucket_count = 32,          // 默认为 8
+    .edge_bucket_count = 32,           // 默认为 8
     .nodetable_bucket_count = 1 << 12, // 默认为 1024 或 65537 (LARGE_NODETABLE)
-    .gc_bucket_count = 1 << 12         // 默认为 1024 或 65537
+    .gc_bucket_count = 1 << 12,        // 默认为 1024 或 65537
+    .node_slab_capacity = 1024,        // 节点池每个 slab 的对象数量，默认 1024
+    .edge_entry_slab_capacity = 4096,  // 边条目池每个 slab 的对象数量，默认 4096
+    .nodetable_entry_slab_capacity = 2048, // 节点表 entry 池每个 slab 的对象数量，默认 2048
+    .edge_map_slab_capacity = 2048    // 边映射结构池每个 slab 的对象数量，默认 2048
 };
 mtpndd_init(&config);
 ```
 
-未配置时会自动使用默认值，适合小规模问题。对于节点/边数量巨大的场景，可以按需增大桶数量以降低哈希冲突。
+未配置时会自动使用默认值，适合小规模问题。对于节点/边数量巨大的场景，可以按需增大桶数量或调节 slab 大小以降低哈希冲突和频繁分配的开销。
+
+节点、边映射以及节点表 entry 均通过 slab 内存池管理，在初始化阶段会按上述容量参数批量预留对象并在回收时复用，避免频繁的 `malloc/free` 带来的锁竞争开销。
 
 ## Visualization
 

@@ -90,6 +90,10 @@ void mtpndd_clear_error();
 #endif
 
 #define MTPNDD_DEFAULT_EDGE_BUCKET_COUNT 8
+#define MTPNDD_DEFAULT_NODE_SLAB_CAPACITY 1024
+#define MTPNDD_DEFAULT_EDGE_ENTRY_SLAB_CAPACITY 4096
+#define MTPNDD_DEFAULT_NODETABLE_ENTRY_SLAB_CAPACITY 2048
+#define MTPNDD_DEFAULT_EDGE_MAP_SLAB_CAPACITY 2048
 
 /********************************
  * Forward declarations for helpers
@@ -97,6 +101,10 @@ void mtpndd_clear_error();
 static inline size_t mtpndd_config_edge_bucket_count(void);
 static inline size_t mtpndd_config_nodetable_bucket_count(void);
 static inline size_t mtpndd_config_gc_bucket_count(void);
+static inline size_t mtpndd_config_node_slab_capacity(void);
+static inline size_t mtpndd_config_edge_entry_slab_capacity(void);
+static inline size_t mtpndd_config_nodetable_entry_slab_capacity(void);
+static inline size_t mtpndd_config_edge_map_slab_capacity(void);
 
 /********************************
  * Global config definitions
@@ -111,6 +119,10 @@ typedef struct mtpndd_pal_config_s {
     size_t edge_bucket_count;
     size_t nodetable_bucket_count;
     size_t gc_bucket_count;
+    size_t node_slab_capacity;
+    size_t edge_entry_slab_capacity;
+    size_t nodetable_entry_slab_capacity;
+    size_t edge_map_slab_capacity;
 } mtpndd_pal_config_t;
 
 extern mtpndd_pal_config_t g_mtpndd_pal_config;
@@ -128,6 +140,26 @@ static inline size_t mtpndd_config_nodetable_bucket_count(void) {
 static inline size_t mtpndd_config_gc_bucket_count(void) {
     size_t count = g_mtpndd_pal_config.gc_bucket_count;
     return count ? count : MTPNDD_DEFAULT_GC_BUCKET_COUNT;
+}
+
+static inline size_t mtpndd_config_node_slab_capacity(void) {
+    size_t count = g_mtpndd_pal_config.node_slab_capacity;
+    return count ? count : MTPNDD_DEFAULT_NODE_SLAB_CAPACITY;
+}
+
+static inline size_t mtpndd_config_edge_entry_slab_capacity(void) {
+    size_t count = g_mtpndd_pal_config.edge_entry_slab_capacity;
+    return count ? count : MTPNDD_DEFAULT_EDGE_ENTRY_SLAB_CAPACITY;
+}
+
+static inline size_t mtpndd_config_nodetable_entry_slab_capacity(void) {
+    size_t count = g_mtpndd_pal_config.nodetable_entry_slab_capacity;
+    return count ? count : MTPNDD_DEFAULT_NODETABLE_ENTRY_SLAB_CAPACITY;
+}
+
+static inline size_t mtpndd_config_edge_map_slab_capacity(void) {
+    size_t count = g_mtpndd_pal_config.edge_map_slab_capacity;
+    return count ? count : MTPNDD_DEFAULT_EDGE_MAP_SLAB_CAPACITY;
 }
 
 typedef struct mtpndd_stats_s {
@@ -149,6 +181,18 @@ typedef struct mtpndd_stats_s {
     uint64_t gc_pause_time_ns;
     uint64_t edge_entry_total;
     uint64_t bdd_nodes_processed_total;
+    uint64_t node_pool_acquire_total;
+    uint64_t node_pool_release_total;
+    uint64_t node_pool_slab_total;
+    uint64_t edge_entry_pool_acquire_total;
+    uint64_t edge_entry_pool_release_total;
+    uint64_t edge_entry_pool_slab_total;
+    uint64_t nodetable_entry_pool_acquire_total;
+    uint64_t nodetable_entry_pool_release_total;
+    uint64_t nodetable_entry_pool_slab_total;
+    uint64_t edge_map_pool_acquire_total;
+    uint64_t edge_map_pool_release_total;
+    uint64_t edge_map_pool_slab_total;
 #endif
 } mtpndd_stats_t;
 
