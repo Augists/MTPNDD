@@ -46,6 +46,8 @@ static bool mtpndd_lace_init(void);
 static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges);
 static bool mtpndd_gc_protect_contains_with_hash(mtpndd_t *node, size_t hash);
 static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count);
+static void sylvan_gc_start_hook(WorkerP *worker, Task *task);
+static void sylvan_gc_end_hook(WorkerP *worker, Task *task);
 
 static void mtpndd_field_info_teardown(mtpndd_field_info_t *field) {
     if (!field) {
@@ -633,8 +635,8 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
 
 #ifdef ENABLE_RECORDING
     // Before and after garbage collection, call gc_start and gc_end
-    sylvan_gc_hook_pregc(TASK(sylvan_gc_start));
-    sylvan_gc_hook_postgc(TASK(sylvan_gc_end));
+    sylvan_gc_hook_pregc(sylvan_gc_start_hook);
+    sylvan_gc_hook_postgc(sylvan_gc_end_hook);
     memset(&g_mtpndd_stats, 0, sizeof(g_mtpndd_stats));
 #endif
     
@@ -658,13 +660,17 @@ static bool mtpndd_lace_init(void) {
 
 #define SYLVAN_INFO(s, ...) fprintf(stdout, "[% 8.2f] " s, 0.0, ##__VA_ARGS__)
 
-VOID_TASK_0(sylvan_gc_start)
+static void sylvan_gc_start_hook(WorkerP *worker, Task *task)
 {
+    (void)worker;
+    (void)task;
     SYLVAN_INFO("(GC-Sylvan) Starting garbage collection...\n");
 }
 
-VOID_TASK_0(sylvan_gc_end)
+static void sylvan_gc_end_hook(WorkerP *worker, Task *task)
 {
+    (void)worker;
+    (void)task;
     SYLVAN_INFO("(GC-Sylvan) Garbage collection done.\n");
 }
 

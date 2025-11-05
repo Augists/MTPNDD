@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 static void assert_success(mtpndd_error_t err) {
     if (err != MTPNDD_SUCCESS) {
@@ -99,6 +100,23 @@ static mtpndd_bdd_t build_ip_set_bdd(const uint32_t field_ids[4], const uint32_t
 
 // TODO: 1. check parallel
 // TODO: 2. check multi-terminal
+#ifdef ENABLE_RECORDING
+static void print_recording_stats(void) {
+    const mtpndd_stats_t *stats = mtpndd_get_stats();
+    if (!stats) {
+        return;
+    }
+    printf(">> MTPNDD stats:\n");
+    printf("   nodes_created_total    = %" PRIu64 "\n", stats->nodes_created_total);
+    printf("   nodes_reused_total     = %" PRIu64 "\n", stats->nodes_reused_total);
+    printf("   nodes_collected_last   = %" PRIu64 "\n", stats->nodes_collected_last);
+    printf("   node_pool_acquire_total= %" PRIu64 "\n", stats->node_pool_acquire_total);
+    printf("   edge_entry_pool_acquire= %" PRIu64 "\n", stats->edge_entry_pool_acquire_total);
+    printf("   max_edges_per_node     = %" PRIu64 "\n", stats->max_edges_per_node);
+    printf("   cache hits/misses      = %" PRIu64 " / %" PRIu64 "\n",
+           stats->cache_lookup_hits, stats->cache_lookup_misses);
+}
+#endif
 
 int main(void) {
     // 初始化 MTPNDD 运行时
@@ -191,6 +209,9 @@ int main(void) {
     sylvan_deref(expected_difference);
     sylvan_deref(ip_a_bdd);
     sylvan_deref(ip_b_bdd);
+#ifdef ENABLE_RECORDING
+    print_recording_stats();
+#endif
 
     assert_success(mtpndd_quit());
     printf(">> mtpndd_quit succeeded\n");

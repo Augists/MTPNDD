@@ -35,7 +35,24 @@ cd jni
 cmake -B build -DMTPNDD_LIBRARY_PATH=/absolute/path/to/libmtpndd.a
 cmake --build build      # 得到 build/libmtpnddjni.so
 
-mvn package              # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar
+mvn -DskipTests package  # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar
+mvn test                 # 运行 JNI 层的单元测试（需要访问 Maven Central）
+
+离线环境可以直接使用 `src/test/java/org/ants/mtpndd/ManualNativeCheck` 进行冒烟验证：
+
+```bash
+cd jni
+cmake --build build
+/usr/local/java/jdk-23/bin/javac -d manual-build/classes \
+    $(find src/main/java -name '*.java')
+/usr/local/java/jdk-23/bin/javac -cp manual-build/classes -d manual-build/test-classes \
+    src/test/java/org/ants/mtpndd/ManualNativeCheck.java \
+    src/test/java/org/ants/mtpndd/NQueensMTPNDD.java
+/usr/local/java/jdk-23/bin/java -cp manual-build/classes:manual-build/test-classes \
+    org.ants.mtpndd.ManualNativeCheck
+/usr/local/java/jdk-23/bin/java -cp manual-build/classes:manual-build/test-classes \
+    org.ants.mtpndd.NQueensMTPNDD 8
+```
 ```
 
 ### Configuration
