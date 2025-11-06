@@ -21,14 +21,14 @@ public final class MTPNDD {
     /**
      * Return the node representing the specified positive literal.
      */
-    public static MTPNDD var(int fieldId, int index) {
+    public static MTPNDD getVar(int fieldId, int index) {
         return MTPNDDEngine.getVar(fieldId, index);
     }
 
     /**
      * Return the node representing the negated literal.
      */
-    public static MTPNDD notVar(int fieldId, int index) {
+    public static MTPNDD getNotVar(int fieldId, int index) {
         return MTPNDDEngine.getNotVar(fieldId, index);
     }
 

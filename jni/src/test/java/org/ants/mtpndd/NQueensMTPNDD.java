@@ -20,21 +20,12 @@ public final class NQueensMTPNDD {
         }
     }
 
-    private static int ceilLog2(int value) {
-        if (value <= 1) {
-            return 1;
-        }
-        int highest = Integer.highestOneBit(value - 1);
-        return Integer.numberOfTrailingZeros(highest) + 1;
-    }
-
     public static Result solve(int n) {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
-        int bitWidth = ceilLog2(n);
         MTPNDDConfig config = MTPNDDConfig.builder()
-                .workers(1)
+                .workers(0)
                 .laceDequeSize(1 << 16)
                 .bddNodeTableSize(1 << 24)
                 .mtpnddNodeTableSize(1 << 22)
@@ -52,55 +43,41 @@ public final class NQueensMTPNDD {
         try {
             int[] fieldIds = new int[n];
             for (int i = 0; i < n; i++) {
-                fieldIds[i] = MTPNDDEngine.declareField(bitWidth);
+                fieldIds[i] = MTPNDDEngine.declareField(n);
             }
 
-            MTPNDD[][] positiveBits = new MTPNDD[n][bitWidth];
-            MTPNDD[][] negativeBits = new MTPNDD[n][bitWidth];
+            MTPNDD[][] vars = new MTPNDD[n][n];
+            MTPNDD[][] notVars = new MTPNDD[n][n];
             for (int row = 0; row < n; row++) {
-                for (int bit = 0; bit < bitWidth; bit++) {
-                    positiveBits[row][bit] = MTPNDD.var(fieldIds[row], bit);
-                    negativeBits[row][bit] = MTPNDD.notVar(fieldIds[row], bit);
+                for (int col = 0; col < n; col++) {
+                    vars[row][col] = MTPNDD.getVar(fieldIds[row], col);
+                    notVars[row][col] = MTPNDD.getNotVar(fieldIds[row], col);
                 }
             }
 
-            MTPNDD[][] eqCache = new MTPNDD[n][n];
+            MTPNDD[] rowRequirements = new MTPNDD[n];
             for (int row = 0; row < n; row++) {
-                for (int value = 0; value < n; value++) {
-                    eqCache[row][value] = buildEquality(row, value, bitWidth, positiveBits, negativeBits);
+                MTPNDD clause = MTPNDD.terminalFalse();
+                for (int col = 0; col < n; col++) {
+                    clause = clause.or(vars[row][col]);
+                }
+                rowRequirements[row] = clause;
+            }
+
+            MTPNDD[][] cellConstraints = new MTPNDD[n][n];
+            for (int row = 0; row < n; row++) {
+                for (int col = 0; col < n; col++) {
+                    cellConstraints[row][col] = buildCellConstraints(row, col, n, vars, notVars);
                 }
             }
 
             MTPNDD formula = MTPNDD.terminalTrue();
-            for (int row = 0; row < n; row++) {
-                MTPNDD domain = buildRowDomain(row, n, bitWidth, positiveBits, negativeBits);
-                formula = formula.and(domain);
+            for (MTPNDD requirement : rowRequirements) {
+                formula = formula.and(requirement);
             }
-
             for (int row = 0; row < n; row++) {
-                MTPNDD atLeastOne = buildRowAtLeastOne(eqCache[row]);
-                formula = formula.and(atLeastOne);
-            }
-
-            for (int a = 0; a < n; a++) {
-                for (int b = a + 1; b < n; b++) {
-                    for (int col = 0; col < n; col++) {
-                        MTPNDD clause = forbidPair(eqCache, a, col, b, col);
-                        formula = formula.and(clause);
-                    }
-                    int delta = b - a;
-                    for (int col = 0; col < n; col++) {
-                        int other = col + delta;
-                        if (other < n) {
-                            MTPNDD clause = forbidPair(eqCache, a, col, b, other);
-                            formula = formula.and(clause);
-                        }
-                        other = col - delta;
-                        if (other >= 0) {
-                            MTPNDD clause = forbidPair(eqCache, a, col, b, other);
-                            formula = formula.and(clause);
-                        }
-                    }
+                for (int col = 0; col < n; col++) {
+                    formula = formula.and(cellConstraints[row][col]);
                 }
             }
 
@@ -113,41 +90,45 @@ public final class NQueensMTPNDD {
         }
     }
 
-    private static MTPNDD buildEquality(int row, int value, int bitWidth,
-                                        MTPNDD[][] positiveBits,
-                                        MTPNDD[][] negativeBits) {
-        MTPNDD result = MTPNDD.terminalTrue();
-        for (int bit = 0; bit < bitWidth; bit++) {
-            boolean bitSet = ((value >> bit) & 1) != 0;
-            MTPNDD literal = bitSet ? positiveBits[row][bit] : negativeBits[row][bit];
-            result = result.and(literal);
+    private static MTPNDD buildCellConstraints(int row, int col, int n,
+                                               MTPNDD[][] vars,
+                                               MTPNDD[][] notVars) {
+        MTPNDD guard = vars[row][col];
+        MTPNDD constraints = MTPNDD.terminalTrue();
+
+        for (int otherCol = 0; otherCol < n; otherCol++) {
+            if (otherCol == col) {
+                continue;
+            }
+            constraints = constraints.and(implies(guard, notVars[row][otherCol]));
         }
-        return result;
+
+        for (int otherRow = 0; otherRow < n; otherRow++) {
+            if (otherRow == row) {
+                continue;
+            }
+            constraints = constraints.and(implies(guard, notVars[otherRow][col]));
+        }
+
+        for (int otherRow = 0; otherRow < n; otherRow++) {
+            if (otherRow == row) {
+                continue;
+            }
+            int diagRight = col + (otherRow - row);
+            if (diagRight >= 0 && diagRight < n) {
+                constraints = constraints.and(implies(guard, notVars[otherRow][diagRight]));
+            }
+            int diagLeft = col - (otherRow - row);
+            if (diagLeft >= 0 && diagLeft < n) {
+                constraints = constraints.and(implies(guard, notVars[otherRow][diagLeft]));
+            }
+        }
+
+        return constraints;
     }
 
-    private static MTPNDD buildRowDomain(int row, int n, int bitWidth,
-                                         MTPNDD[][] positiveBits,
-                                         MTPNDD[][] negativeBits) {
-        int limit = 1 << bitWidth;
-        MTPNDD domain = MTPNDD.terminalTrue();
-        for (int value = n; value < limit; value++) {
-            MTPNDD eq = buildEquality(row, value, bitWidth, positiveBits, negativeBits);
-            domain = domain.and(eq.not());
-        }
-        return domain;
-    }
-
-    private static MTPNDD buildRowAtLeastOne(MTPNDD[] rowValues) {
-        MTPNDD condition = MTPNDD.terminalFalse();
-        for (MTPNDD handle : rowValues) {
-            condition = condition.or(handle);
-        }
-        return condition;
-    }
-
-    private static MTPNDD forbidPair(MTPNDD[][] eqCache, int rowA, int valueA, int rowB, int valueB) {
-        MTPNDD both = eqCache[rowA][valueA].and(eqCache[rowB][valueB]);
-        return both.not();
+    private static MTPNDD implies(MTPNDD premise, MTPNDD consequence) {
+        return premise.not().or(consequence);
     }
 
     public static void main(String[] args) {

@@ -74,9 +74,9 @@ class MTPNDDTest {
         assertNotNull(info);
         assertEquals(1, info.bitWidth());
 
-        MTPNDD var = MTPNDD.var(fieldId, 0);
+        MTPNDD var = MTPNDD.getVar(fieldId, 0);
         assertNotNull(var);
-        MTPNDD notVar = MTPNDD.notVar(fieldId, 0);
+        MTPNDD notVar = MTPNDD.getNotVar(fieldId, 0);
         assertNotNull(notVar);
         assertNotEquals(var, notVar);
 

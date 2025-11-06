@@ -8,7 +8,8 @@
 
 ## Build and Run
 
-* Sphinx for doc generating
+<details>
+<summary>Sphinx for doc generating</summary>
 
 https://www.sphinx-doc.org/en/master/usage/installation.html
 
@@ -17,42 +18,25 @@ for macOS,
 ```bash
 brew install sphinx-doc
 ```
+</details>
 
 ### MTPNDD with Sylvan and Lace
 
 ```bash
 cd sylvan
-mkdir build
-cd build
-cmake .. #-DMTPNDD_ENABLE_RECORDING=ON
-make
+cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake --build build     # 生成 libsylvan.a、libmtpndd.a 等
 ```
 
 ### JNI
 
 ```bash
 cd jni
-cmake -B build -DMTPNDD_LIBRARY_PATH=/absolute/path/to/libmtpndd.a
-cmake --build build      # 得到 build/libmtpnddjni.so
+cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake --build build     # 得到 build/libmtpnddjni.so
 
-mvn -DskipTests package  # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar
-mvn test                 # 运行 JNI 层的单元测试（需要访问 Maven Central）
-
-离线环境可以直接使用 `src/test/java/org/ants/mtpndd/ManualNativeCheck` 进行冒烟验证：
-
-```bash
-cd jni
-cmake --build build
-/usr/local/java/jdk-23/bin/javac -d manual-build/classes \
-    $(find src/main/java -name '*.java')
-/usr/local/java/jdk-23/bin/javac -cp manual-build/classes -d manual-build/test-classes \
-    src/test/java/org/ants/mtpndd/ManualNativeCheck.java \
-    src/test/java/org/ants/mtpndd/NQueensMTPNDD.java
-/usr/local/java/jdk-23/bin/java -cp manual-build/classes:manual-build/test-classes \
-    org.ants.mtpndd.ManualNativeCheck
-/usr/local/java/jdk-23/bin/java -cp manual-build/classes:manual-build/test-classes \
-    org.ants.mtpndd.NQueensMTPNDD 8
-```
+mvn -DskipTests package # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar
+mvn -Dorg.ants.mtpndd.library.path="$PWD/build/libmtpnddjni.so" test
 ```
 
 ### Configuration

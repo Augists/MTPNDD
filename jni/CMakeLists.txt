@@ -7,7 +7,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 find_package(JNI REQUIRED)
 
 set(MTPNDD_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../sylvan/src/sylvan/mtpndd" CACHE PATH "Path to MTPNDD public headers")
-set(MTPNDD_LIBRARY_PATH "" CACHE FILEPATH "Path to libmtpndd (static or shared library)")
+set(MTPNDD_LIBRARY_PATH "${CMAKE_CURRENT_LIST_DIR}/../sylvan/build/src/sylvan/mtpndd/libmtpndd.a" CACHE FILEPATH "Path to libmtpndd (static or shared library)")
 set(MTPNDD_SYLVAN_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../sylvan/src/sylvan" CACHE PATH "Path to Sylvan public headers")
 set(MTPNDD_LACE_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../sylvan/build/_deps/lace-src/src" CACHE PATH "Path to Lace headers")
 set(MTPNDD_LACE_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../sylvan/build/_deps/lace-build" CACHE PATH "Path to generated Lace headers")
@@ -19,9 +19,7 @@ if(NOT EXISTS "${MTPNDD_INCLUDE_DIR}/mtpndd.h")
     message(FATAL_ERROR "MTPNDD headers not found in ${MTPNDD_INCLUDE_DIR}. Set MTPNDD_INCLUDE_DIR to the directory containing mtpndd.h")
 endif()
 
-if(NOT MTPNDD_LIBRARY_PATH)
-    message(FATAL_ERROR "Please set MTPNDD_LIBRARY_PATH to point to libmtpndd (e.g. /path/to/libmtpndd.a or .so)")
-endif()
+option(MTPNDD_ENABLE_RECORDING "Enable MTPNDD recording instrumentation for JNI bridge" OFF)
 
 add_library(mtpnddjni SHARED src/main/native/mtpndd_jni.c)
 target_include_directories(mtpnddjni
@@ -40,5 +38,9 @@ target_link_libraries(mtpnddjni PRIVATE
     pthread
     m
 )
+
+if(MTPNDD_ENABLE_RECORDING)
+    target_compile_definitions(mtpnddjni PRIVATE ENABLE_RECORDING)
+endif()
 
 set_target_properties(mtpnddjni PROPERTIES OUTPUT_NAME "mtpnddjni")

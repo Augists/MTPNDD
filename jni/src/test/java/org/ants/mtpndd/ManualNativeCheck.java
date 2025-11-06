@@ -65,8 +65,8 @@ public final class ManualNativeCheck {
 
         try {
             int fieldId = MTPNDDEngine.declareField(1);
-            MTPNDD var = MTPNDD.var(fieldId, 0);
-            MTPNDD notVar = MTPNDD.notVar(fieldId, 0);
+            MTPNDD var = MTPNDD.getVar(fieldId, 0);
+            MTPNDD notVar = MTPNDD.getNotVar(fieldId, 0);
             MTPNDD andResult = var.and(var);
             if (!andResult.equals(var)) {
                 throw new AssertionError("AND should preserve literal identity");

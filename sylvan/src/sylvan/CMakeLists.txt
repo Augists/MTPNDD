@@ -1,5 +1,6 @@
 add_library(sylvan STATIC)
 add_library(sylvan::sylvan ALIAS sylvan)
+set_target_properties(sylvan PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(SYLVAN_HDRS
     sylvan.h

@@ -5,6 +5,7 @@ file(GLOB MTPNDD_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/*.c")
 add_library(mtpndd STATIC ${MTPNDD_SOURCES})
 add_library(mtpndd::mtpndd ALIAS mtpndd)
 target_compile_features(mtpndd PUBLIC c_std_11)
+set_target_properties(mtpndd PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(mtpndd
     PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}

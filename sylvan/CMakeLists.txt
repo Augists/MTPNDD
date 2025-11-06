@@ -26,6 +26,13 @@ if(NOT TARGET lace)
   endif()
 endif()
 
+if(TARGET lace)
+  set_target_properties(lace PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+if(TARGET lace14)
+  set_target_properties(lace14 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # Add the Sylvan library target
 add_subdirectory(src)
 
