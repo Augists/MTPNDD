@@ -7,6 +7,9 @@
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
 #include "mtpndd_nodetable.h"
+#include "sylvan.h"
+#include "sylvan_bdd.h"
+#include "sylvan_mtbdd.h"
 
 static void mtpndd_throw_exception(JNIEnv *env, const char *class_name, const char *message) {
     jclass ex_class = (*env)->FindClass(env, class_name);
@@ -218,6 +221,34 @@ Java_org_ants_mtpndd_MTPNDDEngine_diffNative(JNIEnv *env, jclass clazz, jlong le
     return mtpndd_wrap_node(env, node);
 }
 
+JNIEXPORT void JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_refNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    if (handle == 0) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "Cannot ref null handle");
+        return;
+    }
+    mtpndd_error_t err = mtpndd_ref(mtpndd_node_from_jlong(handle));
+    if (err != MTPNDD_SUCCESS) {
+        mtpndd_throw_error(env, err);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_derefNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    if (handle == 0) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "Cannot deref null handle");
+        return;
+    }
+    mtpndd_error_t err = mtpndd_deref(mtpndd_node_from_jlong(handle));
+    if (err != MTPNDD_SUCCESS) {
+        mtpndd_throw_error(env, err);
+    }
+}
+
 JNIEXPORT jlong JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_existNative(JNIEnv *env, jclass clazz, jlong handle, jint fieldId)
 {
@@ -239,6 +270,104 @@ Java_org_ants_mtpndd_MTPNDDEngine_satCountNative(JNIEnv *env, jclass clazz, jlon
         return 0.0;
     }
     return result;
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getBddVarNative(JNIEnv *env, jclass clazz, jint fieldId, jint index)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_bdd_t value = mtpndd_get_bdd_var((uint32_t)fieldId, (uint32_t)index);
+    mtpndd_error_info_t info = mtpndd_get_last_error();
+    if (info.code != MTPNDD_SUCCESS) {
+        mtpndd_throw_last_error(env);
+        return 0;
+    }
+    sylvan_ref(value);
+    return (jlong)value;
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getBddNotVarNative(JNIEnv *env, jclass clazz, jint fieldId, jint index)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_bdd_t value = mtpndd_get_bdd_not_var((uint32_t)fieldId, (uint32_t)index);
+    mtpndd_error_info_t info = mtpndd_get_last_error();
+    if (info.code != MTPNDD_SUCCESS) {
+        mtpndd_throw_last_error(env);
+        return 0;
+    }
+    sylvan_ref(value);
+    return (jlong)value;
+}
+
+JNIEXPORT jlong JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddTrueNative(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    sylvan_ref(sylvan_true);
+    return (jlong)sylvan_true;
+}
+
+JNIEXPORT jlong JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddFalseNative(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    sylvan_ref(sylvan_false);
+    return (jlong)sylvan_false;
+}
+
+JNIEXPORT jlong JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddRefNative(JNIEnv *env, jclass clazz, jlong handle) {
+    (void)env;
+    (void)clazz;
+    if (handle != 0) {
+        sylvan_ref((BDD)handle);
+    }
+    return handle;
+}
+
+JNIEXPORT void JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddDerefNative(JNIEnv *env, jclass clazz, jlong handle) {
+    (void)env;
+    (void)clazz;
+    if (handle != 0) {
+        sylvan_deref((BDD)handle);
+    }
+}
+
+JNIEXPORT jlong JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddAndNative(JNIEnv *env, jclass clazz, jlong left, jlong right) {
+    (void)env;
+    (void)clazz;
+    BDD result = sylvan_and((BDD)left, (BDD)right);
+    sylvan_ref(result);
+    return (jlong)result;
+}
+
+JNIEXPORT jlong JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddOrNative(JNIEnv *env, jclass clazz, jlong left, jlong right) {
+    (void)env;
+    (void)clazz;
+    BDD result = sylvan_or((BDD)left, (BDD)right);
+    sylvan_ref(result);
+    return (jlong)result;
+}
+
+JNIEXPORT jlong JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddNotNative(JNIEnv *env, jclass clazz, jlong value) {
+    (void)env;
+    (void)clazz;
+    BDD result = sylvan_not((BDD)value);
+    sylvan_ref(result);
+    return (jlong)result;
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_fromMtbddNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    mtpndd_t *node = NULL;
+    mtpndd_error_t err = mtbdd_to_mtpndd((mtpndd_bdd_t)handle, &node);
+    if (err != MTPNDD_SUCCESS) {
+        mtpndd_throw_error(env, err);
+        return 0;
+    }
+    return mtpndd_wrap_node(env, node);
 }
 
 JNIEXPORT jlong JNICALL

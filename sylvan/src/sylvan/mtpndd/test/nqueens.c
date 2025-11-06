@@ -413,8 +413,8 @@ cleanup:
 }
 
 int main(void) {
-    const size_t n_min = 3;
-    const size_t n_max = 12;
+    const size_t n_min = 8;
+    const size_t n_max = 8;
     const size_t total_runs = n_max - n_min + 1;
     nqueens_metrics_t metrics[total_runs];
 

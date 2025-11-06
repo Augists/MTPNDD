@@ -82,6 +82,21 @@ public final class MTPNDD {
         return MTPNDDEngine.isTerminal(this);
     }
 
+    /**
+     * Increment the native reference count for this node.
+     */
+    public MTPNDD ref() {
+        MTPNDDEngine.ref(this);
+        return this;
+    }
+
+    /**
+     * Decrement the native reference count for this node.
+     */
+    public void deref() {
+        MTPNDDEngine.deref(this);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {

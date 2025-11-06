@@ -363,8 +363,6 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
             FREE_MTPNDD_VARS_WITH_NODES(bit_width);
             MTPNDD_RETURN_ERROR(err);
         }
-        atomic_init(&new_field->mtpndd_vars[i]->ref_count, 0);
-
         new_field->mtpndd_not_vars[i]->field = new_field;
         new_field->mtpndd_not_vars[i]->edges = mtpndd_memory_acquire_edge_map();
         if (!new_field->mtpndd_not_vars[i]->edges) {
@@ -377,8 +375,6 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
             FREE_MTPNDD_VARS_WITH_NODES(bit_width);
             MTPNDD_RETURN_ERROR(err);
         }
-        atomic_init(&new_field->mtpndd_not_vars[i]->ref_count, 0);
-
         // Initialize the variable node to point to TRUE terminal node
         err = mtpndd_add_edge(new_field->mtpndd_vars[i]->edges, &MTPNDD_TRUE, sylvan_ref(new_field->bdd_vars[i]));
         if (err != MTPNDD_SUCCESS) {

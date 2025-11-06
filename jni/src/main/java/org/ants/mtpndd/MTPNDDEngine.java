@@ -66,12 +66,62 @@ public final class MTPNDDEngine {
         return getFieldInfoNative(fieldId);
     }
 
+    static synchronized long getBddVar(int fieldId, int index) {
+        return getBddVarNative(fieldId, index);
+    }
+
+    static synchronized long getBddNotVar(int fieldId, int index) {
+        return getBddNotVarNative(fieldId, index);
+    }
+
+    static synchronized long bddTrue() {
+        return bddTrueNative();
+    }
+
+    static synchronized long bddFalse() {
+        return bddFalseNative();
+    }
+
+    static synchronized long bddRef(long handle) {
+        return bddRefNative(handle);
+    }
+
+    static synchronized void bddDeref(long handle) {
+        bddDerefNative(handle);
+    }
+
+    static synchronized long bddAnd(long left, long right) {
+        return bddAndNative(left, right);
+    }
+
+    static synchronized long bddOr(long left, long right) {
+        return bddOrNative(left, right);
+    }
+
+    static synchronized long bddNot(long value) {
+        return bddNotNative(value);
+    }
+
+    static synchronized MTPNDD fromMtbdd(long handle) {
+        return wrap(fromMtbddNative(handle));
+    }
+
     static synchronized MTPNDD getVar(int fieldId, int index) {
         return wrap(getVarNative(fieldId, index));
     }
 
     static synchronized MTPNDD getNotVar(int fieldId, int index) {
         return wrap(getNotVarNative(fieldId, index));
+    }
+
+    static synchronized void ref(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        refNative(node.nativePtr);
+    }
+
+    static synchronized void deref(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        derefNative(node.nativePtr);
     }
 
     static synchronized MTPNDD and(MTPNDD left, MTPNDD right) {
@@ -164,6 +214,10 @@ public final class MTPNDDEngine {
 
     private static native long getNotVarNative(int fieldId, int index);
 
+    private static native void refNative(long handle);
+
+    private static native void derefNative(long handle);
+
     private static native long andNative(long left, long right);
 
     private static native long orNative(long left, long right);
@@ -185,6 +239,17 @@ public final class MTPNDDEngine {
     private static native boolean isFalseNative(long handle);
 
     private static native boolean isTerminalNative(long handle);
+
+    private static native long getBddVarNative(int fieldId, int index);
+    private static native long getBddNotVarNative(int fieldId, int index);
+    private static native long bddTrueNative();
+    private static native long bddFalseNative();
+    private static native long bddRefNative(long handle);
+    private static native void bddDerefNative(long handle);
+    private static native long bddAndNative(long left, long right);
+    private static native long bddOrNative(long left, long right);
+    private static native long bddNotNative(long value);
+    private static native long fromMtbddNative(long handle);
 
     private static native MTPNDDStats getStatsNative();
 }

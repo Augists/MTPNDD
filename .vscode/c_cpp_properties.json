@@ -3,7 +3,9 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/**",
+                "/usr/local/java/jdk-23/include",
+                "/usr/local/java/jdk-23/include/linux"
             ],
             "defines": [
                 "_POSIX_C_SOURCE = 200809L"

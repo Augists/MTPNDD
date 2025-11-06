@@ -113,8 +113,8 @@ public final class MTPNDDConfig {
         private Builder() {}
 
         public Builder workers(int workers) {
-            if (workers <= 0) {
-                throw new IllegalArgumentException("workers must be positive");
+            if (workers < 0) {
+                throw new IllegalArgumentException("workers must be zero or positive");
             }
             this.workers = workers;
             return this;
