@@ -40,6 +40,7 @@ public final class NQueensMTPNDD {
 
         try {
             int bitWidth = ceilLog2(n);
+            System.out.println("bitwidth: " + bitWidth);
             int[] fieldIds = new int[n];
             for (int i = 0; i < n; i++) {
                 fieldIds[i] = MTPNDDEngine.declareField(bitWidth);
@@ -63,7 +64,7 @@ public final class NQueensMTPNDD {
             }
             timings.mark("cache");
 
-            MTPNDD formula = MTPNDD.terminalTrue().ref();
+            MTPNDD formula = MTPNDD.terminalTrue();
             for (int row = 0; row < n; row++) {
                 MTPNDD domain = buildRowDomain(row, n, bitWidth, positiveBits, negativeBits);
                 formula = andRelease(formula, domain);
@@ -237,7 +238,7 @@ public final class NQueensMTPNDD {
     private static MTPNDD buildEquality(int row, int value, int bitWidth,
                                         MTPNDD[][] positiveBits,
                                         MTPNDD[][] negativeBits) {
-        MTPNDD result = MTPNDD.terminalTrue().ref();
+        MTPNDD result = MTPNDD.terminalTrue();
         for (int bit = 0; bit < bitWidth; bit++) {
             boolean bitSet = ((value >> bit) & 1) != 0;
             MTPNDD literal = (bitSet ? positiveBits[row][bit] : negativeBits[row][bit]).ref();
@@ -250,7 +251,7 @@ public final class NQueensMTPNDD {
                                          MTPNDD[][] positiveBits,
                                          MTPNDD[][] negativeBits) {
         int limit = 1 << bitWidth;
-        MTPNDD domain = MTPNDD.terminalTrue().ref();
+        MTPNDD domain = MTPNDD.terminalTrue();
         for (int value = n; value < limit; value++) {
             MTPNDD eq = buildEquality(row, value, bitWidth, positiveBits, negativeBits);
             MTPNDD neg = eq.not();
@@ -262,7 +263,7 @@ public final class NQueensMTPNDD {
     }
 
     private static MTPNDD buildRowAtLeastOne(MTPNDD[] rowValues) {
-        MTPNDD condition = MTPNDD.terminalFalse().ref();
+        MTPNDD condition = MTPNDD.terminalFalse();
         for (MTPNDD handle : rowValues) {
             condition = orRelease(condition, handle.ref());
         }
@@ -273,9 +274,8 @@ public final class NQueensMTPNDD {
         MTPNDD left = eqCache[rowA][valueA].ref();
         MTPNDD right = eqCache[rowB][valueB].ref();
         MTPNDD both = andRelease(left, right);
-        MTPNDD clause = both.not();
+        MTPNDD clause = both.not().ref();
         both.deref();
-        clause.ref();
         return clause;
     }
 
@@ -283,7 +283,7 @@ public final class NQueensMTPNDD {
                                                MTPNDD[][] vars,
                                                MTPNDD[][] notVars) {
         MTPNDD guard = vars[row][col].ref();
-        MTPNDD constraints = MTPNDD.terminalTrue().ref();
+        MTPNDD constraints = MTPNDD.terminalTrue();
 
         for (int otherCol = 0; otherCol < n; otherCol++) {
             if (otherCol != col) {

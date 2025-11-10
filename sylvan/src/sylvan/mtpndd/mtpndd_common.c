@@ -46,8 +46,10 @@ static bool mtpndd_lace_init(void);
 static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges);
 static bool mtpndd_gc_protect_contains_with_hash(mtpndd_t *node, size_t hash);
 static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count);
-static void sylvan_gc_start_hook(WorkerP *worker, Task *task);
-static void sylvan_gc_end_hook(WorkerP *worker, Task *task);
+static void mtpndd_gc_hook_sylvan_pre(WorkerP *worker, Task *task);
+static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task);
+static void mtpndd_gc_hook_mtpndd_pre(void);
+static void mtpndd_gc_hook_mtpndd_post(void);
 
 static void mtpndd_field_info_teardown(mtpndd_field_info_t *field) {
     if (!field) {
@@ -629,10 +631,13 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
         MTPNDD_RETURN_ERROR(pool_status);
     }
 
+    // Attach GC logging hooks for both Sylvan and MTPNDD
+    sylvan_gc_hook_pregc(mtpndd_gc_hook_sylvan_pre);
+    sylvan_gc_hook_postgc(mtpndd_gc_hook_sylvan_post);
+    mtpndd_gc_hook_pregc(mtpndd_gc_hook_mtpndd_pre);
+    mtpndd_gc_hook_postgc(mtpndd_gc_hook_mtpndd_post);
+
 #ifdef ENABLE_RECORDING
-    // Before and after garbage collection, call gc_start and gc_end
-    sylvan_gc_hook_pregc(sylvan_gc_start_hook);
-    sylvan_gc_hook_postgc(sylvan_gc_end_hook);
     memset(&g_mtpndd_stats, 0, sizeof(g_mtpndd_stats));
 #endif
     
@@ -654,20 +659,39 @@ static bool mtpndd_lace_init(void) {
     return true;
 }
 
-#define SYLVAN_INFO(s, ...) fprintf(stdout, "[% 8.2f] " s, 0.0, ##__VA_ARGS__)
-
-static void sylvan_gc_start_hook(WorkerP *worker, Task *task)
-{
+static void mtpndd_gc_hook_sylvan_pre(WorkerP *worker, Task *task) {
     (void)worker;
     (void)task;
-    SYLVAN_INFO("(GC-Sylvan) Starting garbage collection...\n");
+    size_t refs = sylvan_count_refs();
+    fprintf(stdout, "[Sylvan GC] start refs=%zu capacity=%zu\n",
+            refs, g_mtpndd_pal_config.bdd_nodetable_size);
+    fflush(stdout);
 }
 
-static void sylvan_gc_end_hook(WorkerP *worker, Task *task)
-{
+static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task) {
     (void)worker;
     (void)task;
-    SYLVAN_INFO("(GC-Sylvan) Garbage collection done.\n");
+    size_t refs = sylvan_count_refs();
+    fprintf(stdout, "[Sylvan GC] end refs=%zu\n", refs);
+    fflush(stdout);
+}
+
+static void mtpndd_gc_hook_mtpndd_pre(void) {
+    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    size_t capacity = g_mtpndd_pal_config.mtpndd_nodetable_size;
+    fprintf(stdout, "[MTPNDD GC] start nodes=%zu capacity=%zu\n", nodes, capacity);
+    fflush(stdout);
+}
+
+static void mtpndd_gc_hook_mtpndd_post(void) {
+    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+#ifdef ENABLE_RECORDING
+    unsigned long long reclaimed = __atomic_load_n(&g_mtpndd_stats.nodes_collected_last, __ATOMIC_RELAXED);
+#else
+    unsigned long long reclaimed = 0;
+#endif
+    fprintf(stdout, "[MTPNDD GC] end nodes=%zu reclaimed=%llu\n", nodes, reclaimed);
+    fflush(stdout);
 }
 
 mtpndd_error_t mtpndd_quit() {
