@@ -5,14 +5,36 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include "mtpndd_nodetable.h"
 #include "mtpndd_node.h"
 #include "mtpndd_memory_pool.h"
 #include "sylvan.h"
 #include "sylvan_common.h"
+#include "lace.h"
 #ifdef ENABLE_RECORDING
 #include <time.h>
 #endif
+
+static inline size_t nodetable_hash_with_bucket_count(const mtpndd_edge_t *edges, size_t bucket_count) {
+    if (!edges || bucket_count == 0) {
+        return 0;
+    }
+
+    uintptr_t addr = (uintptr_t)edges;
+    uintptr_t bucket_addr = edges->buckets ? (uintptr_t)edges->buckets : 0;
+    uintptr_t lock_addr = edges->bucket_locks ? (uintptr_t)edges->bucket_locks : 0;
+
+    uint64_t hash = 1469598103934665603ULL;
+    hash ^= addr;
+    hash *= 1099511628211ULL;
+    hash ^= bucket_addr;
+    hash *= 1099511628211ULL;
+    hash ^= lock_addr;
+    hash *= 1099511628211ULL;
+
+    return (size_t)(hash % bucket_count);
+}
 
 static mtpndd_nodetable_bucket_entry_t *mtpndd_nodetable_entry_create(void) {
     mtpndd_nodetable_bucket_entry_t *entry = mtpndd_memory_acquire_nodetable_entry();
@@ -30,8 +52,9 @@ static void mtpndd_nodetable_entry_destroy(mtpndd_nodetable_bucket_entry_t *entr
     mtpndd_memory_release_nodetable_entry(entry);
 }
 
-static void gc(void);
-static void grow(void);
+static void gc_internal(void);
+static void grow_internal(void);
+static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket_count);
 
 static void gcOrGrow(void);
 static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out);
@@ -300,30 +323,41 @@ static void gcOrGrow(void) {
     struct timespec gc_timer_start = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_start);
 #endif
-    gc();
+
+    bool suspended_workers = false;
+    if (lace_workers() > 0) {
+        lace_suspend();
+        suspended_workers = true;
+    }
+
+    gc_internal();
+
+    if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
+            < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
+        grow_internal();
+    }
+
+    if (suspended_workers) {
+        lace_resume();
+    }
+
+    sylvan_gc();
+    mtpndd_gc_run_posthooks();
+
 #ifdef ENABLE_RECORDING
     struct timespec gc_timer_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_end);
     MTPNDD_STAT_ADD(gc_pause_time_ns, mtpndd_timespec_diff_ns(&gc_timer_start, &gc_timer_end));
 #endif
-    if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
-            < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
-        grow();
-    }
+
     // TODO: clear op cache
 }
 
-static void gc(void) {
+static void gc_internal(void) {
 #ifdef ENABLE_RECORDING
     __atomic_add_fetch(&g_mtpndd_stats.gc_runs, 1, __ATOMIC_RELAXED);
 #endif
     mtpndd_gc_run_prehooks();
-
-    int suspended_workers = 0;
-    if (lace_workers() > 0) {
-        lace_suspend();
-        suspended_workers = 1;
-    }
 
     mtpndd_node_t **gc_roots = NULL;
     size_t gc_root_count = mtpndd_gc_collect_roots(&gc_roots);
@@ -336,14 +370,6 @@ static void gc(void) {
 #endif
         __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
     }
-
-    if (suspended_workers) {
-        lace_resume();
-    }
-
-    sylvan_gc();
-
-    mtpndd_gc_run_posthooks();
 }
 
 static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
@@ -479,6 +505,78 @@ static size_t mtpndd_gc_sweep(void) {
     return reclaimed;
 }
 
-static void grow(void) {
-    g_mtpndd_pal_config.mtpndd_nodetable_size *= 2;
+static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket_count) {
+    if (!table || new_bucket_count == 0) {
+        return false;
+    }
+
+    mtpndd_nodetable_bucket_entry_t **new_buckets =
+            (mtpndd_nodetable_bucket_entry_t **)calloc(new_bucket_count, sizeof(*new_buckets));
+    if (!new_buckets) {
+        return false;
+    }
+
+    pthread_rwlock_t *new_locks =
+            (pthread_rwlock_t *)malloc(new_bucket_count * sizeof(pthread_rwlock_t));
+    if (!new_locks) {
+        free(new_buckets);
+        return false;
+    }
+    for (size_t i = 0; i < new_bucket_count; ++i) {
+        if (pthread_rwlock_init(&new_locks[i], NULL) != 0) {
+            for (size_t j = 0; j < i; ++j) {
+                pthread_rwlock_destroy(&new_locks[j]);
+            }
+            free(new_locks);
+            free(new_buckets);
+            return false;
+        }
+    }
+
+    size_t old_count = table->nodetable_bucket_count;
+    for (size_t i = 0; i < old_count; ++i) {
+        pthread_rwlock_wrlock(&table->bucket_locks[i]);
+        mtpndd_nodetable_bucket_entry_t *entry = table->buckets[i];
+        while (entry) {
+            mtpndd_nodetable_bucket_entry_t *next_entry = entry->next;
+            size_t hash = nodetable_hash_with_bucket_count(entry->edges, new_bucket_count);
+            entry->prev = NULL;
+            entry->next = new_buckets[hash];
+            if (entry->next) {
+                entry->next->prev = entry;
+            }
+            new_buckets[hash] = entry;
+            entry = next_entry;
+        }
+        table->buckets[i] = NULL;
+        pthread_rwlock_unlock(&table->bucket_locks[i]);
+        pthread_rwlock_destroy(&table->bucket_locks[i]);
+    }
+
+    free(table->buckets);
+    free(table->bucket_locks);
+    table->buckets = new_buckets;
+    table->bucket_locks = new_locks;
+    table->nodetable_bucket_count = new_bucket_count;
+    return true;
+}
+
+static void grow_internal(void) {
+    size_t new_capacity = g_mtpndd_pal_config.mtpndd_nodetable_size * 2;
+    for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
+        mtpndd_nodetable_t *table = g_mtpndd_config.node_tables_by_field[field];
+        if (!table) continue;
+        size_t new_bucket_count = table->nodetable_bucket_count ? table->nodetable_bucket_count * 2
+                                                                : MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
+        if (!mtpndd_nodetable_rehash(table, new_bucket_count)) {
+            // If rehash fails, leave table as-is but break to avoid inconsistent state
+            break;
+        }
+    }
+    g_mtpndd_pal_config.mtpndd_nodetable_size = new_capacity;
+    size_t config_bucket = g_mtpndd_pal_config.nodetable_bucket_count;
+    if (config_bucket == 0) {
+        config_bucket = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
+    }
+    g_mtpndd_pal_config.nodetable_bucket_count = config_bucket * 2;
 }

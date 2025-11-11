@@ -1,6 +1,6 @@
 {
     "java.compile.nullAnalysis.mode": "automatic",
-    "cmake.sourceDirectory": "/home/augists/PNDD/sylvan",
+    "cmake.sourceDirectory": "/home/augists/MTPNDD/sylvan",
     "files.associations": {
         "sylvan_bdd.h": "c",
         "cstdint": "c",

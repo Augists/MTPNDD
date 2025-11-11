@@ -325,6 +325,19 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t nodetable_entry_slab_capacity = (size <= 7) ? 1024 : (size <= 9) ? 2048 : 4096;
     size_t edge_map_slab_capacity = (size <= 7) ? 512 : (size <= 9) ? 1024 : 2048;
 
+    if (size >= 10) {
+        bdd_size <<= 1;               // double BDD table to avoid Sylvan pressure
+        ndd_size <<= 2;               // quadruple MTPNDD node table
+        cache_size <<= 1;
+        edge_bucket_count *= 4;
+        nodetable_bucket_count = ndd_size;
+        gc_bucket_count *= 2;
+        node_slab_capacity <<= 1;
+        edge_entry_slab_capacity <<= 1;
+        nodetable_entry_slab_capacity <<= 1;
+        edge_map_slab_capacity <<= 1;
+    }
+
     mtpndd_pal_config_t config = {
         .n_workers = 0,
         .lace_dqsize = 1024,
