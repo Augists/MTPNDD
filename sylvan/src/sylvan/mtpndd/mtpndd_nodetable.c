@@ -12,6 +12,7 @@
 #include "sylvan.h"
 #include "sylvan_common.h"
 #include "lace.h"
+#include <stdio.h>
 #ifdef ENABLE_RECORDING
 #include <time.h>
 #endif
@@ -61,6 +62,19 @@ static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out);
 static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count);
 static size_t mtpndd_gc_sweep(void);
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node);
+
+static void mtpndd_log_memory_pools(const char *phase) {
+    mtpndd_memory_pool_stats_t stats = {0};
+    mtpndd_memory_pools_snapshot(&stats);
+    fprintf(stdout,
+            "[MTPNDD MEM] %s node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu | nodetable_entry slabs=%zu in_use=%zu | edge_map slabs=%zu in_use=%zu\n",
+            phase ? phase : "unknown",
+            stats.node_slabs, stats.node_in_use, stats.node_capacity_per_slab,
+            stats.edge_entry_slabs, stats.edge_entry_in_use,
+            stats.nodetable_entry_slabs, stats.nodetable_entry_in_use,
+            stats.edge_map_slabs, stats.edge_map_in_use);
+    fflush(stdout);
+}
 
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
@@ -322,6 +336,15 @@ static void gcOrGrow(void) {
 #ifdef ENABLE_RECORDING
     struct timespec gc_timer_start = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_start);
+
+    fprintf(stdout,
+            "[MTPNDD DEBUG] gcOrGrow start node_count=%zu capacity=%zu threshold=%.2f\n",
+            (size_t)g_mtpndd_stats.node_count,
+            (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size,
+            g_mtpndd_pal_config.quick_growth_threshold);
+    fflush(stdout);
+    mtpndd_gc_run_prehooks();
+    mtpndd_log_memory_pools("pre-gc");
 #endif
 
     bool suspended_workers = false;
@@ -334,6 +357,13 @@ static void gcOrGrow(void) {
 
     if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
             < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
+#ifdef ENABLE_RECORDING
+        fprintf(stdout, "[MTPNDD DEBUG] triggering grow (node_count=%zu capacity=%zu)\n",
+                (size_t)g_mtpndd_stats.node_count,
+                (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
+        fflush(stdout);
+#endif
+
         grow_internal();
     }
 
@@ -342,9 +372,16 @@ static void gcOrGrow(void) {
     }
 
     sylvan_gc();
-    mtpndd_gc_run_posthooks();
 
 #ifdef ENABLE_RECORDING
+    mtpndd_gc_run_posthooks();
+    mtpndd_log_memory_pools("post-gc");
+    fprintf(stdout,
+            "[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
+            (size_t)g_mtpndd_stats.node_count,
+            (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
+    fflush(stdout);
+
     struct timespec gc_timer_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_end);
     MTPNDD_STAT_ADD(gc_pause_time_ns, mtpndd_timespec_diff_ns(&gc_timer_start, &gc_timer_end));
@@ -569,9 +606,14 @@ static void grow_internal(void) {
         size_t new_bucket_count = table->nodetable_bucket_count ? table->nodetable_bucket_count * 2
                                                                 : MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
         if (!mtpndd_nodetable_rehash(table, new_bucket_count)) {
-            // If rehash fails, leave table as-is but break to avoid inconsistent state
-            break;
+            fprintf(stderr, "[MTPNDD ERROR] nodetable rehash failed for field=%u (bucket target=%zu)\n",
+                    field, new_bucket_count);
+            fflush(stderr);
+            return;
         }
+        fprintf(stdout, "[MTPNDD DEBUG] field=%u rehashed to buckets=%zu\n",
+                field, new_bucket_count);
+        fflush(stdout);
     }
     g_mtpndd_pal_config.mtpndd_nodetable_size = new_capacity;
     size_t config_bucket = g_mtpndd_pal_config.nodetable_bucket_count;
@@ -579,4 +621,7 @@ static void grow_internal(void) {
         config_bucket = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
     g_mtpndd_pal_config.nodetable_bucket_count = config_bucket * 2;
+    fprintf(stdout, "[MTPNDD DEBUG] nodetable capacity doubled to %zu (config buckets=%zu)\n",
+            new_capacity, g_mtpndd_pal_config.nodetable_bucket_count);
+    fflush(stdout);
 }

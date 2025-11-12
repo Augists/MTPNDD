@@ -15,6 +15,11 @@
         "istream": "c",
         "ranges": "c",
         "streambuf": "c",
-        "variant": "c"
+        "variant": "c",
+        "array": "c",
+        "string_view": "c",
+        "initializer_list": "c",
+        "span": "c",
+        "mtpndd_operation_cache.h": "c"
     }
 }

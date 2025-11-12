@@ -111,7 +111,7 @@ static __thread mtpndd_error_info_t g_last_error = {MTPNDD_SUCCESS, NULL, NULL, 
  * Default configurations
  ********************************/
 #define DEFAULT_QUICK_GROWTH_THRESHOLD 0.1
-#define DEFAULT_FIELD_CAPACITY 8
+#define DEFAULT_FIELD_CAPACITY 16
 
 static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges)
 {
