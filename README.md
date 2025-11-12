@@ -26,6 +26,7 @@ brew install sphinx-doc
 cd sylvan
 cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
 cmake --build build     # 生成 libsylvan.a、libmtpndd.a 等
+./build/src/sylvan/mtpndd/mtpndd_nqueens_test 8
 ```
 
 ### JNI
@@ -37,6 +38,7 @@ cmake --build build     # 得到 build/libmtpnddjni.so
 
 mvn -DskipTests package # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar
 mvn -Dorg.ants.mtpndd.library.path="$PWD/build/libmtpnddjni.so" test
+java -Dorg.ants.mtpndd.library.path=$PWD/build/libmtpnddjni.so -cp target/mtpndd-java-0.1.0-SNAPSHOT.jar:target/test-classes org.ants.mtpndd.NQueensMTPNDD 8 onehot
 ```
 
 ### Configuration

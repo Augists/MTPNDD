@@ -1,6 +1,11 @@
 #include "mtpndd.h"
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
+#include "mtpndd_memory_pool.h"
+
+#include <stdatomic.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <inttypes.h>
 #include <math.h>
@@ -12,7 +17,6 @@
 
 typedef struct {
     size_t size;
-    uint32_t bit_width;
     uint32_t *field_ids;
 } nqueens_ctx_t;
 
@@ -32,237 +36,181 @@ typedef struct {
 #endif
 } nqueens_metrics_t;
 
-static uint32_t ceil_log2_uint(uint32_t value) {
-    if (value <= 1) return 1;
-#if defined(__GNUC__)
-    return 32u - (uint32_t)__builtin_clz(value - 1);
+static void nqueens_ctx_destroy(nqueens_ctx_t *ctx);
+static uint64_t expected_solutions(size_t size);
+static double timespec_diff_seconds(const struct timespec *start, const struct timespec *end);
+
+#ifdef ENABLE_RECORDING
+static void log_formula_progress(const char *phase, size_t current, size_t total);
+static void print_run_stats(const mtpndd_stats_t *stats);
 #else
-    uint32_t bits = 0;
-    uint32_t v = value - 1;
-    while (v) {
-        v >>= 1u;
-        bits++;
-    }
-    return bits;
+static inline void log_formula_progress(const char *phase, size_t current, size_t total) {
+    (void)phase;
+    (void)current;
+    (void)total;
+}
+static inline void print_run_stats(const mtpndd_stats_t *stats) {
+    (void)stats;
+}
 #endif
+
+#ifdef MTPNDD_NQUEENS_ENABLE_DOT
+static void dump_dot_file(const char *filename, mtpndd_t *node);
+#else
+static inline void dump_dot_file(const char *filename, mtpndd_t *node) {
+    (void)filename;
+    (void)node;
+}
+#endif
+
+static mtpndd_t *build_row_at_least_one(const nqueens_ctx_t *ctx, size_t row) {
+    mtpndd_t *accum = &MTPNDD_FALSE;
+    mtpndd_ref(accum);
+
+    for (size_t col = 0; col < ctx->size; ++col) {
+        uint32_t field = ctx->field_ids[row];
+        mtpndd_t *cell = mtpndd_get_var(field, (uint32_t)col);
+        mtpndd_ref(cell);
+        mtpndd_t *old = accum;
+        mtpndd_t *next = mtpndd_or(old, cell);
+        mtpndd_deref(cell);
+        mtpndd_ref(next);
+        mtpndd_deref(old);
+        accum = next;
+    }
+
+    return accum;
 }
 
-static mtpndd_t *mtpndd_hold(mtpndd_t *node) {
-    if (!node) return NULL;
-    if (mtpndd_ref(node) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return node;
+static void append_implication(mtpndd_t **accum, mtpndd_t *guard_neg, mtpndd_t *neg_literal) {
+    mtpndd_ref(neg_literal);
+    mtpndd_t *imp = mtpndd_or(guard_neg, neg_literal);
+    mtpndd_deref(neg_literal);
+    mtpndd_ref(imp);
+    mtpndd_t *old = *accum;
+    mtpndd_t *next = mtpndd_and(old, imp);
+    mtpndd_deref(imp);
+    mtpndd_ref(next);
+    mtpndd_deref(old);
+    *accum = next;
 }
 
-static mtpndd_t *mtpndd_not_hold(mtpndd_t *node) {
-    mtpndd_t *result = mtpndd_not(node);
-    if (!result) return NULL;
-    if (mtpndd_ref(result) != MTPNDD_SUCCESS) {
-        mtpndd_deref(result);
-        return NULL;
-    }
-    return result;
-}
+static mtpndd_t *build_cell_implication(const nqueens_ctx_t *ctx, size_t row, size_t col) {
+    mtpndd_t *accum = &MTPNDD_TRUE;
+    mtpndd_ref(accum);
 
-static mtpndd_t *mtpndd_and_release(mtpndd_t *left, mtpndd_t *right) {
-    mtpndd_t *result = mtpndd_and(left, right);
-    mtpndd_deref(left);
-    mtpndd_deref(right);
-    if (!result) return NULL;
-    if (mtpndd_ref(result) != MTPNDD_SUCCESS) {
-        mtpndd_deref(result);
-        return NULL;
-    }
-    return result;
-}
+    mtpndd_t *guard_neg = mtpndd_get_not_var((uint32_t)(row + 1), (uint32_t)col);
+    mtpndd_ref(guard_neg);
 
-static mtpndd_t *mtpndd_or_release(mtpndd_t *left, mtpndd_t *right) {
-    mtpndd_t *result = mtpndd_or(left, right);
-    mtpndd_deref(left);
-    mtpndd_deref(right);
-    if (!result) return NULL;
-    if (mtpndd_ref(result) != MTPNDD_SUCCESS) {
-        mtpndd_deref(result);
-        return NULL;
+    size_t n = ctx->size;
+
+    for (size_t other_col = 0; other_col < n; ++other_col) {
+        if (other_col == col) continue;
+        append_implication(&accum, guard_neg,
+                                mtpndd_get_not_var((uint32_t)(row + 1), (uint32_t)other_col));
     }
-    return result;
+
+    for (size_t other_row = 0; other_row < n; ++other_row) {
+        if (other_row == row) continue;
+        append_implication(&accum, guard_neg,
+                                mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)col));
+    }
+
+    for (size_t other_row = 0; other_row < n; ++other_row) {
+        if (other_row == row) continue;
+        long diag_up = (long)other_row - (long)row + (long)col;
+        if (diag_up >= 0 && (size_t)diag_up < n) {
+            append_implication(&accum, guard_neg,
+                                    mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)diag_up));
+        }
+        long diag_down = (long)row + (long)col - (long)other_row;
+        if (diag_down >= 0 && (size_t)diag_down < n) {
+            append_implication(&accum, guard_neg,
+                                    mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)diag_down));
+        }
+    }
+
+    mtpndd_deref(guard_neg);
+    return accum;
 }
 
 static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
     ctx->size = size;
-    ctx->bit_width = ceil_log2_uint((uint32_t)size);
     ctx->field_ids = (uint32_t *)calloc(size, sizeof(uint32_t));
     if (!ctx->field_ids) return false;
-
     for (size_t row = 0; row < size; ++row) {
-        if (mtpndd_declare_field(ctx->bit_width) != MTPNDD_SUCCESS) {
+        if (mtpndd_declare_field((uint32_t)size) != MTPNDD_SUCCESS) {
             return false;
         }
         ctx->field_ids[row] = (uint32_t)(row + 1);
     }
-
     return true;
-}
-
-static void nqueens_ctx_destroy(nqueens_ctx_t *ctx) {
-    free(ctx->field_ids);
-    ctx->field_ids = NULL;
-    ctx->size = 0;
-    ctx->bit_width = 0;
-}
-
-static mtpndd_t *build_value_equals(const nqueens_ctx_t *ctx, size_t row, uint32_t value) {
-    mtpndd_t *result = mtpndd_hold(&MTPNDD_TRUE);
-    if (!result) return NULL;
-    uint32_t field_id = ctx->field_ids[row];
-    for (uint32_t bit = 0; bit < ctx->bit_width; ++bit) {
-        bool bit_set = ((value >> bit) & 1u) != 0;
-        mtpndd_t *literal = bit_set
-                ? mtpndd_hold(mtpndd_get_var(field_id, bit))
-                : mtpndd_hold(mtpndd_get_not_var(field_id, bit));
-        if (!literal) {
-            mtpndd_deref(result);
-            return NULL;
-        }
-        result = mtpndd_and_release(result, literal);
-        if (!result) return NULL;
-    }
-    return result;
-}
-
-static mtpndd_t *build_row_domain(const nqueens_ctx_t *ctx, size_t row) {
-    uint32_t limit = 1u << ctx->bit_width;
-    if (limit == ctx->size) {
-        return mtpndd_hold(&MTPNDD_TRUE);
-    }
-
-    mtpndd_t *domain = mtpndd_hold(&MTPNDD_TRUE);
-    if (!domain) return NULL;
-    for (uint32_t value = (uint32_t)ctx->size; value < limit; ++value) {
-        mtpndd_t *eq = build_value_equals(ctx, row, value);
-        if (!eq) {
-            mtpndd_deref(domain);
-            return NULL;
-        }
-        mtpndd_t *not_eq = mtpndd_not_hold(eq);
-        mtpndd_deref(eq);
-        if (!not_eq) {
-            mtpndd_deref(domain);
-            return NULL;
-        }
-        domain = mtpndd_and_release(domain, not_eq);
-        if (!domain) return NULL;
-    }
-    return domain;
-}
-
-static mtpndd_t *build_row_at_least_one(mtpndd_t **row_values, size_t size) {
-    mtpndd_t *accum = mtpndd_hold(&MTPNDD_FALSE);
-    if (!accum) return NULL;
-    for (size_t col = 0; col < size; ++col) {
-        mtpndd_t *candidate = mtpndd_hold(row_values[col]);
-        if (!candidate) {
-            mtpndd_deref(accum);
-            return NULL;
-        }
-        accum = mtpndd_or_release(accum, candidate);
-        if (!accum) return NULL;
-    }
-    return accum;
-}
-
-static mtpndd_t *forbid_pair(mtpndd_t ***eq_cache,
-                             size_t row_a, size_t value_a,
-                             size_t row_b, size_t value_b) {
-    mtpndd_t *left = mtpndd_hold(eq_cache[row_a][value_a]);
-    mtpndd_t *right = mtpndd_hold(eq_cache[row_b][value_b]);
-    if (!left || !right) {
-        if (left) mtpndd_deref(left);
-        if (right) mtpndd_deref(right);
-        return NULL;
-    }
-    mtpndd_t *both = mtpndd_and_release(left, right);
-    if (!both) return NULL;
-    mtpndd_t *clause = mtpndd_not_hold(both);
-    mtpndd_deref(both);
-    return clause;
-}
-
-static void release_eq_cache(mtpndd_t ***cache, size_t size) {
-    if (!cache) return;
-    for (size_t row = 0; row < size; ++row) {
-        if (!cache[row]) continue;
-        for (size_t col = 0; col < size; ++col) {
-            if (cache[row][col]) {
-                mtpndd_deref(cache[row][col]);
-                cache[row][col] = NULL;
-            }
-        }
-        free(cache[row]);
-    }
-    free(cache);
 }
 
 static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formula) {
     size_t n = ctx->size;
-    mtpndd_t ***eq_cache = (mtpndd_t ***)calloc(n, sizeof(mtpndd_t **));
-    if (!eq_cache) return false;
-
     bool ok = false;
     mtpndd_t *formula = NULL;
+    mtpndd_t *base = &MTPNDD_TRUE;
+    mtpndd_ref(base);
+    formula = base;
 
     for (size_t row = 0; row < n; ++row) {
-        eq_cache[row] = (mtpndd_t **)calloc(n, sizeof(mtpndd_t *));
-        if (!eq_cache[row]) goto cleanup;
-        for (size_t value = 0; value < n; ++value) {
-            eq_cache[row][value] = build_value_equals(ctx, row, (uint32_t)value);
-            if (!eq_cache[row][value]) goto cleanup;
+        mtpndd_t *at_least = build_row_at_least_one(ctx, row);
+        if (!at_least) goto cleanup;
+#ifdef MTPNDD_NQUEENS_ENABLE_DOT
+        if (ctx->size <= 12) {
+            char name[128];
+            snprintf(name, sizeof(name), "n%zu_row_atleast_%zu.dot", ctx->size, row);
+            dump_dot_file(name, at_least);
         }
+#endif
+        mtpndd_t *old = formula;
+        mtpndd_t *next = mtpndd_and(old, at_least);
+        mtpndd_deref(at_least);
+        if (!next) {
+            mtpndd_deref(old);
+            formula = NULL;
+            goto cleanup;
+        }
+        mtpndd_ref(next);
+        mtpndd_deref(old);
+        formula = next;
+#ifdef ENABLE_RECORDING
+        log_formula_progress("row_at_least_one", row + 1, n);
+#endif
     }
 
-    formula = mtpndd_hold(&MTPNDD_TRUE);
-    if (!formula) goto cleanup;
-
+#ifdef ENABLE_RECORDING
+    size_t total_cells = n * n;
+    size_t progress = 0;
+#endif
     for (size_t row = 0; row < n; ++row) {
-        mtpndd_t *domain = build_row_domain(ctx, row);
-        if (!domain) goto cleanup;
-        formula = mtpndd_and_release(formula, domain);
-        if (!formula) goto cleanup;
-    }
-
-    for (size_t row = 0; row < n; ++row) {
-        mtpndd_t *at_least_one = build_row_at_least_one(eq_cache[row], n);
-        if (!at_least_one) goto cleanup;
-        formula = mtpndd_and_release(formula, at_least_one);
-        if (!formula) goto cleanup;
-    }
-
-    for (size_t a = 0; a < n; ++a) {
-        for (size_t b = a + 1; b < n; ++b) {
-            for (size_t col = 0; col < n; ++col) {
-                mtpndd_t *clause = forbid_pair(eq_cache, a, col, b, col);
-                if (!clause) goto cleanup;
-                formula = mtpndd_and_release(formula, clause);
-                if (!formula) goto cleanup;
+        for (size_t col = 0; col < n; ++col) {
+            mtpndd_t *imp = build_cell_implication(ctx, row, col);
+            if (!imp) goto cleanup;
+#ifdef MTPNDD_NQUEENS_ENABLE_DOT
+            if (ctx->size <= 12) {
+                char name[160];
+                snprintf(name, sizeof(name), "n%zu_imp_row%zu_col%zu.dot", ctx->size, row, col);
+                dump_dot_file(name, imp);
             }
-            size_t delta = b - a;
-            for (size_t col = 0; col < n; ++col) {
-                size_t other = col + delta;
-                if (other < n) {
-                    mtpndd_t *clause = forbid_pair(eq_cache, a, col, b, other);
-                    if (!clause) goto cleanup;
-                    formula = mtpndd_and_release(formula, clause);
-                    if (!formula) goto cleanup;
-                }
-                if (col >= delta) {
-                    other = col - delta;
-                    mtpndd_t *clause = forbid_pair(eq_cache, a, col, b, other);
-                    if (!clause) goto cleanup;
-                    formula = mtpndd_and_release(formula, clause);
-                    if (!formula) goto cleanup;
-                }
+#endif
+            mtpndd_t *old = formula;
+            mtpndd_t *next = mtpndd_and(old, imp);
+            mtpndd_deref(imp);
+            if (!next) {
+                mtpndd_deref(old);
+                formula = NULL;
+                goto cleanup;
             }
+            mtpndd_ref(next);
+            mtpndd_deref(old);
+            formula = next;
+#ifdef ENABLE_RECORDING
+            progress++;
+            log_formula_progress("cell_implications", progress, total_cells);
+#endif
         }
     }
 
@@ -272,71 +220,62 @@ static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formu
 
 cleanup:
     if (formula) mtpndd_deref(formula);
-    release_eq_cache(eq_cache, n);
     return ok;
 }
 
-static uint64_t expected_solutions(size_t size) {
-    switch (size) {
-        case 1: return 1;
-        case 2:
-        case 3: return 0;
-        case 4: return 2;
-        case 5: return 10;
-        case 6: return 4;
-        case 7: return 40;
-        case 8: return 92;
-        case 9: return 352;
-        case 10: return 724;
-        case 11: return 2680;
-        case 12: return 14200;
-        default: return UINT64_MAX;
-    }
-}
-
-static double timespec_diff_seconds(const struct timespec *start, const struct timespec *end) {
-    time_t sec_diff = end->tv_sec - start->tv_sec;
-    long nsec_diff = end->tv_nsec - start->tv_nsec;
-    return (double)sec_diff + (double)nsec_diff / 1e9;
-}
-
-#ifdef ENABLE_RECORDING
-static void print_run_stats(const mtpndd_stats_t *stats) {
-    if (!stats) return;
-    printf(".. stats: created=%" PRIu64 ", reused=%" PRIu64 ", collected=%" PRIu64 "\n",
-           stats->nodes_created_total, stats->nodes_reused_total, stats->nodes_collected_last);
-    printf(".. stats: max_edges_per_node=%" PRIu64 ", cache hits/misses=%" PRIu64 "/%" PRIu64 "\n",
-           stats->max_edges_per_node, stats->cache_lookup_hits, stats->cache_lookup_misses);
-}
-#endif
-
 static bool run_case(size_t size, nqueens_metrics_t *metrics) {
+#ifdef ENABLE_RECORDING
     printf("== solving n=%zu\n", size);
     fflush(stdout);
+#endif
 
-    size_t bdd_size = (size <= 7) ? (1 << 19) : (size <= 9) ? (1 << 22) : (1 << 25);
-    size_t ndd_size = (size <= 7) ? (1 << 18) : (size <= 9) ? (1 << 20) : (1 << 23);
-    size_t cache_size = (size <= 7) ? (1 << 18) : (size <= 9) ? (1 << 20) : (1 << 23);
-    size_t edge_bucket_count = (size <= 7) ? 32 : (size <= 9) ? 128 : 512;
-    size_t nodetable_bucket_count = ndd_size;
-    size_t gc_bucket_count = (size <= 7) ? 512 : (size <= 9) ? 2048 : 8192;
-    size_t node_slab_capacity = (size <= 7) ? 1024 : (size <= 9) ? 2048 : 4096;
-    size_t edge_entry_slab_capacity = (size <= 7) ? 2048 : (size <= 9) ? 4096 : 8192;
-    size_t nodetable_entry_slab_capacity = (size <= 7) ? 1024 : (size <= 9) ? 2048 : 4096;
-    size_t edge_map_slab_capacity = (size <= 7) ? 512 : (size <= 9) ? 1024 : 2048;
+    bool ok = false;
+    nqueens_ctx_t ctx = {0};
+    mtpndd_t *formula = NULL;
 
-    if (size >= 10) {
-        bdd_size <<= 1;               // double BDD table to avoid Sylvan pressure
-        ndd_size <<= 2;               // quadruple MTPNDD node table
-        cache_size <<= 1;
-        edge_bucket_count *= 4;
-        nodetable_bucket_count = ndd_size;
-        gc_bucket_count *= 2;
-        node_slab_capacity <<= 1;
-        edge_entry_slab_capacity <<= 1;
-        nodetable_entry_slab_capacity <<= 1;
-        edge_map_slab_capacity <<= 1;
+    size_t bdd_size = 1 << 19;
+    size_t ndd_size = 1 << 21;
+    size_t cache_size = 1 << 18;
+    size_t edge_bucket_count = 32;
+    size_t gc_bucket_count = 256;
+    size_t node_slab_capacity = 1024;
+    size_t edge_entry_slab_capacity = 2048;
+    size_t nodetable_entry_slab_capacity = 1024;
+    size_t edge_map_slab_capacity = 512;
+
+    if (size > 6 && size <= 8) {
+        bdd_size = 1 << 20;
+        ndd_size = 1 << 22;
+        cache_size = 1 << 19;
+        edge_bucket_count = 64;
+        gc_bucket_count = 512;
+        node_slab_capacity = 1536;
+        edge_entry_slab_capacity = 3072;
+        nodetable_entry_slab_capacity = 1536;
+        edge_map_slab_capacity = 768;
+    } else if (size > 8 && size <= 10) {
+        bdd_size = 1 << 21;
+        ndd_size = 1 << 23;
+        cache_size = 1 << 20;
+        edge_bucket_count = 160;
+        gc_bucket_count = 1024;
+        node_slab_capacity = 2048;
+        edge_entry_slab_capacity = 4096;
+        nodetable_entry_slab_capacity = 2048;
+        edge_map_slab_capacity = 1024;
+    } else if (size > 10) {
+        bdd_size = 1 << 22;
+        ndd_size = 1 << 24;
+        cache_size = 1 << 21;
+        edge_bucket_count = 256;
+        gc_bucket_count = 2048;
+        node_slab_capacity = 3072;
+        edge_entry_slab_capacity = 6144;
+        nodetable_entry_slab_capacity = 3072;
+        edge_map_slab_capacity = 1280;
     }
+
+    size_t nodetable_bucket_count = ndd_size;
 
     mtpndd_pal_config_t config = {
         .n_workers = 0,
@@ -354,40 +293,50 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .edge_map_slab_capacity = edge_map_slab_capacity,
     };
 
+    struct timespec run_start = {0}, run_finish = {0}, init_finish = {0}, ctx_finish = {0};
+    clock_gettime(CLOCK_MONOTONIC, &run_start);
+
     if (mtpndd_init(&config) != MTPNDD_SUCCESS) {
         fprintf(stderr, "mtpndd_init failed for size %zu: %s\n", size,
                 mtpndd_error_string(mtpndd_get_last_error().code));
         return false;
     }
-
-    bool ok = false;
-    nqueens_ctx_t ctx = {0};
-    mtpndd_t *formula = NULL;
+    clock_gettime(CLOCK_MONOTONIC, &init_finish);
 
     if (!nqueens_ctx_init(&ctx, size)) {
         fprintf(stderr, "Failed to initialise context for size %zu.\n", size);
         goto cleanup;
     }
+    clock_gettime(CLOCK_MONOTONIC, &ctx_finish);
 
+#ifdef ENABLE_RECORDING
     printf(".. building formula\n");
     fflush(stdout);
+#endif
+
     if (!build_nqueens_formula(&ctx, &formula)) {
         fprintf(stderr, "Failed to build formula for size %zu.\n", size);
         goto cleanup;
     }
+
+#ifdef ENABLE_RECORDING
     printf(".. formula built\n");
     fflush(stdout);
 
-    struct timespec start = {0}, finish = {0};
-    clock_gettime(CLOCK_MONOTONIC, &start);
     printf(".. running mtpndd_satcount\n");
     fflush(stdout);
+#endif
+
     double satcount_value = mtpndd_satcount(formula);
-    clock_gettime(CLOCK_MONOTONIC, &finish);
+
+#ifdef ENABLE_RECORDING
     printf(".. satcount done\n");
     fflush(stdout);
+#endif
 
-    double elapsed = timespec_diff_seconds(&start, &finish);
+    clock_gettime(CLOCK_MONOTONIC, &run_finish);
+    double elapsed = timespec_diff_seconds(&run_start, &run_finish);
+
     uint64_t solutions = (uint64_t)llround(satcount_value);
     uint64_t expected = expected_solutions(size);
     if (expected != UINT64_MAX && solutions != expected) {
@@ -399,6 +348,13 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     const mtpndd_stats_t *stats = mtpndd_get_stats();
 #ifdef ENABLE_RECORDING
     print_run_stats(stats);
+
+    mtpndd_memory_pool_stats_t pool_stats = {0};
+    mtpndd_memory_pools_snapshot(&pool_stats);
+
+    printf(".. mem: node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu\n",
+           pool_stats.node_slabs, pool_stats.node_in_use, pool_stats.node_capacity_per_slab,
+           pool_stats.edge_entry_slabs, pool_stats.edge_entry_in_use);
 #endif
 
     if (metrics) {
@@ -428,6 +384,13 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
 
     ok = true;
 
+    elapsed = timespec_diff_seconds(&run_start, &init_finish);
+    printf("init %8.3f\n", elapsed);
+    elapsed = timespec_diff_seconds(&init_finish, &ctx_finish);
+    printf("ctx  %8.3f\n", elapsed);
+    elapsed = timespec_diff_seconds(&ctx_finish, &run_finish);
+    printf("run  %8.3f\n", elapsed);
+
 cleanup:
     if (formula) {
         mtpndd_deref(formula);
@@ -441,67 +404,157 @@ cleanup:
     return ok;
 }
 
-int main(void) {
-    const size_t n_min = 8;
-    const size_t n_max = 8;
-    const size_t total_runs = n_max - n_min + 1;
-    nqueens_metrics_t metrics[total_runs];
+int main(int argc, char **argv) {
+#ifdef ENABLE_RECORDING
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+#endif
 
-    size_t recorded = 0;
-    for (size_t n = n_min; n <= n_max; ++n) {
-        if (!run_case(n, &metrics[recorded])) {
-            return EXIT_FAILURE;
-        }
-        printf("== result n=%zu -> solutions=%" PRIu64 ", time=%.3f s\n",
-               metrics[recorded].size,
-               metrics[recorded].solutions,
-               metrics[recorded].seconds);
-        fflush(stdout);
-        recorded++;
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <n>\n", argv[0]);
+        return EXIT_FAILURE;
     }
 
-    printf("N-Queens results (n = %zu..%zu)\n", n_min, n_max);
+    char *endptr = NULL;
+    long parsed = strtol(argv[1], &endptr, 10);
+    if (*argv[1] == '\0' || (endptr && *endptr != '\0') || parsed <= 0) {
+        fprintf(stderr, "Invalid n value: %s\n", argv[1]);
+        return EXIT_FAILURE;
+    }
+    size_t n = (size_t)parsed;
+
+    nqueens_metrics_t metrics = {0};
+    if (!run_case(n, &metrics)) {
+        return EXIT_FAILURE;
+    }
+
+    printf("== result n=%zu -> solutions=%" PRIu64 ", time=%.3f s\n",
+           metrics.size,
+           metrics.solutions,
+           metrics.seconds);
+    fflush(stdout);
+
+    printf("N-Queens results (n = %zu)\n", n);
 #ifdef ENABLE_RECORDING
     printf(" n  solutions  expected   time(s)  nodes(created/reused/collected)  maxEdges  cache(h/m)\n");
 #else
     printf(" n  solutions  expected   time(s)  MTPNDD(nodes)\n");
 #endif
-    for (size_t i = 0; i < recorded; ++i) {
-        const nqueens_metrics_t *m = &metrics[i];
-        char expected_buf[32];
-        if (m->expected == UINT64_MAX) {
-            expected_buf[0] = '-';
-            expected_buf[1] = '\0';
-        } else {
-            snprintf(expected_buf, sizeof(expected_buf), "%" PRIu64, m->expected);
-        }
+    const nqueens_metrics_t *m = &metrics;
+    char expected_buf[32];
+    if (m->expected == UINT64_MAX) {
+        expected_buf[0] = '-';
+        expected_buf[1] = '\0';
+    } else {
+        snprintf(expected_buf, sizeof(expected_buf), "%" PRIu64, m->expected);
+    }
 #ifdef ENABLE_RECORDING
-        printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 " (%" PRIu64 "/%" PRIu64 "/%" PRIu64 ")  %7" PRIu64
-               "  %10" PRIu64 "/%-10" PRIu64 "\n",
-               m->size,
-               m->solutions,
-               expected_buf,
-               m->seconds,
-               m->mtpndd_nodes,
-               m->mtpndd_nodes_created,
-               m->mtpndd_nodes_reused,
-               m->mtpndd_nodes_collected,
-               m->mtpndd_max_edges,
-               m->cache_hits,
-               m->cache_misses);
+    printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 " (%" PRIu64 "/%" PRIu64 "/%" PRIu64 ")  %7" PRIu64
+           "  %10" PRIu64 "/%-10" PRIu64 "\n",
+           m->size,
+           m->solutions,
+           expected_buf,
+           m->seconds,
+           m->mtpndd_nodes,
+           m->mtpndd_nodes_created,
+           m->mtpndd_nodes_reused,
+           m->mtpndd_nodes_collected,
+           m->mtpndd_max_edges,
+           m->cache_hits,
+           m->cache_misses);
 #else
-        printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 "\n",
-               m->size,
-               m->solutions,
-               expected_buf,
-               m->seconds,
-               m->mtpndd_nodes);
+    printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 "\n",
+           m->size,
+           m->solutions,
+           expected_buf,
+           m->seconds,
+           m->mtpndd_nodes);
 #endif
-        if (m->expected != UINT64_MAX && m->solutions != m->expected) {
-            fprintf(stderr, "Mismatch detected for n=%zu.\n", m->size);
-            return EXIT_FAILURE;
-        }
+    if (m->expected != UINT64_MAX && m->solutions != m->expected) {
+        fprintf(stderr, "Mismatch detected for n=%zu.\n", m->size);
+        return EXIT_FAILURE;
     }
 
     return EXIT_SUCCESS;
 }
+
+static void nqueens_ctx_destroy(nqueens_ctx_t *ctx) {
+    if (!ctx) return;
+    if (ctx->field_ids) {
+        free(ctx->field_ids);
+        ctx->field_ids = NULL;
+    }
+    ctx->size = 0;
+}
+
+static uint64_t expected_solutions(size_t size) {
+    switch (size) {
+        case 1: return 1;
+        case 2:
+        case 3: return 0;
+        case 4: return 2;
+        case 5: return 10;
+        case 6: return 4;
+        case 7: return 40;
+        case 8: return 92;
+        case 9: return 352;
+        case 10: return 724;
+        case 11: return 2680;
+        case 12: return 14200;
+        default: return UINT64_MAX;
+    }
+}
+
+static double timespec_diff_seconds(const struct timespec *start, const struct timespec *end) {
+    time_t sec_diff = end->tv_sec - start->tv_sec;
+    long nsec_diff = end->tv_nsec - start->tv_nsec;
+    return (double)sec_diff + (double)nsec_diff / 1e9;
+}
+
+#ifdef ENABLE_RECORDING
+static void log_formula_progress(const char *phase, size_t current, size_t total) {
+    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    printf("[nqueens] %s %zu/%zu nodes=%zu\n",
+           phase ? phase : "phase",
+           current, total ? total : 0, nodes);
+    fflush(stdout);
+}
+
+static void print_run_stats(const mtpndd_stats_t *stats) {
+    if (!stats) return;
+    printf(".. stats: created=%" PRIu64 ", reused=%" PRIu64 ", collected=%" PRIu64 "\n",
+           stats->nodes_created_total, stats->nodes_reused_total, stats->nodes_collected_last);
+    printf(".. stats: max_edges_per_node=%" PRIu64 ", cache hits/misses=%" PRIu64 "/%" PRIu64 "\n",
+           stats->max_edges_per_node, stats->cache_lookup_hits, stats->cache_lookup_misses);
+}
+
+#endif  // ENABLE_RECORDING
+
+#ifdef MTPNDD_NQUEENS_ENABLE_DOT
+
+static const char *DOT_OUTPUT_DIR = "build/nqueens_dots";
+
+static void ensure_dot_dir(void) {
+    static bool created = false;
+    if (created) return;
+    if (mkdir(DOT_OUTPUT_DIR, 0777) != 0) {
+        // Directory may already exist; ignore errors.
+    }
+    created = true;
+}
+
+static void dump_dot_file(const char *filename, mtpndd_t *node) {
+    if (!filename || !node) return;
+    ensure_dot_dir();
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", DOT_OUTPUT_DIR, filename);
+    FILE *out = fopen(path, "w");
+    if (!out) {
+        perror("fopen dot file");
+        return;
+    }
+    mtpndd_fprint_dot(out, node);
+    fclose(out);
+}
+
+#endif  // MTPNDD_NQUEENS_ENABLE_DOT

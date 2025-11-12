@@ -10,8 +10,27 @@
 struct mtpndd_nodetable_bucket_entry_s;
 typedef struct mtpndd_nodetable_bucket_entry_s mtpndd_nodetable_bucket_entry_t;
 
+typedef struct {
+    size_t node_slabs;
+    size_t node_in_use;
+    size_t node_capacity_per_slab;
+
+    size_t edge_entry_slabs;
+    size_t edge_entry_in_use;
+    size_t edge_entry_capacity_per_slab;
+
+    size_t nodetable_entry_slabs;
+    size_t nodetable_entry_in_use;
+    size_t nodetable_entry_capacity_per_slab;
+
+    size_t edge_map_slabs;
+    size_t edge_map_in_use;
+    size_t edge_map_capacity_per_slab;
+} mtpndd_memory_pool_stats_t;
+
 mtpndd_error_t mtpndd_memory_pools_init(void);
 void mtpndd_memory_pools_shutdown(void);
+void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats);
 
 mtpndd_node_t *mtpndd_memory_acquire_node(void);
 void mtpndd_memory_release_node(mtpndd_node_t *node);

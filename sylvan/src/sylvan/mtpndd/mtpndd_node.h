@@ -96,20 +96,6 @@ bool mtpndd_is_false(mtpndd_t *ndd);
 bool mtpndd_is_terminal(mtpndd_t *ndd);
 
 /********************************
- * MTPNDD operations (sub task)
- ********************************/
-VOID_TASK_DECL_3(mtpndd_and_rec_same_field_task, edge_bucket_entry_t *, edge_bucket_entry_t *, mtpndd_edge_t *);
-VOID_TASK_DECL_3(mtpndd_and_rec_diff_field_task, edge_bucket_entry_t *, mtpndd_t *, mtpndd_edge_t *);
-TASK_DECL_3(mtpndd_error_t, mtpndd_and_rec, mtpndd_t *, mtpndd_t *, mtpndd_t **);
-VOID_TASK_DECL_5(mtpndd_or_rec_same_field_task, edge_bucket_entry_t *, edge_bucket_entry_t *, mtpndd_edge_t *, mtpndd_edge_t *, mtpndd_edge_t *);
-VOID_TASK_DECL_4(mtpndd_or_rec_diff_field_task, edge_bucket_entry_t *, mtpndd_t *, mtpndd_edge_t *, _Atomic(mtpndd_bdd_t) *);
-TASK_DECL_3(mtpndd_error_t, mtpndd_or_rec, mtpndd_t *, mtpndd_t *, mtpndd_t **);
-VOID_TASK_DECL_3(mtpndd_not_rec_task, edge_bucket_entry_t *, mtpndd_edge_t *, _Atomic(mtpndd_bdd_t) *);
-TASK_DECL_2(mtpndd_error_t, mtpndd_not_rec, mtpndd_t *, mtpndd_t **);
-VOID_TASK_DECL_3(mtpndd_exist_rec_task, edge_bucket_entry_t *, mtpndd_edge_t *, uint32_t);
-TASK_DECL_3(mtpndd_error_t, mtpndd_exist_rec, mtpndd_t *, uint32_t, mtpndd_t **);
-
-/********************************
  * MTPNDD operations
  ********************************/
 mtpndd_t *mtpndd_and(mtpndd_t *a, mtpndd_t *b);
