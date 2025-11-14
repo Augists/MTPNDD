@@ -80,24 +80,24 @@ static void mtpndd_edge_map_release_uninitialized(mtpndd_edge_t *edges) {
     mtpndd_memory_release_edge_map(edges);
 }
 
-size_t mtpndd_hash_node_identity(const mtpndd_node_t *node)
-{
+size_t mtpndd_hash_node_identity(const mtpndd_node_t *node) {
+    // TODO: like hashcode of map in java, we may need to hash mtpndd_edge_t edpending on its content instead of its address. Give the mtpndd_edge_t a structural hash value and keep updating it when the edge map is changed. And mtpndd_node_t hashcode will depend on its field_id and edge map hashcode.
     if (!node) return 0;
 
     const mtpndd_field_info_t *field = node->field;
     const mtpndd_edge_t *edges = node->edges;
 
     uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-    uint64_t field_id = field ? (uint64_t)field->field_id : 0;
+    uint64_t field_id = (uint64_t)field->field_id;
     uintptr_t edges_addr = (uintptr_t)edges;
-    uintptr_t node_addr = (uintptr_t)node;
+    // uintptr_t node_addr = (uintptr_t)node;
 
     hash ^= field_id;
     hash *= 1099511628211ULL;             /* FNV prime */
     hash ^= edges_addr;
     hash *= 1099511628211ULL;
-    hash ^= node_addr;
-    hash *= 1099511628211ULL;
+    // hash ^= node_addr;
+    // hash *= 1099511628211ULL;
 
     return (size_t)hash;
 }
@@ -321,6 +321,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
         created_entry = true;
 #endif
     } else {
+        // TODO: cononical ordering edge map entries by label, insert between entries with smaller and larger labels
         entry = find_edge_entry(edges, descendant);
         if (entry) {
             // Edge already exists, update old_label

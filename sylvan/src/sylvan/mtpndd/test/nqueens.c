@@ -293,7 +293,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .edge_map_slab_capacity = edge_map_slab_capacity,
     };
 
-    struct timespec run_start = {0}, run_finish = {0}, init_finish = {0}, ctx_finish = {0};
+    struct timespec run_start = {0}, run_finish = {0}, init_finish = {0}, ctx_finish = {0}, op_finish = {0};
     clock_gettime(CLOCK_MONOTONIC, &run_start);
 
     if (mtpndd_init(&config) != MTPNDD_SUCCESS) {
@@ -318,6 +318,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         fprintf(stderr, "Failed to build formula for size %zu.\n", size);
         goto cleanup;
     }
+    clock_gettime(CLOCK_MONOTONIC, &op_finish);
 
 #ifdef ENABLE_RECORDING
     printf(".. formula built\n");
@@ -388,8 +389,10 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     printf("init %8.3f\n", elapsed);
     elapsed = timespec_diff_seconds(&init_finish, &ctx_finish);
     printf("ctx  %8.3f\n", elapsed);
-    elapsed = timespec_diff_seconds(&ctx_finish, &run_finish);
-    printf("run  %8.3f\n", elapsed);
+    elapsed = timespec_diff_seconds(&ctx_finish, &op_finish);
+    printf("op  %8.3f\n", elapsed);
+    elapsed = timespec_diff_seconds(&op_finish, &run_finish);
+    printf("run %8.3f\n", elapsed);
 
 cleanup:
     if (formula) {

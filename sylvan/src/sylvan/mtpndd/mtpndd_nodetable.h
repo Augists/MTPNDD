@@ -30,7 +30,6 @@ typedef struct mtpndd_nodetable_s {
 static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable);
 #define NODETABLE_HASH_VAL(key, nodetable) nodetable_hash_edges((key), (nodetable))
 
-// TODO: compare all children with their labels
 #define NODETABLE_BUCKET_ENTRY_EQUAL(entry, keyEdges) ((entry->edges) == (keyEdges))
 
 #define FOR_EACH_ENTRY_IN_NODETABLE_BUCKET(emap, bucket_idx, entry) \

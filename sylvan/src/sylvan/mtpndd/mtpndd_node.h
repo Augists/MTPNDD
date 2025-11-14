@@ -13,10 +13,12 @@
 /********************************
  * MTPNDD node definition
  ********************************/
+// TODO: directly use field_id instead of mtpndd_field_info_t * for better cache performance
+// TODO: like JDD, use a t_list data structure for both node memory pool and node table
 struct mtpndd_node_s {
+    atomic_uint_fast64_t ref_count;
     mtpndd_field_info_t *field;
     struct mtpndd_edge_s *edges;
-    atomic_uint_fast64_t ref_count;
 };
 
 /********************************
@@ -29,19 +31,17 @@ typedef struct edge_bucket_entry_s {
     _Atomic(mtpndd_bdd_t) label;
 } edge_bucket_entry_t;
 
+// TODO: try not to malloc buckets and bucket_locks every time, use array instead. Edge map memory pool should alloc every edge map by _edge_bucket_cnt when mtpndd_init
 // mtpndd_t* child -> mtpndd_bdd_t label
 struct mtpndd_edge_s {
     size_t edge_count;
     size_t bucket_count;
-    edge_bucket_entry_t **buckets;
     atomic_flag *bucket_locks;
+    edge_bucket_entry_t **buckets;
 };
 
 #define EDGE_MAP_INIT(emap) do { \
         size_t _edge_bucket_cnt = mtpndd_config_edge_bucket_count(); \
-        if (_edge_bucket_cnt == 0) { \
-            _edge_bucket_cnt = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT; \
-        } \
         (emap)->edge_count = 0; \
         (emap)->bucket_count = _edge_bucket_cnt; \
         (emap)->buckets = (edge_bucket_entry_t **)malloc(sizeof(edge_bucket_entry_t *) * _edge_bucket_cnt); \

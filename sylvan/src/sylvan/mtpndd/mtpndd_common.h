@@ -289,7 +289,6 @@ mtpndd_bdd_t mtpndd_get_bdd_not_var(uint32_t field, uint32_t var_index);
 mtpndd_stats_t *mtpndd_get_stats();
 
 bool mtpndd_is_initialized();
-// bool mtpndd_enable_reordering(bool enable);
 
 mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config);
 mtpndd_error_t mtpndd_quit();
@@ -297,6 +296,7 @@ mtpndd_error_t mtpndd_quit();
 /********************************
  * GC hooks
  ********************************/
+// TODO: what is the typedef below mean? And will it affect other code?
 typedef void (*mtpndd_gc_hook_t)(void);
 void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook);
 void mtpndd_gc_hook_postgc(mtpndd_gc_hook_t hook);
