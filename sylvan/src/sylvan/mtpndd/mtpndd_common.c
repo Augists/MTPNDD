@@ -17,7 +17,7 @@
 #include <stdatomic.h>
 
 /********************************
- * Global singletons
+ * Global singletons and defaults
  ********************************/
 mtpndd_pal_config_t g_mtpndd_pal_config = {0};
 mtpndd_stats_t g_mtpndd_stats = {0};
@@ -38,6 +38,14 @@ static mtpndd_gc_hook_t g_mtpndd_gc_prehooks[MTPNDD_GC_HOOK_CAPACITY] = {0};
 static mtpndd_gc_hook_t g_mtpndd_gc_posthooks[MTPNDD_GC_HOOK_CAPACITY] = {0};
 static _Atomic size_t g_mtpndd_gc_prehook_count = 0;
 static _Atomic size_t g_mtpndd_gc_posthook_count = 0;
+
+#define DEFAULT_QUICK_GROWTH_THRESHOLD 0.1
+#define DEFAULT_FIELD_CAPACITY 16
+
+static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges) {
+    EDGE_MAP_INIT(edges);
+    return MTPNDD_SUCCESS;
+}
 
 /********************************
  * Internal helpers
@@ -107,18 +115,6 @@ static void mtpndd_field_info_teardown(mtpndd_field_info_t *field) {
  ********************************/
 static __thread mtpndd_error_info_t g_last_error = {MTPNDD_SUCCESS, NULL, NULL, 0};
 
-/********************************
- * Default configurations
- ********************************/
-#define DEFAULT_QUICK_GROWTH_THRESHOLD 0.1
-#define DEFAULT_FIELD_CAPACITY 16
-
-static mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges)
-{
-    EDGE_MAP_INIT(edges);
-    return MTPNDD_SUCCESS;
-}
-
 const char* mtpndd_error_messages[] = {
     "Success",
     "Invalid parameter",
@@ -161,6 +157,9 @@ void mtpndd_clear_error() {
     g_last_error.line = 0;
 }
 
+/********************************
+ * GC hooks
+ ********************************/
 void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook) {
     if (!hook) {
         return;
@@ -228,10 +227,13 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_PARAM(bit_width > 0, MTPNDD_ERROR_INVALID_PARAM);
 
+    g_mtpndd_config.field_count++;
+
     // check and expand capacity
-    if (g_mtpndd_config.field_count + 1 >= g_mtpndd_config.field_capacity) {
+    if (g_mtpndd_config.field_count >= g_mtpndd_config.field_capacity) {
         uint32_t new_capacity = g_mtpndd_config.field_capacity * 2;
 
+        // TODO: try to use realloc
         mtpndd_field_info_t **new_field_info = (mtpndd_field_info_t **)calloc(
                 new_capacity, sizeof(mtpndd_field_info_t*));
         if (!new_field_info) {
@@ -245,19 +247,19 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
             MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         }
 
-        for (uint32_t i = 0; i <= g_mtpndd_config.field_count; i++) {
+        // TODO: use memcpy
+        for (uint32_t i = 0; i < g_mtpndd_config.field_count; i++) {
             new_field_info[i] = g_mtpndd_config.field_info[i];
             new_node_tables[i] = g_mtpndd_config.node_tables_by_field[i];
         }
 
         free(g_mtpndd_config.field_info);
         free(g_mtpndd_config.node_tables_by_field);
+        // TODO: malloc field_info and every field in one time, so field_info and node_tables_by_field will be * instead of **?
         g_mtpndd_config.field_info = new_field_info;
         g_mtpndd_config.node_tables_by_field = new_node_tables;
         g_mtpndd_config.field_capacity = new_capacity;
     }
-
-    g_mtpndd_config.field_count++;
 
     mtpndd_field_info_t *new_field = (mtpndd_field_info_t *)malloc(sizeof(mtpndd_field_info_t));
     if (!new_field) {
@@ -266,12 +268,16 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
     memset(new_field, 0, sizeof(mtpndd_field_info_t));
     new_field->field_id = g_mtpndd_config.field_count;
     new_field->bit_width = bit_width;
-    if (g_mtpndd_config.field_count == 1) {
-        new_field->start_var = 0;
-    } else {
-        mtpndd_field_info_t *prev_field = g_mtpndd_config.field_info[g_mtpndd_config.field_count - 1];
-        new_field->start_var = prev_field->start_var + prev_field->bit_width;
+    mtpndd_field_info_t *prev_field = g_mtpndd_config.field_info[g_mtpndd_config.field_count - 1];
+    new_field->start_var = g_mtpndd_config.field_count == 1 ? 0 :
+        prev_field->start_var + prev_field->bit_width;
+    
+    // node table initialize
+    mtpndd_nodetable_t *nodetable = mtpndd_nodetable_declare_field();
+    if (!nodetable) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
     }
+    g_mtpndd_config.node_tables_by_field[g_mtpndd_config.field_count] = nodetable;
 
 #define FREE_BDD_VARS() do { \
         if (new_field->bdd_vars) { \
@@ -333,6 +339,8 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
         new_field->bdd_not_vars[i] = sylvan_not(new_field->bdd_vars[i]);
         sylvan_protect(new_field->bdd_not_vars + i);
     }
+    // TODO: mtpndd_node_t * instead of mtpndd_node_t ** for NDD variable, so that we can malloc all nodes in one time. Besides, these nodes are special, so we do not need to use memory pool.
+    // TODO: use mtpndd_mk so that these mtpndd_node_t will be added into node table
     // NDD variables
     new_field->mtpndd_vars = (mtpndd_node_t **)malloc(sizeof(mtpndd_node_t *) * bit_width);
     new_field->mtpndd_not_vars = (mtpndd_node_t **)malloc(sizeof(mtpndd_node_t *) * bit_width);
@@ -402,12 +410,6 @@ mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
     }
 
     g_mtpndd_config.field_info[g_mtpndd_config.field_count] = new_field;
-    mtpndd_nodetable_t *nodetable = mtpndd_nodetable_declare_field();
-    if (!nodetable) {
-        FREE_MTPNDD_VARS_WITH_NODES(bit_width);
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    g_mtpndd_config.node_tables_by_field[g_mtpndd_config.field_count] = nodetable;
 
     return MTPNDD_SUCCESS;
 }

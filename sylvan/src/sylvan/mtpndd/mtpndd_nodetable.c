@@ -402,12 +402,14 @@ static void gc_internal(void) {
     size_t gc_root_count = mtpndd_gc_collect_roots(&gc_roots);
     size_t reclaimed = mtpndd_gc_sweep();
     mtpndd_gc_release_roots(gc_roots, gc_root_count);
+    // TODO: memset when gc instead of every time when acquire node or edge map
 
     if (reclaimed > 0) {
+        __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
+        
 #ifdef ENABLE_RECORDING
         MTPNDD_STAT_SET(nodes_collected_last, reclaimed);
 #endif
-        __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
     }
 }
 
