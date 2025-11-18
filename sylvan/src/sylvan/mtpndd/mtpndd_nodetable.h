@@ -27,6 +27,7 @@ typedef struct mtpndd_nodetable_s {
     pthread_rwlock_t *bucket_locks;
 } mtpndd_nodetable_t;
 
+static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count);
 static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable);
 #define NODETABLE_HASH_VAL(key, nodetable) nodetable_hash_edges((key), (nodetable))
 
@@ -59,23 +60,25 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
  ********************************/
 static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable)
 {
-    if (!key || !nodetable || nodetable->nodetable_bucket_count == 0) {
+    if (!nodetable) return 0;
+    return nodetable_hash_edges_with_bucket_count(key, nodetable->nodetable_bucket_count);
+}
+
+static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count) {
+    if (!key || bucket_count == 0) {
         return 0;
     }
 
     uintptr_t addr = (uintptr_t)key;
     uintptr_t bucket_addr = key->buckets ? (uintptr_t)key->buckets : 0;
-    uintptr_t lock_addr = key->bucket_locks ? (uintptr_t)key->bucket_locks : 0;
 
     uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
     hash ^= addr;
     hash *= 1099511628211ULL;
     hash ^= bucket_addr;
     hash *= 1099511628211ULL;
-    hash ^= lock_addr;
-    hash *= 1099511628211ULL;
 
-    return (size_t)(hash % nodetable->nodetable_bucket_count);
+    return (size_t)(hash % bucket_count);
 }
 
 #endif // MTPNDD_NODETABLE_H
