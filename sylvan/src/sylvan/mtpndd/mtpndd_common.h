@@ -34,6 +34,16 @@ typedef struct gc_protect_entry_s gc_protect_entry_t;
 
 size_t mtpndd_hash_node_identity(const mtpndd_node_t *node);
 
+static inline size_t mtpndd_hash_u64(uint64_t key) {
+    uint64_t value = key;
+    value ^= value >> 33;
+    value *= 0xff51afd7ed558ccdULL;
+    value ^= value >> 33;
+    value *= 0xc4ceb9fe1a85ec53ULL;
+    value ^= value >> 33;
+    return (size_t)value;
+}
+
 /********************************
  * Error handling system
  ********************************/
@@ -296,7 +306,7 @@ mtpndd_error_t mtpndd_quit();
 /********************************
  * GC hooks
  ********************************/
-// TODO: what is the typedef below mean? And will it affect other code?
+// GC hook signature: pointer to void hook(void)
 typedef void (*mtpndd_gc_hook_t)(void);
 void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook);
 void mtpndd_gc_hook_postgc(mtpndd_gc_hook_t hook);

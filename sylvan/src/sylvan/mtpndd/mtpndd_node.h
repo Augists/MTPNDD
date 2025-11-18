@@ -13,11 +13,12 @@
 /********************************
  * MTPNDD node definition
  ********************************/
-// TODO: directly use field_id instead of mtpndd_field_info_t * for better cache performance
+// directly use field_id instead of mtpndd_field_info_t * for better cache performance
+// TODO: cache line friendly
 // TODO: like JDD, use a t_list data structure for both node memory pool and node table
 struct mtpndd_node_s {
     atomic_uint_fast64_t ref_count;
-    mtpndd_field_info_t *field;
+    uint32_t field_id;
     struct mtpndd_edge_s *edges;
 };
 
@@ -26,7 +27,6 @@ struct mtpndd_node_s {
  ********************************/
 typedef struct edge_bucket_entry_s {
     struct edge_bucket_entry_s *next;
-    struct edge_bucket_entry_s *prev;
     mtpndd_node_t *child;
     _Atomic(mtpndd_bdd_t) label;
 } edge_bucket_entry_t;
@@ -40,27 +40,6 @@ struct mtpndd_edge_s {
     edge_bucket_entry_t **buckets;
 };
 
-#define EDGE_MAP_INIT(emap) do { \
-        size_t _edge_bucket_cnt = mtpndd_config_edge_bucket_count(); \
-        (emap)->edge_count = 0; \
-        (emap)->bucket_count = _edge_bucket_cnt; \
-        (emap)->buckets = (edge_bucket_entry_t **)malloc(sizeof(edge_bucket_entry_t *) * _edge_bucket_cnt); \
-        if (!(emap)->buckets) { \
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
-            return MTPNDD_ERROR_OUT_OF_MEMORY; \
-        } \
-        (emap)->bucket_locks = (atomic_flag *)malloc(sizeof(atomic_flag) * _edge_bucket_cnt); \
-        if (!(emap)->bucket_locks) { \
-            free((emap)->buckets); \
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
-            return MTPNDD_ERROR_OUT_OF_MEMORY; \
-        } \
-        for (size_t i = 0; i < _edge_bucket_cnt; i++) { \
-            (emap)->buckets[i] = NULL; \
-            atomic_flag_clear_explicit(&(emap)->bucket_locks[i], memory_order_relaxed); \
-        } \
-    } while(0)
-
 static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd_node_t *child) {
     size_t hash = mtpndd_hash_node_identity(child);
     size_t bucket_cnt = emap ? emap->bucket_count : mtpndd_config_edge_bucket_count();
@@ -72,18 +51,19 @@ static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd
 #define EDGE_BUCKET_ENTRY_EQUAL(entry, key) ((entry->child) == (key))
 
 #define FOR_EACH_ENTRY_IN_BUCKET(emap, bucket_idx, entry) \
-    for ((entry) = ((emap) && (emap)->buckets && (emap)->buckets[bucket_idx]) ? (emap)->buckets[bucket_idx]->next : NULL; \
-        (entry) && (entry) != (emap)->buckets[bucket_idx]; \
+    for ((entry) = ((emap) && (emap)->buckets) ? (emap)->buckets[bucket_idx] : NULL; \
+        (entry); \
         (entry) = (entry)->next)
 #define FOR_EACH_ENTRY_IN_ALL_BUCKETS(emap, entry) \
     for (size_t _bkt = 0, _edge_bucket_cnt = (emap) ? (emap)->bucket_count : 0; _bkt < _edge_bucket_cnt; _bkt++) \
-        for ((entry) = ((emap) && (emap)->buckets && (emap)->buckets[_bkt]) ? (emap)->buckets[_bkt]->next : NULL; \
-            (entry) && (entry) != (emap)->buckets[_bkt]; \
+        for ((entry) = ((emap) && (emap)->buckets) ? (emap)->buckets[_bkt] : NULL; \
+            (entry); \
             (entry) = (entry)->next)
 
 edge_bucket_entry_t *find_edge_entry(mtpndd_edge_t *edge, mtpndd_node_t *key);
 void mtpndd_edge_map_free(mtpndd_edge_t *edges);
 mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpndd_bdd_t label_bdd);
+mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges);
 
 /********************************
  * MTPNDD terminal nodes

@@ -9,6 +9,7 @@
 #include "mtpndd_nodetable.h"
 #include "mtpndd_node.h"
 #include "mtpndd_memory_pool.h"
+#include "mtpndd_operation_cache.h"
 #include "sylvan.h"
 #include "sylvan_common.h"
 #include "lace.h"
@@ -16,42 +17,6 @@
 #ifdef ENABLE_RECORDING
 #include <time.h>
 #endif
-
-static inline size_t nodetable_hash_with_bucket_count(const mtpndd_edge_t *edges, size_t bucket_count) {
-    if (!edges || bucket_count == 0) {
-        return 0;
-    }
-
-    uintptr_t addr = (uintptr_t)edges;
-    uintptr_t bucket_addr = edges->buckets ? (uintptr_t)edges->buckets : 0;
-    uintptr_t lock_addr = edges->bucket_locks ? (uintptr_t)edges->bucket_locks : 0;
-
-    uint64_t hash = 1469598103934665603ULL;
-    hash ^= addr;
-    hash *= 1099511628211ULL;
-    hash ^= bucket_addr;
-    hash *= 1099511628211ULL;
-    hash ^= lock_addr;
-    hash *= 1099511628211ULL;
-
-    return (size_t)(hash % bucket_count);
-}
-
-static mtpndd_nodetable_bucket_entry_t *mtpndd_nodetable_entry_create(void) {
-    mtpndd_nodetable_bucket_entry_t *entry = mtpndd_memory_acquire_nodetable_entry();
-    if (!entry) {
-        return NULL;
-    }
-    memset(entry, 0, sizeof(mtpndd_nodetable_bucket_entry_t));
-    return entry;
-}
-
-static void mtpndd_nodetable_entry_destroy(mtpndd_nodetable_bucket_entry_t *entry) {
-    if (!entry) {
-        return;
-    }
-    mtpndd_memory_release_nodetable_entry(entry);
-}
 
 static void gc_internal(void);
 static void grow_internal(void);
@@ -255,22 +220,26 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
     memset(node, 0, sizeof(mtpndd_node_t));
-    node->field = g_mtpndd_config.field_info[field];
+    node->field_id = field;
+    node->field = (field > 0 && field <= g_mtpndd_config.field_count)
+                      ? g_mtpndd_config.field_info[field]
+                      : &MTPNDD_TERMINAL_FIELD;
     node->edges = edges;
     atomic_init(&node->ref_count, 0);
     // 4. insert into nodetable
     size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
-    mtpndd_nodetable_bucket_entry_t *new_entry = mtpndd_nodetable_entry_create();
+    mtpndd_nodetable_bucket_entry_t *new_entry = mtpndd_memory_acquire_nodetable_entry();
     if (!new_entry) {
         mtpndd_memory_release_node(node);
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
+    memset(new_entry, 0, sizeof(mtpndd_nodetable_bucket_entry_t));
     new_entry->edges = edges;
     new_entry->node = node;
     pthread_rwlock_t *bucket_lock = &nodetable->bucket_locks[hash];
     if (pthread_rwlock_wrlock(bucket_lock) != 0) {
-        mtpndd_nodetable_entry_destroy(new_entry);
+        mtpndd_memory_release_nodetable_entry(new_entry);
         mtpndd_memory_release_node(node);
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
             if (!mtpndd_is_terminal(entry->child)) {
@@ -297,7 +266,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     if (existing_entry) {
         mtpndd_node_t *existing_node = existing_entry->node;
         pthread_rwlock_unlock(bucket_lock);
-        mtpndd_nodetable_entry_destroy(new_entry);
+        mtpndd_memory_release_nodetable_entry(new_entry);
         mtpndd_memory_release_node(node);
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
             if (!mtpndd_is_terminal(entry->child)) {
@@ -369,6 +338,11 @@ static void gcOrGrow(void) {
         grow_internal();
     }
 
+    // clear operation caches after mutating nodetables, before resuming user code
+    mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.not_cache);
+
     if (suspended_workers) {
         lace_resume();
     }
@@ -388,8 +362,6 @@ static void gcOrGrow(void) {
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_end);
     MTPNDD_STAT_ADD(gc_pause_time_ns, mtpndd_timespec_diff_ns(&gc_timer_start, &gc_timer_end));
 #endif
-
-    // TODO: clear op cache
 }
 
 static void gc_internal(void) {
@@ -402,7 +374,6 @@ static void gc_internal(void) {
     size_t gc_root_count = mtpndd_gc_collect_roots(&gc_roots);
     size_t reclaimed = mtpndd_gc_sweep();
     mtpndd_gc_release_roots(gc_roots, gc_root_count);
-    // TODO: memset when gc instead of every time when acquire node or edge map
 
     if (reclaimed > 0) {
         __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
@@ -508,7 +479,7 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
     mtpndd_edge_map_free(edges);
 
     mtpndd_memory_release_node(node);
-    mtpndd_nodetable_entry_destroy(entry);
+    mtpndd_memory_release_nodetable_entry(entry);
 }
 
 static size_t mtpndd_gc_sweep(void) {
@@ -580,7 +551,7 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
         mtpndd_nodetable_bucket_entry_t *entry = table->buckets[i];
         while (entry) {
             mtpndd_nodetable_bucket_entry_t *next_entry = entry->next;
-            size_t hash = nodetable_hash_with_bucket_count(entry->edges, new_bucket_count);
+            size_t hash = nodetable_hash_edges_with_bucket_count(entry->edges, new_bucket_count);
             entry->prev = NULL;
             entry->next = new_buckets[hash];
             if (entry->next) {

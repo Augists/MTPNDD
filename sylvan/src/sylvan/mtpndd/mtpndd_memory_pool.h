@@ -31,6 +31,9 @@ typedef struct {
 mtpndd_error_t mtpndd_memory_pools_init(void);
 void mtpndd_memory_pools_shutdown(void);
 void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats);
+#ifdef ENABLE_RECORDING
+void mtpndd_log_memory_pools(const char *phase);
+#endif
 
 mtpndd_node_t *mtpndd_memory_acquire_node(void);
 void mtpndd_memory_release_node(mtpndd_node_t *node);
