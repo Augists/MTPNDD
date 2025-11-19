@@ -236,43 +236,31 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t bdd_size = 1 << 19;
     size_t ndd_size = 1 << 21;
     size_t cache_size = 1 << 18;
-    size_t edge_bucket_count = 32;
+    size_t edge_bucket_count = 8;
     size_t gc_bucket_count = 256;
-    size_t node_slab_capacity = 1024;
-    size_t edge_entry_slab_capacity = 2048;
-    size_t nodetable_entry_slab_capacity = 1024;
-    size_t edge_map_slab_capacity = 512;
+    size_t slab_capacity = 1024;
+    size_t gc_protect_entry_slab_capacity = 256;
 
     if (size > 6 && size <= 8) {
         bdd_size = 1 << 20;
         ndd_size = 1 << 22;
         cache_size = 1 << 19;
-        edge_bucket_count = 64;
-        gc_bucket_count = 512;
-        node_slab_capacity = 1536;
-        edge_entry_slab_capacity = 3072;
-        nodetable_entry_slab_capacity = 1536;
-        edge_map_slab_capacity = 768;
+        slab_capacity = 81920;
+        gc_protect_entry_slab_capacity = 384;
     } else if (size > 8 && size <= 10) {
         bdd_size = 1 << 21;
         ndd_size = 1 << 23;
         cache_size = 1 << 20;
-        edge_bucket_count = 160;
-        gc_bucket_count = 1024;
-        node_slab_capacity = 2048;
-        edge_entry_slab_capacity = 4096;
-        nodetable_entry_slab_capacity = 2048;
-        edge_map_slab_capacity = 1024;
+        edge_bucket_count = 10;
+        slab_capacity = 819200;
+        gc_protect_entry_slab_capacity = 512;
     } else if (size > 10) {
         bdd_size = 1 << 22;
         ndd_size = 1 << 24;
         cache_size = 1 << 21;
-        edge_bucket_count = 256;
-        gc_bucket_count = 2048;
-        node_slab_capacity = 3072;
-        edge_entry_slab_capacity = 6144;
-        nodetable_entry_slab_capacity = 3072;
-        edge_map_slab_capacity = 1280;
+        edge_bucket_count = 12;
+        slab_capacity = 1638400;
+        gc_protect_entry_slab_capacity = 640;
     }
 
     size_t nodetable_bucket_count = ndd_size;
@@ -287,10 +275,11 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .edge_bucket_count = edge_bucket_count,
         .nodetable_bucket_count = nodetable_bucket_count,
         .gc_bucket_count = gc_bucket_count,
-        .node_slab_capacity = node_slab_capacity,
-        .edge_entry_slab_capacity = edge_entry_slab_capacity,
-        .nodetable_entry_slab_capacity = nodetable_entry_slab_capacity,
-        .edge_map_slab_capacity = edge_map_slab_capacity,
+        .node_slab_capacity = slab_capacity,
+        .edge_entry_slab_capacity = slab_capacity,
+        .nodetable_entry_slab_capacity = slab_capacity,
+        .edge_map_slab_capacity = slab_capacity * size,
+        .gc_protect_entry_slab_capacity = gc_protect_entry_slab_capacity,
     };
 
     struct timespec run_start = {0}, run_finish = {0}, init_finish = {0}, ctx_finish = {0}, op_finish = {0};
@@ -392,7 +381,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     elapsed = timespec_diff_seconds(&ctx_finish, &op_finish);
     printf("op  %8.3f\n", elapsed);
     elapsed = timespec_diff_seconds(&op_finish, &run_finish);
-    printf("run %8.3f\n", elapsed);
+    printf("sat %8.3f\n", elapsed);
 
 cleanup:
     if (formula) {
