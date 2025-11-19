@@ -47,7 +47,7 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
     if (!table) return NULL;
     memset(table, 0, sizeof(mtpndd_nodetable_t));
-    size_t bucket_cnt = mtpndd_config_nodetable_bucket_count();
+    size_t bucket_cnt = g_mtpndd_pal_config.nodetable_bucket_count;
     if (bucket_cnt == 0) {
         bucket_cnt = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
@@ -169,13 +169,18 @@ mtpndd_error_t mtpndd_unprotect(mtpndd_t *node) {
     return MTPNDD_SUCCESS;
 }
 
-mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
+void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
+    if (!result) {
+        mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
+        return;
+    }
+    *result = NULL;
     if (edges->edge_count == 0) {
         *result = &MTPNDD_FALSE;
-        return MTPNDD_SUCCESS;
+        return;
     } else if (edges->edge_count == 1) {
         edge_bucket_entry_t *only_entry = NULL;
-        size_t bucket_cnt = edges->bucket_count;
+        size_t bucket_cnt = (edges && edges->buckets) ? g_mtpndd_pal_config.edge_bucket_count : 0;
         for (size_t i = 0; i < bucket_cnt && !only_entry; ++i) {
             edge_bucket_entry_t *head = edges->buckets[i];
             if (!head) continue;
@@ -186,7 +191,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         }
         if (only_entry && atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
             *result = only_entry->child;
-            return MTPNDD_SUCCESS;
+            return;
         }
     }
     mtpndd_nodetable_t *nodetable = g_mtpndd_config.node_tables_by_field[field];
@@ -201,7 +206,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         MTPNDD_STAT_ADD(nodes_reused_total, 1);
 #endif
         *result = node;
-        return MTPNDD_SUCCESS;
+        return;
     }
     // Create new node
     // 1. add ref count of all children
@@ -217,9 +222,9 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     // 3. create new node
     node = mtpndd_memory_acquire_node();
     if (!node) {
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
+        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
+        return;
     }
-    memset(node, 0, sizeof(mtpndd_node_t));
     node->field_id = field;
     node->field = (field > 0 && field <= g_mtpndd_config.field_count)
                       ? g_mtpndd_config.field_info[field]
@@ -232,9 +237,8 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     if (!new_entry) {
         mtpndd_memory_release_node(node);
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
+        return;
     }
-    memset(new_entry, 0, sizeof(mtpndd_nodetable_bucket_entry_t));
     new_entry->edges = edges;
     new_entry->node = node;
     pthread_rwlock_t *bucket_lock = &nodetable->bucket_locks[hash];
@@ -249,7 +253,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
             sylvan_deref(label);
         }
         mtpndd_set_error(MTPNDD_ERROR_THREAD_SAFETY, __func__, __LINE__);
-        return MTPNDD_ERROR_THREAD_SAFETY;
+        return;
     }
 
     mtpndd_nodetable_bucket_entry_t *existing_entry = nodetable->buckets[hash];
@@ -282,7 +286,7 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
         MTPNDD_STAT_ADD(nodes_reused_total, 1);
 #endif
         *result = existing_node;
-        return MTPNDD_SUCCESS;
+        return;
     }
 
     new_entry->next = nodetable->buckets[hash];
@@ -300,7 +304,6 @@ mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **r
     }
 #endif
     *result = node;
-    return MTPNDD_SUCCESS;
 }
 
 static void gcOrGrow(void) {
@@ -409,21 +412,20 @@ static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
         while (entry) {
             mtpndd_node_t *node = entry->node;
             if (node) {
-                if (mtpndd_ref(node) == MTPNDD_SUCCESS) {
-                    if (count == capacity) {
-                        size_t new_capacity = capacity ? capacity * 2 : 64;
-                        mtpndd_node_t **new_buffer = (mtpndd_node_t **)realloc(buffer, new_capacity * sizeof(mtpndd_node_t *));
-                        if (!new_buffer) {
-                            mtpndd_gc_release_roots(buffer, count);
-                            GC_PROTECT_BUCKET_UNLOCK(gc_protect, i);
-                            *roots_out = NULL;
-                            return 0;
-                        }
-                        buffer = new_buffer;
-                        capacity = new_capacity;
+                mtpndd_ref(node);
+                if (count == capacity) {
+                    size_t new_capacity = capacity ? capacity * 2 : 64;
+                    mtpndd_node_t **new_buffer = (mtpndd_node_t **)realloc(buffer, new_capacity * sizeof(mtpndd_node_t *));
+                    if (!new_buffer) {
+                        mtpndd_gc_release_roots(buffer, count);
+                        GC_PROTECT_BUCKET_UNLOCK(gc_protect, i);
+                        *roots_out = NULL;
+                        return 0;
                     }
-                    buffer[count++] = node;
+                    buffer = new_buffer;
+                    capacity = new_capacity;
                 }
+                buffer[count++] = node;
             }
             entry = entry->next;
         }
@@ -460,7 +462,7 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
 
     mtpndd_edge_t *edges = node->edges;
     if (edges && edges->buckets) {
-        size_t edge_bucket_count = edges->bucket_count;
+        size_t edge_bucket_count = g_mtpndd_pal_config.edge_bucket_count;
         for (size_t eb = 0; eb < edge_bucket_count; ++eb) {
             edge_bucket_entry_t *head = edges->buckets[eb];
             if (!head) {

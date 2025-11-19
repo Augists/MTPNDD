@@ -133,6 +133,7 @@ int main(void) {
     .edge_entry_slab_capacity = 4096,
     .nodetable_entry_slab_capacity = 2048,
     .edge_map_slab_capacity = 1024,
+    .gc_protect_entry_slab_capacity = 512,
     };
     assert_success(mtpndd_init(&config));
     printf(">> mtpndd_init succeeded\n");

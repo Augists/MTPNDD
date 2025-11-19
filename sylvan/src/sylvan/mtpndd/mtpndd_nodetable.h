@@ -53,7 +53,7 @@ mtpndd_error_t mtpndd_deref(mtpndd_t *node);
 mtpndd_error_t mtpndd_protect(mtpndd_t *node);
 mtpndd_error_t mtpndd_unprotect(mtpndd_t *node);
 // create or reuse node
-mtpndd_error_t mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result);
+void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result);
 
 /********************************
  * Implementation of nodetable hash

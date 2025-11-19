@@ -22,6 +22,45 @@ struct mtpndd_node_s {
     struct mtpndd_edge_s *edges;
 };
 
+
+#define MTPNDD_BUCKET_LOCK_WORD_BITS 64
+
+/********************************
+ * Bucket lock definition (bitset)
+ ********************************/
+static inline void mtpndd_bucket_lock_clear(atomic_uint_fast64_t *lock_word, size_t idx) {
+    if (!lock_word) return;
+    uint64_t mask = ~(1ull << idx);
+    atomic_fetch_and_explicit(lock_word, mask, memory_order_relaxed);
+}
+
+static inline void mtpndd_bucket_lock_release(atomic_uint_fast64_t *lock_word, size_t idx) {
+    if (!lock_word) return;
+    uint64_t mask = ~(1ull << idx);
+    atomic_fetch_and_explicit(lock_word, mask, memory_order_release);
+}
+
+static inline void mtpndd_bucket_lock_acquire(atomic_uint_fast64_t *lock_word, size_t idx) {
+    if (!lock_word) return;
+    uint64_t mask = 1ull << idx;
+    for (;;) {
+        uint64_t expected = atomic_load_explicit(lock_word, memory_order_relaxed);
+        if (!(expected & mask)) {
+            if (atomic_compare_exchange_weak_explicit(lock_word, &expected, expected | mask,
+                                                      memory_order_acquire, memory_order_relaxed)) {
+                break;
+            }
+        }
+#if defined(__GNUC__) || defined(__clang__)
+#if defined(__x86_64__) || defined(__i386__)
+        __asm__ __volatile__("pause");
+#elif defined(__aarch64__) || defined(__arm__)
+        __asm__ __volatile__("yield");
+#endif
+#endif
+    }
+}
+
 /********************************
  * MTPNDD edge definition
  ********************************/
@@ -35,14 +74,13 @@ typedef struct edge_bucket_entry_s {
 // mtpndd_t* child -> mtpndd_bdd_t label
 struct mtpndd_edge_s {
     size_t edge_count;
-    size_t bucket_count;
-    atomic_flag *bucket_locks;
+    atomic_uint_fast64_t bucket_lock_word;
     edge_bucket_entry_t **buckets;
 };
 
 static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd_node_t *child) {
     size_t hash = mtpndd_hash_node_identity(child);
-    size_t bucket_cnt = emap ? emap->bucket_count : mtpndd_config_edge_bucket_count();
+    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
     return bucket_cnt ? (hash % bucket_cnt) : 0;
 }
 
@@ -51,19 +89,19 @@ static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd
 #define EDGE_BUCKET_ENTRY_EQUAL(entry, key) ((entry->child) == (key))
 
 #define FOR_EACH_ENTRY_IN_BUCKET(emap, bucket_idx, entry) \
-    for ((entry) = ((emap) && (emap)->buckets) ? (emap)->buckets[bucket_idx] : NULL; \
+    for ((entry) = (emap)->buckets[bucket_idx]; \
         (entry); \
         (entry) = (entry)->next)
 #define FOR_EACH_ENTRY_IN_ALL_BUCKETS(emap, entry) \
-    for (size_t _bkt = 0, _edge_bucket_cnt = (emap) ? (emap)->bucket_count : 0; _bkt < _edge_bucket_cnt; _bkt++) \
-        for ((entry) = ((emap) && (emap)->buckets) ? (emap)->buckets[_bkt] : NULL; \
+    for (size_t _bkt = 0, _edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count; _bkt < _edge_bucket_cnt; _bkt++) \
+        for ((entry) = (emap)->buckets[_bkt]; \
             (entry); \
             (entry) = (entry)->next)
 
 edge_bucket_entry_t *find_edge_entry(mtpndd_edge_t *edge, mtpndd_node_t *key);
 void mtpndd_edge_map_free(mtpndd_edge_t *edges);
 mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpndd_bdd_t label_bdd);
-mtpndd_error_t mtpndd_edge_map_init(mtpndd_edge_t *edges);
+void mtpndd_edge_map_init(mtpndd_edge_t *edges);
 
 /********************************
  * MTPNDD terminal nodes
