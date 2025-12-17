@@ -38,13 +38,6 @@ void mtpndd_edge_map_init(mtpndd_edge_t *edges) {
     }
 }
 
-static void mtpndd_edge_map_release_uninitialized(mtpndd_edge_t *edges) {
-    if (!edges) {
-        return;
-    }
-    mtpndd_memory_release_edge_map(edges);
-}
-
 size_t mtpndd_hash_node_identity(const mtpndd_node_t *node) {
     if (!node) return 0;
 
@@ -616,13 +609,12 @@ static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result)
         }
     }
 
-    if (mtpndd_mk(a->field_id, res_edges, &res_node) != MTPNDD_SUCCESS) {
+    mtpndd_mk(a->field_id, res_edges, &res_node);
+    if (!res_node) {
         mtpndd_edge_map_free(res_edges);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
+        return mtpndd_get_last_error().code;
     }
-    if (mtpndd_gc_protect_add(res_node) != MTPNDD_SUCCESS) {
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
+    mtpndd_gc_protect_add(res_node);
 
     mtpndd_op_cache_store_binary(or_cache, cache_a, cache_b, res_node);
 

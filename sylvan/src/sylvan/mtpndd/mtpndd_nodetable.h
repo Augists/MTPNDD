@@ -5,7 +5,6 @@
 #ifndef MTPNDD_NODETABLE_H
 #define MTPNDD_NODETABLE_H
 
-#include <pthread.h>
 #include <stdint.h>
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
@@ -24,7 +23,6 @@ typedef struct mtpndd_nodetable_bucket_entry_s {
 typedef struct mtpndd_nodetable_s {
     size_t nodetable_bucket_count;
     mtpndd_nodetable_bucket_entry_t **buckets;
-    pthread_rwlock_t *bucket_locks;
 } mtpndd_nodetable_t;
 
 static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count);
