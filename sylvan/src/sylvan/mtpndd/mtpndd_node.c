@@ -9,7 +9,6 @@
 #include "mtpndd_memory_pool.h"
 #include "sylvan.h"
 #include "sylvan_mtbdd.h"
-#include <assert.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <stdint.h>
@@ -29,10 +28,8 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges);
 void mtpndd_edge_map_free(mtpndd_edge_t *edges);
 
 void mtpndd_edge_map_init(mtpndd_edge_t *edges) {
-    assert(g_mtpndd_pal_config.edge_bucket_count <= MTPNDD_BUCKET_LOCK_WORD_BITS);
     size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
     edges->edge_count = 0;
-    edges->bucket_lock_word = 0;
     for (size_t i = 0; i < bucket_cnt; i++) {
         edges->buckets[i] = NULL;
     }
@@ -55,13 +52,11 @@ size_t mtpndd_hash_node_identity(const mtpndd_node_t *node) {
 
 static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest) {
     dest->edge_count = source->edge_count;
-    dest->bucket_lock_word = 0;
 
     size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
 
     for (size_t i = 0; i < bucket_cnt; ++i) {
         dest->buckets[i] = NULL;
-        mtpndd_bucket_lock_clear(&dest->bucket_lock_word, i);
     }
 
     if (!source->buckets) {
@@ -123,7 +118,6 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
             edges->buckets[i] = NULL;
         }
     }
-    edges->bucket_lock_word = 0;
     edges->edge_count = 0;
 }
 
@@ -164,10 +158,6 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
 
     mtpndd_bdd_t old_label = sylvan_false;
     size_t hash = EDGE_MAP_HASH_VAL(edges, descendant);
-    bool has_lock = g_mtpndd_pal_config.edge_bucket_count <= MTPNDD_BUCKET_LOCK_WORD_BITS;
-    if (has_lock) {
-        mtpndd_bucket_lock_acquire(&edges->bucket_lock_word, hash);
-    }
 
     mtpndd_error_t status = MTPNDD_SUCCESS;
     edge_bucket_entry_t *entry = NULL;
@@ -234,9 +224,6 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     }
 #endif
 unlock_and_return:
-    if (has_lock) {
-        mtpndd_bucket_lock_release(&edges->bucket_lock_word, hash);
-    }
     if (status != MTPNDD_SUCCESS) {
         return status;
     }

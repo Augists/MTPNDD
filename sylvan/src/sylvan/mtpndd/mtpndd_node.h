@@ -7,7 +7,6 @@
 
 #include <stdatomic.h>
 #include <stdio.h>
-#include <lace.h>
 #include "mtpndd_common.h"
 
 /********************************
@@ -21,46 +20,6 @@ struct mtpndd_node_s {
     uint32_t field_id;
     struct mtpndd_edge_s *edges;
 };
-
-
-#define MTPNDD_BUCKET_LOCK_WORD_BITS 64
-
-/********************************
- * Bucket lock definition (bitset)
- ********************************/
-static inline void mtpndd_bucket_lock_clear(atomic_uint_fast64_t *lock_word, size_t idx) {
-    if (!lock_word) return;
-    uint64_t mask = ~(1ull << idx);
-    atomic_fetch_and_explicit(lock_word, mask, memory_order_relaxed);
-}
-
-static inline void mtpndd_bucket_lock_release(atomic_uint_fast64_t *lock_word, size_t idx) {
-    if (!lock_word) return;
-    uint64_t mask = ~(1ull << idx);
-    atomic_fetch_and_explicit(lock_word, mask, memory_order_release);
-}
-
-static inline void mtpndd_bucket_lock_acquire(atomic_uint_fast64_t *lock_word, size_t idx) {
-    if (!lock_word) return;
-    uint64_t mask = 1ull << idx;
-    for (;;) {
-        uint64_t expected = atomic_load_explicit(lock_word, memory_order_relaxed);
-        if (!(expected & mask)) {
-            if (atomic_compare_exchange_weak_explicit(lock_word, &expected, expected | mask,
-                                                      memory_order_acquire, memory_order_relaxed)) {
-                break;
-            }
-        }
-#if defined(__GNUC__) || defined(__clang__)
-#if defined(__x86_64__) || defined(__i386__)
-        __asm__ __volatile__("pause");
-#elif defined(__aarch64__) || defined(__arm__)
-        __asm__ __volatile__("yield");
-#endif
-#endif
-    }
-}
-
 /********************************
  * MTPNDD edge definition
  ********************************/
@@ -70,11 +29,10 @@ typedef struct edge_bucket_entry_s {
     _Atomic(mtpndd_bdd_t) label;
 } edge_bucket_entry_t;
 
-// TODO: try not to malloc buckets and bucket_locks every time, use array instead. Edge map memory pool should alloc every edge map by _edge_bucket_cnt when mtpndd_init
+// TODO: try not to malloc buckets every time, use pooled array instead. Edge map memory pool should alloc every edge map by _edge_bucket_cnt when mtpndd_init
 // mtpndd_t* child -> mtpndd_bdd_t label
 struct mtpndd_edge_s {
     size_t edge_count;
-    atomic_uint_fast64_t bucket_lock_word;
     edge_bucket_entry_t **buckets;
 };
 

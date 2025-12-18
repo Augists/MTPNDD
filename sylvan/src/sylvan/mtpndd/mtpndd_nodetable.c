@@ -361,10 +361,6 @@ static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
     size_t bucket_count = gc_protect->bucket_count;
 
     for (size_t i = 0; i < bucket_count; ++i) {
-        if (GC_PROTECT_BUCKET_RDLOCK(gc_protect, i) != 0) {
-            continue;
-        }
-
         gc_protect_entry_t *entry = gc_protect->buckets[i];
         while (entry) {
             mtpndd_node_t *node = entry->node;
@@ -375,7 +371,6 @@ static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
                     mtpndd_node_t **new_buffer = (mtpndd_node_t **)realloc(buffer, new_capacity * sizeof(mtpndd_node_t *));
                     if (!new_buffer) {
                         mtpndd_gc_release_roots(buffer, count);
-                        GC_PROTECT_BUCKET_UNLOCK(gc_protect, i);
                         *roots_out = NULL;
                         return 0;
                     }
@@ -386,8 +381,6 @@ static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
             }
             entry = entry->next;
         }
-
-        GC_PROTECT_BUCKET_UNLOCK(gc_protect, i);
     }
 
     *roots_out = buffer;
