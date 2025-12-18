@@ -23,18 +23,6 @@ static size_t mtpndd_op_cache_adjust_size(size_t requested) {
     return capacity ? capacity : kMtpnddOpCacheMinSize;
 }
 
-static int mtpndd_op_cache_init_locks(pthread_rwlock_t *locks, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-        if (pthread_rwlock_init(&locks[i], NULL) != 0) {
-            for (size_t j = 0; j < i; ++j) {
-                pthread_rwlock_destroy(&locks[j]);
-            }
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static mtpndd_op_cache_t *mtpndd_op_cache_create(size_t requested_size, uint8_t arity) {
     size_t capacity = mtpndd_op_cache_adjust_size(requested_size);
     mtpndd_op_cache_t *cache = (mtpndd_op_cache_t *)malloc(sizeof(mtpndd_op_cache_t));
@@ -48,20 +36,6 @@ static mtpndd_op_cache_t *mtpndd_op_cache_create(size_t requested_size, uint8_t 
         return NULL;
     }
 
-    cache->locks = (pthread_rwlock_t *)malloc(sizeof(pthread_rwlock_t) * capacity);
-    if (!cache->locks) {
-        free(cache->entries);
-        free(cache);
-        return NULL;
-    }
-
-    if (!mtpndd_op_cache_init_locks(cache->locks, capacity)) {
-        free(cache->locks);
-        free(cache->entries);
-        free(cache);
-        return NULL;
-    }
-
     cache->capacity = capacity;
     cache->mask = capacity - 1;
     cache->arity = arity;
@@ -71,12 +45,6 @@ static mtpndd_op_cache_t *mtpndd_op_cache_create(size_t requested_size, uint8_t 
 static void mtpndd_op_cache_release(mtpndd_op_cache_t *cache) {
     if (!cache) {
         return;
-    }
-    if (cache->locks) {
-        for (size_t i = 0; i < cache->capacity; ++i) {
-            pthread_rwlock_destroy(&cache->locks[i]);
-        }
-        free(cache->locks);
     }
     free(cache->entries);
     free(cache);
@@ -139,14 +107,10 @@ void mtpndd_op_cache_destroy() {
 }
 
 void mtpndd_op_cache_clear(mtpndd_op_cache_t *cache) {
-    if (!cache || !cache->entries || !cache->locks) {
+    if (!cache || !cache->entries) {
         return;
     }
-    for (size_t i = 0; i < cache->capacity; ++i) {
-        pthread_rwlock_wrlock(&cache->locks[i]);
-        memset(&cache->entries[i], 0, sizeof(mtpndd_op_cache_entry_t));
-        pthread_rwlock_unlock(&cache->locks[i]);
-    }
+    memset(cache->entries, 0, cache->capacity * sizeof(mtpndd_op_cache_entry_t));
 }
 
 mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, mtpndd_node_t *rhs) {
@@ -154,7 +118,6 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
         return NULL;
     }
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
-    pthread_rwlock_rdlock(&cache->locks[idx]);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     mtpndd_node_t *result = NULL;
     bool hit = (entry->operands[0] == lhs && entry->operands[1] == rhs && entry->result);
@@ -170,7 +133,6 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
         result = entry->result;
     }
 #endif
-    pthread_rwlock_unlock(&cache->locks[idx]);
     return result;
 }
 
@@ -182,12 +144,10 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, 
         return;
     }
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
-    pthread_rwlock_wrlock(&cache->locks[idx]);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     entry->operands[0] = lhs;
     entry->operands[1] = rhs;
     entry->result = result;
-    pthread_rwlock_unlock(&cache->locks[idx]);
 }
 
 mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operand) {
@@ -195,7 +155,6 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
         return NULL;
     }
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
-    pthread_rwlock_rdlock(&cache->locks[idx]);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     mtpndd_node_t *result = NULL;
     bool hit = (entry->operands[0] == operand && entry->result);
@@ -211,7 +170,6 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
         result = entry->result;
     }
 #endif
-    pthread_rwlock_unlock(&cache->locks[idx]);
     return result;
 }
 
@@ -223,10 +181,8 @@ void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operan
         return;
     }
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
-    pthread_rwlock_wrlock(&cache->locks[idx]);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     entry->operands[0] = operand;
     entry->result = result;
     entry->operands[1] = NULL;
-    pthread_rwlock_unlock(&cache->locks[idx]);
 }

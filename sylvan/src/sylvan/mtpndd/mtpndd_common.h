@@ -10,7 +10,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdatomic.h>
-#include <pthread.h>
 
 #ifdef ENABLE_RECORDING
 #include <time.h>
@@ -280,8 +279,6 @@ void mtpndd_gc_run_posthooks(void);
 struct mtpndd_gc_protect_s {
     atomic_size_t gc_protect_count;
     gc_protect_entry_t **buckets;
-    pthread_rwlock_t *bucket_locks;
-    void *bucket_storage;
     size_t bucket_count;
 };
 
@@ -291,59 +288,12 @@ struct gc_protect_entry_s {
     mtpndd_node_t *node;
 };
 
-#define GC_PROTECT_INIT(gcp) do { \
-        atomic_init(&(gcp)->gc_protect_count, 0); \
-        (gcp)->bucket_count = g_mtpndd_pal_config.gc_bucket_count; \
-        size_t _gc_bucket_cnt = (gcp)->bucket_count; \
-        if (_gc_bucket_cnt == 0) { \
-            _gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT; \
-            (gcp)->bucket_count = _gc_bucket_cnt; \
-        } \
-        size_t _buckets_bytes = sizeof(gc_protect_entry_t *) * _gc_bucket_cnt; \
-        size_t _locks_bytes = sizeof(pthread_rwlock_t) * _gc_bucket_cnt; \
-        (gcp)->bucket_storage = calloc(1, _buckets_bytes + _locks_bytes); \
-        if (!(gcp)->bucket_storage) { \
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
-            return MTPNDD_ERROR_OUT_OF_MEMORY; \
-        } \
-        (gcp)->buckets = (gc_protect_entry_t **)(gcp)->bucket_storage; \
-        (gcp)->bucket_locks = (pthread_rwlock_t *)((char *)(gcp)->bucket_storage + _buckets_bytes); \
-        for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
-            if (pthread_rwlock_init(&(gcp)->bucket_locks[i], NULL) != 0) { \
-                for (size_t j = 0; j < i; j++) { \
-                    pthread_rwlock_destroy(&(gcp)->bucket_locks[j]); \
-                } \
-                free((gcp)->bucket_storage); \
-                (gcp)->bucket_storage = NULL; \
-                (gcp)->bucket_locks = NULL; \
-                (gcp)->buckets = NULL; \
-                mtpndd_set_error(MTPNDD_ERROR_THREAD_SAFETY, __func__, __LINE__); \
-                return MTPNDD_ERROR_THREAD_SAFETY; \
-            } \
-        } \
-    } while(0)
 #define GC_PROTECT_CLEAR(gcp) do { \
         size_t _gc_bucket_cnt = (gcp)->bucket_count ? (gcp)->bucket_count : g_mtpndd_pal_config.gc_bucket_count; \
         if (_gc_bucket_cnt == 0) { \
             _gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT; \
         } \
-        if ((gcp)->buckets && (gcp)->bucket_locks) { \
-            for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
-                pthread_rwlock_t *_lock = &((gcp)->bucket_locks[i]); \
-                if (pthread_rwlock_wrlock(_lock) != 0) { \
-                    mtpndd_set_error(MTPNDD_ERROR_THREAD_SAFETY, __func__, __LINE__); \
-                    continue; \
-                } \
-                gc_protect_entry_t *entry = (gcp)->buckets[i]; \
-                while (entry) { \
-                    gc_protect_entry_t *next_entry = entry->next; \
-                    mtpndd_memory_release_gc_protect_entry(entry); \
-                    entry = next_entry; \
-                } \
-                (gcp)->buckets[i] = NULL; \
-                pthread_rwlock_unlock(_lock); \
-            } \
-        } else if ((gcp)->buckets) { \
+        if ((gcp)->buckets) { \
             for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
                 gc_protect_entry_t *entry = (gcp)->buckets[i]; \
                 while (entry) { \
@@ -356,11 +306,6 @@ struct gc_protect_entry_s {
         } \
         atomic_store_explicit(&(gcp)->gc_protect_count, 0, memory_order_relaxed); \
     } while(0)
-
-#define GC_PROTECT_BUCKET_LOCK(gcp, bucket_idx) (&((gcp)->bucket_locks[bucket_idx]))
-#define GC_PROTECT_BUCKET_RDLOCK(gcp, bucket_idx) pthread_rwlock_rdlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
-#define GC_PROTECT_BUCKET_WRLOCK(gcp, bucket_idx) pthread_rwlock_wrlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
-#define GC_PROTECT_BUCKET_UNLOCK(gcp, bucket_idx) pthread_rwlock_unlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
 
 static inline size_t gc_protect_hash_ptr_impl(const mtpndd_gc_protect_t *gcp, const mtpndd_node_t *key) {
     size_t hash = mtpndd_hash_node_identity(key);

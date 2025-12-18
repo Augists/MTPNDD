@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <pthread.h>
 
 struct mtpndd_node_s;
 typedef struct mtpndd_node_s mtpndd_node_t;
@@ -20,7 +19,6 @@ typedef struct mtpndd_op_cache_entry_s {
 
 typedef struct mtpndd_op_cache_s {
     mtpndd_op_cache_entry_t *entries;
-    pthread_rwlock_t *locks;
     size_t capacity;
     size_t mask;
     uint8_t arity;
