@@ -59,7 +59,7 @@ static void *mtpndd_aligned_realloc_zextend(void *old_ptr, size_t alignment, siz
     return new_ptr;
 }
 
-static size_t mtpndd_node_struct_hash(uint32_t field_id, const mtpndd_edge_record_t *edges, uint32_t edge_num) {
+static uint64_t mtpndd_node_struct_hash(uint32_t field_id, const mtpndd_edge_record_t *edges, uint32_t edge_num) {
     uint64_t h = 1469598103934665603ULL;
     h ^= (uint64_t)field_id;
     h *= 1099511628211ULL;
@@ -69,7 +69,23 @@ static size_t mtpndd_node_struct_hash(uint32_t field_id, const mtpndd_edge_recor
         h ^= (uint64_t)edges[i].label;
         h *= 1099511628211ULL;
     }
-    return (size_t)h;
+    return h;
+}
+
+static inline uint32_t mtpndd_hash_fingerprint(uint64_t hash) {
+    return (uint32_t)(hash >> 32);
+}
+
+static inline uint64_t mtpndd_hash_pack(uint32_t fingerprint, uint32_t idx32) {
+    return ((uint64_t)fingerprint << 32) | (uint64_t)idx32;
+}
+
+static inline uint32_t mtpndd_hash_unpack_fingerprint(uint64_t packed) {
+    return (uint32_t)(packed >> 32);
+}
+
+static inline uint32_t mtpndd_hash_unpack_idx32(uint64_t packed) {
+    return (uint32_t)packed;
 }
 
 static bool mtpndd_node_edges_equal(const mtpndd_nodetable_t *table,
@@ -93,23 +109,26 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_capaci
     size_t cap = mtpndd_next_pow2(new_capacity);
     if (cap < 8) cap = 8;
 
-    mtpndd_t *new_hash = (mtpndd_t *)mtpndd_aligned_zalloc(MTPNDD_CACHELINE_BYTES, cap * sizeof(mtpndd_t));
+    uint64_t *new_hash = (uint64_t *)mtpndd_aligned_zalloc(MTPNDD_CACHELINE_BYTES, cap * sizeof(uint64_t));
     if (!new_hash) {
         return false;
     }
 
     size_t new_mask = cap - 1;
     for (size_t i = 0; i < table->hash_capacity; ++i) {
-        mtpndd_t idx = table->hash[i];
-        if (idx == 0) continue;
+        uint64_t packed = table->hash[i];
+        uint32_t idx32 = mtpndd_hash_unpack_idx32(packed);
+        if (idx32 == 0) continue;
+        mtpndd_t idx = (mtpndd_t)idx32;
         const mtpndd_node_record_t *node = &table->data[(size_t)idx];
         const mtpndd_edge_record_t *edges = &table->edge_pool.data[node->edge_array_idx];
-        size_t hash = mtpndd_node_struct_hash(node->field_id, edges, node->edge_num);
-        size_t slot = hash & new_mask;
+        uint64_t hash = mtpndd_node_struct_hash(node->field_id, edges, node->edge_num);
+        uint32_t fp = mtpndd_hash_fingerprint(hash);
+        size_t slot = (size_t)hash & new_mask;
         while (new_hash[slot] != 0) {
             slot = (slot + 1) & new_mask;
         }
-        new_hash[slot] = idx;
+        new_hash[slot] = mtpndd_hash_pack(fp, idx32);
     }
 
     free(table->hash);
@@ -138,7 +157,7 @@ void mtpndd_nodetable_init(mtpndd_nodetable_t *table, size_t node_capacity_hint,
 
     size_t hash_cap = mtpndd_next_pow2(hash_capacity_hint ? hash_capacity_hint : data_cap * 2);
     if (hash_cap < 8) hash_cap = 8;
-    table->hash = (mtpndd_t *)mtpndd_aligned_zalloc(MTPNDD_CACHELINE_BYTES, hash_cap * sizeof(mtpndd_t));
+    table->hash = (uint64_t *)mtpndd_aligned_zalloc(MTPNDD_CACHELINE_BYTES, hash_cap * sizeof(uint64_t));
     if (!table->hash) {
         free(table->data);
         table->data = NULL;
@@ -180,7 +199,7 @@ static bool mtpndd_nodetable_rebuild_hash(mtpndd_nodetable_t *table, size_t targ
     size_t cap = mtpndd_next_pow2(target_capacity);
     if (cap < 8) cap = 8;
 
-    mtpndd_t *new_hash = (mtpndd_t *)mtpndd_aligned_zalloc(MTPNDD_CACHELINE_BYTES, cap * sizeof(mtpndd_t));
+    uint64_t *new_hash = (uint64_t *)mtpndd_aligned_zalloc(MTPNDD_CACHELINE_BYTES, cap * sizeof(uint64_t));
     if (!new_hash) {
         return false;
     }
@@ -193,12 +212,13 @@ static bool mtpndd_nodetable_rebuild_hash(mtpndd_nodetable_t *table, size_t targ
             continue;
         }
         const mtpndd_edge_record_t *edges = &table->edge_pool.data[node->edge_array_idx];
-        size_t hash = mtpndd_node_struct_hash(node->field_id, edges, node->edge_num);
-        size_t slot = hash & new_mask;
+        uint64_t hash = mtpndd_node_struct_hash(node->field_id, edges, node->edge_num);
+        uint32_t fp = mtpndd_hash_fingerprint(hash);
+        size_t slot = (size_t)hash & new_mask;
         while (new_hash[slot] != 0) {
             slot = (slot + 1) & new_mask;
         }
-        new_hash[slot] = idx;
+        new_hash[slot] = mtpndd_hash_pack(fp, (uint32_t)idx);
         count++;
     }
 
@@ -468,23 +488,27 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
         (void)mtpndd_nodetable_rehash(table, table->hash_capacity * 2);
     }
 
-    size_t hash = mtpndd_node_struct_hash(field_id, builder->edges, edge_num);
-    size_t slot = table->hash_capacity ? (hash & table->hash_mask) : 0;
+    uint64_t hash = mtpndd_node_struct_hash(field_id, builder->edges, edge_num);
+    uint32_t fp = mtpndd_hash_fingerprint(hash);
+    size_t slot = table->hash_capacity ? ((size_t)hash & table->hash_mask) : 0;
 
     while (table->hash[slot] != 0) {
-        mtpndd_t existing_idx = table->hash[slot];
-        const mtpndd_node_record_t *existing = mtpndd_node_record(table, existing_idx);
-        if (existing && existing->field_id == field_id
-                && mtpndd_node_edges_equal(table, existing, builder->edges, edge_num)) {
-            // reuse
-            for (uint32_t i = 0; i < edge_num; ++i) {
-                sylvan_deref(builder->edges[i].label);
-            }
-            builder->count = 0;
+        uint64_t packed = table->hash[slot];
+        if (mtpndd_hash_unpack_fingerprint(packed) == fp) {
+            mtpndd_t existing_idx = (mtpndd_t)mtpndd_hash_unpack_idx32(packed);
+            mtpndd_node_record_t *existing = mtpndd_node_record(table, existing_idx);
+            if (existing && existing->field_id == field_id
+                    && mtpndd_node_edges_equal(table, existing, builder->edges, edge_num)) {
+                // reuse
+                for (uint32_t i = 0; i < edge_num; ++i) {
+                    sylvan_deref(builder->edges[i].label);
+                }
+                builder->count = 0;
 #ifdef ENABLE_RECORDING
-            MTPNDD_STAT_ADD(nodes_reused_total, 1);
+                MTPNDD_STAT_ADD(nodes_reused_total, 1);
 #endif
-            return existing_idx;
+                return existing_idx;
+            }
         }
         // TODO: cache line optimized probe sequence like sylvan
         slot = (slot + 1) & table->hash_mask;
@@ -549,7 +573,7 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
     node->edge_array_idx = edge_start;
     node->edge_num = edge_num;
 
-    table->hash[slot] = new_idx;
+    table->hash[slot] = mtpndd_hash_pack(fp, (uint32_t)new_idx);
     table->hash_count++;
     g_mtpndd_stats.node_count = (uint64_t)table->hash_count;
 

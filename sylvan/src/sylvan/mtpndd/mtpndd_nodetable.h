@@ -23,8 +23,12 @@ typedef struct mtpndd_node_record_s {
 #define MTPNDD_REFCOUNT_PROTECTED UINT32_MAX
 
 typedef struct mtpndd_nodetable_s {
-    // open addressing hash table (stores node idx)
-    mtpndd_t *hash;
+    // Open addressing hash table.
+    // Each slot stores a packed 64-bit value:
+    //   [ 32-bit hash fingerprint | 32-bit node idx ]
+    // where idx==0 means empty (we never store terminals 0/1).
+    // The fingerprint lets us skip expensive edge comparisons when hashes differ (Sylvan-style).
+    uint64_t *hash;
     size_t hash_capacity;
     size_t hash_mask;
     size_t hash_count;

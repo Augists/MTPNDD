@@ -33,10 +33,10 @@ digraph MTPNDD_Memory_Design_ZH {
     color="#74c476";
     style="rounded";
 
-    nodetable [label="{mtpndd_nodetable_t|<hash> hash: mtpndd_t* (开放寻址)\n0=empty, 仅存 idx=2+|hash_capacity/mask/count|<data> data: mtpndd_node_record_t*\nidx 直接索引（64B 对齐）|data_capacity/data_size|<free> free_list_head: uint32_t\n(复用节点 idx)|<edgepool> edge_pool: mtpndd_edge_array_pool_t}"];
+    nodetable [label="{mtpndd_nodetable_t|<hash> hash: uint64_t*（开放寻址）\nslot = [fingerprint:u32 | idx:u32]\nidx=0 表示 empty（不存 0/1 终端）|hash_capacity/mask/count|<data> data: mtpndd_node_record_t*\nidx 直接索引（64B 对齐）|data_capacity/data_size|<free> free_list_head: uint32_t\n(复用节点 idx)|<edgepool> edge_pool: mtpndd_edge_array_pool_t}"];
 
     hash_arr [shape=box, style="rounded,filled", fillcolor="#e8f5e9", color="#2e7d32",
-      label="hash[]（open addressing）\nslot -> node idx (>=2)\n目的：mk 唯一化/查找\n扩容：只重建 hash[]，不移动 data[]"];
+      label="hash[]（open addressing）\nslot -> packed(u64)\n  - fingerprint(u32)：结构哈希的高位\n  - idx(u32)：node idx（>=2）\n目的：mk 唯一化/查找\nfingerprint 不同 => 跳过边集比较\n扩容：只重建 hash[]，不移动 data[]"];
 
     data_arr [shape=box, style="rounded,filled", fillcolor="#e8f5e9", color="#2e7d32",
       label="data[]（节点记录数组，idx 稳定）\n- data[0] / data[1] 为终端\n- data[idx] = 节点结构体（16B）\n- 64B cache line ≈ 4 个节点记录"];
