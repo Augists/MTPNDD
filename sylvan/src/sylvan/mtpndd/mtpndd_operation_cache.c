@@ -3,10 +3,8 @@
 // Copyright (C) XJTU ANTS Netverify Lab
 
 #include "mtpndd_operation_cache.h"
-#include "mtpndd_common.h"
 
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
 
 static const size_t kMtpnddOpCacheMinSize = 1024;
@@ -50,20 +48,15 @@ static void mtpndd_op_cache_release(mtpndd_op_cache_t *cache) {
     free(cache);
 }
 
-static inline size_t mtpndd_op_cache_hash_binary_index(const mtpndd_op_cache_t *cache, const mtpndd_node_t *lhs, const mtpndd_node_t *rhs) {
-    uint64_t h1 = mtpndd_hash_node_identity(lhs);
-    uint64_t h2 = mtpndd_hash_node_identity(rhs);
+static inline size_t mtpndd_op_cache_hash_binary_index(const mtpndd_op_cache_t *cache, mtpndd_t lhs, mtpndd_t rhs) {
+    uint64_t h1 = mtpndd_hash_u64(lhs);
+    uint64_t h2 = mtpndd_hash_u64(rhs);
     uint64_t hash = h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
     return (size_t)(hash & cache->mask);
 }
 
-static inline size_t mtpndd_op_cache_hash_unary_index(const mtpndd_op_cache_t *cache, const mtpndd_node_t *operand) {
-    uint64_t hash = mtpndd_hash_node_identity(operand);
-    hash ^= hash >> 33;
-    hash *= 0xff51afd7ed558ccdULL;
-    hash ^= hash >> 33;
-    hash *= 0xc4ceb9fe1a85ec53ULL;
-    hash ^= hash >> 33;
+static inline size_t mtpndd_op_cache_hash_unary_index(const mtpndd_op_cache_t *cache, mtpndd_t operand) {
+    uint64_t hash = mtpndd_hash_u64(operand);
     return (size_t)(hash & cache->mask);
 }
 
@@ -97,7 +90,7 @@ bool mtpndd_op_cache_initialize(
     return true;
 }
 
-void mtpndd_op_cache_destroy() {
+void mtpndd_op_cache_destroy(void) {
     mtpndd_op_cache_release(g_mtpndd_config.and_cache);
     mtpndd_op_cache_release(g_mtpndd_config.or_cache);
     mtpndd_op_cache_release(g_mtpndd_config.not_cache);
@@ -113,76 +106,61 @@ void mtpndd_op_cache_clear(mtpndd_op_cache_t *cache) {
     memset(cache->entries, 0, cache->capacity * sizeof(mtpndd_op_cache_entry_t));
 }
 
-mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, mtpndd_node_t *rhs) {
+mtpndd_t mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_t lhs, mtpndd_t rhs) {
     if (!cache || cache->arity != 2 || cache->capacity == 0) {
-        return NULL;
+        return MTPNDD_INVALID;
     }
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
-    mtpndd_node_t *result = NULL;
-    bool hit = (entry->operands[0] == lhs && entry->operands[1] == rhs && entry->result);
-#ifdef ENABLE_RECORDING
-    if (hit) {
-        result = entry->result;
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
-    } else {
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+    if (entry->result_plus_one == 0) {
+        return MTPNDD_INVALID;
     }
-#else
-    if (hit) {
-        result = entry->result;
+    if (entry->operands[0] == lhs && entry->operands[1] == rhs) {
+        return (mtpndd_t)(entry->result_plus_one - 1);
     }
-#endif
-    return result;
+    return MTPNDD_INVALID;
 }
 
-void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, mtpndd_node_t *rhs, mtpndd_node_t *result) {
+void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_t lhs, mtpndd_t rhs, mtpndd_t result) {
     if (!cache || cache->arity != 2 || cache->capacity == 0) {
         return;
     }
-    if (!result) {
+    if (result == MTPNDD_INVALID) {
         return;
     }
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     entry->operands[0] = lhs;
     entry->operands[1] = rhs;
-    entry->result = result;
+    entry->result_plus_one = (uint64_t)result + 1;
 }
 
-mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operand) {
+mtpndd_t mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_t operand) {
     if (!cache || cache->arity != 1 || cache->capacity == 0) {
-        return NULL;
+        return MTPNDD_INVALID;
     }
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
-    mtpndd_node_t *result = NULL;
-    bool hit = (entry->operands[0] == operand && entry->result);
-#ifdef ENABLE_RECORDING
-    if (hit) {
-        result = entry->result;
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
-    } else {
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+    if (entry->result_plus_one == 0) {
+        return MTPNDD_INVALID;
     }
-#else
-    if (hit) {
-        result = entry->result;
+    if (entry->operands[0] == operand) {
+        return (mtpndd_t)(entry->result_plus_one - 1);
     }
-#endif
-    return result;
+    return MTPNDD_INVALID;
 }
 
-void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operand, mtpndd_node_t *result) {
+void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_t operand, mtpndd_t result) {
     if (!cache || cache->arity != 1 || cache->capacity == 0) {
         return;
     }
-    if (!result) {
+    if (result == MTPNDD_INVALID) {
         return;
     }
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     entry->operands[0] = operand;
-    entry->result = result;
-    entry->operands[1] = NULL;
+    entry->operands[1] = MTPNDD_INVALID;
+    entry->result_plus_one = (uint64_t)result + 1;
 }
+

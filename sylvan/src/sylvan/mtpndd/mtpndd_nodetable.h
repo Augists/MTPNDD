@@ -5,78 +5,81 @@
 #ifndef MTPNDD_NODETABLE_H
 #define MTPNDD_NODETABLE_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
 #include "mtpndd_common.h"
-#include "mtpndd_node.h"
+#include "mtpndd_edge_array_pool.h"
+#include "mtpndd_edge_builder.h"
 
-/********************************
- * MTPNDD nodetable
- ********************************/
-typedef struct mtpndd_nodetable_bucket_entry_s {
-    struct mtpndd_nodetable_bucket_entry_s *next;
-    struct mtpndd_nodetable_bucket_entry_s *prev;
-    mtpndd_edge_t *edges;
-    mtpndd_node_t *node;
-} mtpndd_nodetable_bucket_entry_t;
+typedef struct mtpndd_node_record_s {
+    uint32_t field_id;
+    uint32_t ref_count;
+    uint32_t edge_array_idx;
+    uint32_t edge_num;
+} mtpndd_node_record_t;
 
-// mtpndd_edge_t *edges -> mtpndd_node_t* node
+#define MTPNDD_REFCOUNT_PROTECTED UINT32_MAX
+
 typedef struct mtpndd_nodetable_s {
-    size_t nodetable_bucket_count;
-    mtpndd_nodetable_bucket_entry_t **buckets;
+    // open addressing hash table (stores node idx)
+    mtpndd_t *hash;
+    size_t hash_capacity;
+    size_t hash_mask;
+    size_t hash_count;
+
+    // node records indexed by idx
+    mtpndd_node_record_t *data;
+    size_t data_capacity;
+    size_t data_size; // next idx (>=2)
+
+    // free-list of reusable node indices (0 means empty)
+    uint32_t free_list_head;
+
+    // backing storage for all edges (append-only, optional compact on GC)
+    mtpndd_edge_array_pool_t edge_pool;
 } mtpndd_nodetable_t;
 
-static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count);
-static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable);
-#define NODETABLE_HASH_VAL(key, nodetable) nodetable_hash_edges((key), (nodetable))
+extern mtpndd_nodetable_t g_mtpndd_nodetable;
 
-#define NODETABLE_BUCKET_ENTRY_EQUAL(entry, keyEdges) ((entry->edges) == (keyEdges))
+void mtpndd_nodetable_init(mtpndd_nodetable_t *table, size_t node_capacity_hint, size_t hash_capacity_hint, size_t edge_capacity_hint);
+void mtpndd_nodetable_destroy(mtpndd_nodetable_t *table);
 
-#define FOR_EACH_ENTRY_IN_NODETABLE_BUCKET(emap, bucket_idx, entry) \
-    for (entry = emap->buckets[bucket_idx]; \
-        entry; \
-        entry = entry->next)
-#define FOR_EACH_ENTRY_IN_ALL_NODETABLE_BUCKETS(emap, entry) \
-    for (size_t _bkt = 0; _bkt < emap->nodetable_bucket_count; _bkt++) \
-        FOR_EACH_ENTRY_IN_NODETABLE_BUCKET(emap, _bkt, entry)
+/**
+ * Stop-the-world reclamation for the serial MTPNDD nodetable.
+ * Returns number of reclaimed nodes.
+ *
+ * Notes:
+ * - This may rebuild the internal hash table.
+ * - This may compact the edge pool (edge_array_pool) when fragmentation is high.
+ */
+size_t mtpndd_nodetable_collect_garbage(mtpndd_nodetable_t *table);
 
-mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge_t *edges);
+/**
+ * Unique a node by (field_id, edges).
+ * `builder` must have been finalized; on return it is consumed (builder->count becomes 0).
+ * Returns node idx, or MTPNDD_INVALID on error.
+ */
+mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder);
 
-mtpndd_nodetable_t *mtpndd_nodetable_declare_field();
+void mtpndd_ref(mtpndd_t node);
+void mtpndd_deref(mtpndd_t node);
+void mtpndd_protect(mtpndd_t node);
+void mtpndd_unprotect(mtpndd_t node);
 
-/********************************
- * MTPNDD node
- ********************************/
-mtpndd_error_t mtpndd_ref(mtpndd_t *node);
-mtpndd_error_t mtpndd_deref(mtpndd_t *node);
-mtpndd_error_t mtpndd_protect(mtpndd_t *node);
-mtpndd_error_t mtpndd_unprotect(mtpndd_t *node);
-// create or reuse node
-void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result);
-
-/********************************
- * Implementation of nodetable hash
- ********************************/
-static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable)
-{
-    if (!nodetable) return 0;
-    return nodetable_hash_edges_with_bucket_count(key, nodetable->nodetable_bucket_count);
+static inline mtpndd_node_record_t *mtpndd_node_record(mtpndd_nodetable_t *table, mtpndd_t idx) {
+    if (!table || !table->data) return NULL;
+    if (idx >= table->data_size) return NULL;
+    return &table->data[(size_t)idx];
 }
 
-static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count) {
-    if (!key || bucket_count == 0) {
-        return 0;
-    }
+static inline bool mtpndd_node_is_valid(mtpndd_t idx) {
+    return idx != MTPNDD_INVALID;
+}
 
-    uintptr_t addr = (uintptr_t)key;
-    uintptr_t bucket_addr = key->buckets ? (uintptr_t)key->buckets : 0;
-
-    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-    hash ^= addr;
-    hash *= 1099511628211ULL;
-    hash ^= bucket_addr;
-    hash *= 1099511628211ULL;
-
-    return (size_t)(hash % bucket_count);
+static inline mtpndd_edge_record_t mtpndd_edge_at(uint32_t edge_idx) {
+    return g_mtpndd_nodetable.edge_pool.data[edge_idx];
 }
 
 #endif // MTPNDD_NODETABLE_H

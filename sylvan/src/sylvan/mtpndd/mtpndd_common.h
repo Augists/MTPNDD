@@ -15,23 +15,22 @@
 #include <time.h>
 #endif
 
-struct mtpndd_node_s;
-struct mtpndd_edge_s;
 struct mtpndd_nodetable_s;
 struct mtpndd_op_cache_s;
 struct mtpndd_gc_protect_s;
-struct gc_protect_entry_s;
 
+// MTPNDD node identifier (index into nodetable data array)
+typedef uint64_t mtpndd_t;
+// Sylvan BDD node identifier
 typedef uint64_t mtpndd_bdd_t;
-typedef struct mtpndd_node_s mtpndd_node_t;
-typedef mtpndd_node_t mtpndd_t;
-typedef struct mtpndd_edge_s mtpndd_edge_t;
+
 typedef struct mtpndd_nodetable_s mtpndd_nodetable_t;
 typedef struct mtpndd_op_cache_s mtpndd_op_cache_t;
 typedef struct mtpndd_gc_protect_s mtpndd_gc_protect_t;
-typedef struct gc_protect_entry_s gc_protect_entry_t;
 
-size_t mtpndd_hash_node_identity(const mtpndd_node_t *node);
+static const mtpndd_t MTPNDD_FALSE = 0;
+static const mtpndd_t MTPNDD_TRUE = 1;
+static const mtpndd_t MTPNDD_INVALID = UINT64_MAX;
 
 static inline size_t mtpndd_hash_u64(uint64_t key) {
     uint64_t value = key;
@@ -129,7 +128,7 @@ extern mtpndd_pal_config_t g_mtpndd_pal_config;
 
 typedef struct mtpndd_stats_s {
     uint64_t node_count;
-#ifdef ENABLE_RECORDING
+    uint64_t recording_enabled;
     uint64_t max_edges_per_node;
     uint64_t bdd_nodes_converted;
     uint64_t cache_lookup_hits;
@@ -158,7 +157,6 @@ typedef struct mtpndd_stats_s {
     uint64_t edge_map_pool_acquire_total;
     uint64_t edge_map_pool_release_total;
     uint64_t edge_map_pool_slab_total;
-#endif
 } mtpndd_stats_t;
 
 extern mtpndd_stats_t g_mtpndd_stats;
@@ -203,6 +201,10 @@ static inline uint64_t mtpndd_timespec_diff_ns(const struct timespec *start_ts, 
 #define MTPNDD_RECORD_TIME_END(field, start_var) ((void)0)
 #endif
 
+#ifndef MTPNDD_CACHELINE_BYTES
+#define MTPNDD_CACHELINE_BYTES 64
+#endif
+
 typedef struct mtpndd_field_info_s {
     uint32_t field_id;
     uint32_t bit_width;
@@ -211,8 +213,8 @@ typedef struct mtpndd_field_info_s {
     // For internal use
     mtpndd_bdd_t *bdd_vars;
     mtpndd_bdd_t *bdd_not_vars;
-    mtpndd_node_t **mtpndd_vars;
-    mtpndd_node_t **mtpndd_not_vars;
+    mtpndd_t *mtpndd_vars;
+    mtpndd_t *mtpndd_not_vars;
 } mtpndd_field_info_t;
 
 extern mtpndd_field_info_t MTPNDD_TERMINAL_FIELD;
@@ -221,8 +223,6 @@ typedef struct mtpndd_config_s {
     uint32_t field_count;
     uint32_t field_capacity;
     mtpndd_field_info_t **field_info;
-
-    mtpndd_nodetable_t **node_tables_by_field;
 
     mtpndd_op_cache_t *and_cache;
     mtpndd_op_cache_t *or_cache;
@@ -243,8 +243,8 @@ mtpndd_field_info_t* mtpndd_get_field_info(uint32_t field_id);
 /********************************
  * MTPNDD get node
  ********************************/
-mtpndd_t *mtpndd_get_var(uint32_t field, uint32_t var_index);
-mtpndd_t *mtpndd_get_not_var(uint32_t field, uint32_t var_index);
+mtpndd_t mtpndd_get_var(uint32_t field, uint32_t var_index);
+mtpndd_t mtpndd_get_not_var(uint32_t field, uint32_t var_index);
 mtpndd_bdd_t mtpndd_get_bdd_var(uint32_t field, uint32_t var_index);
 mtpndd_bdd_t mtpndd_get_bdd_not_var(uint32_t field, uint32_t var_index);
 
@@ -271,77 +271,31 @@ void mtpndd_gc_run_posthooks(void);
 /********************************
  * GC protection hash set
  ********************************/
-/**
- * Why not use a gc_protect_label and container_of for gc protection hash set in mtpndd_node_t?
- * It will save time when removing.
- * But it will waste space for gc_protect_label in every node.
- */
+// Serial GC-protect set for keeping intermediate nodes alive across GC.
 struct mtpndd_gc_protect_s {
-    atomic_size_t gc_protect_count;
-    gc_protect_entry_t **buckets;
-    size_t bucket_count;
+    mtpndd_t *slots;    // open addressing, 0 means empty; stores (node_idx+1)
+    size_t capacity;    // power of two
+    size_t mask;
+    size_t count;
 };
 
-struct gc_protect_entry_s {
-    struct gc_protect_entry_s *next;
-    struct gc_protect_entry_s *prev;
-    mtpndd_node_t *node;
-};
+void mtpndd_gc_protect_clear(void);
+void mtpndd_gc_protect_add(mtpndd_t node);
+void mtpndd_gc_protect_remove(mtpndd_t node);
+bool mtpndd_gc_protect_contains(mtpndd_t node);
 
-#define GC_PROTECT_CLEAR(gcp) do { \
-        size_t _gc_bucket_cnt = (gcp)->bucket_count ? (gcp)->bucket_count : g_mtpndd_pal_config.gc_bucket_count; \
-        if (_gc_bucket_cnt == 0) { \
-            _gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT; \
-        } \
-        if ((gcp)->buckets) { \
-            for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
-                gc_protect_entry_t *entry = (gcp)->buckets[i]; \
-                while (entry) { \
-                    gc_protect_entry_t *next_entry = entry->next; \
-                    mtpndd_memory_release_gc_protect_entry(entry); \
-                    entry = next_entry; \
-                } \
-                (gcp)->buckets[i] = NULL; \
-            } \
-        } \
-        atomic_store_explicit(&(gcp)->gc_protect_count, 0, memory_order_relaxed); \
-    } while(0)
-
-static inline size_t gc_protect_hash_ptr_impl(const mtpndd_gc_protect_t *gcp, const mtpndd_node_t *key) {
-    size_t hash = mtpndd_hash_node_identity(key);
-    size_t bucket_cnt = (gcp && gcp->bucket_count) ? gcp->bucket_count : g_mtpndd_pal_config.gc_bucket_count;
-    if (bucket_cnt == 0) {
-        bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT;
-    }
-    return bucket_cnt ? (size_t)(hash % bucket_cnt) : 0;
-}
-
-#define GC_PROTECT_HASH_VAL(gcp, key) gc_protect_hash_ptr_impl((gcp), (key))
-
-#define GC_PROTECT_ENTRY_EQUAL(entry, key) ((entry->node) == (key))
-
-#define FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(gcp, bucket_idx, entry) \
-    for (entry = gcp->buckets[bucket_idx]; \
-        entry; \
-        entry = entry->next)
-#define FOR_EACH_ENTRY_IN_ALL_GC_PROTECT_BUCKETS(gcp, entry) \
-    for (size_t _bkt = 0; _bkt < (gcp)->bucket_count; _bkt++) \
-        FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(gcp, _bkt, entry)
-
-static inline gc_protect_entry_t *gc_protect_bucket_find(mtpndd_gc_protect_t *gcp, size_t bucket_idx, mtpndd_node_t *key) {
-    if (!gcp || !gcp->buckets || bucket_idx >= gcp->bucket_count) {
-        return NULL;
-    }
-    gc_protect_entry_t *entry = gcp->buckets[bucket_idx];
-    while (entry && !GC_PROTECT_ENTRY_EQUAL(entry, key)) {
-        entry = entry->next;
-    }
-    return entry;
-}
-
-void mtpndd_gc_protect_clear();
-void mtpndd_gc_protect_add(mtpndd_t *node);
-void mtpndd_gc_protect_remove(mtpndd_t *node);
-bool mtpndd_gc_protect_contains(mtpndd_t *node);
+/********************************
+ * Garbage collection
+ ********************************/
+/**
+ * Stop-the-world GC for the serial MTPNDD runtime.
+ *
+ * - Clears operation caches (to avoid stale idx after node reclamation).
+ * - Reclaims nodes whose `ref_count==0` and are not protected (incl. field vars) and not in gcProtect.
+ * - Optionally compacts edge_array_pool when fragmentation is high.
+ *
+ * Returns number of reclaimed nodes (0 on no-op / failure).
+ */
+size_t mtpndd_gc_collect(void);
 
 #endif // MTPNDD_COMMON_H

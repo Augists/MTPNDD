@@ -116,45 +116,45 @@ public final class MTPNDDEngine {
 
     static synchronized void ref(MTPNDD node) {
         Objects.requireNonNull(node, "node");
-        refNative(node.nativePtr);
+        refNative(node.nodeIdx);
     }
 
     static synchronized void deref(MTPNDD node) {
         Objects.requireNonNull(node, "node");
-        derefNative(node.nativePtr);
+        derefNative(node.nodeIdx);
     }
 
     static synchronized MTPNDD and(MTPNDD left, MTPNDD right) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        return wrap(andNative(left.nativePtr, right.nativePtr));
+        return wrap(andNative(left.nodeIdx, right.nodeIdx));
     }
 
     static synchronized MTPNDD or(MTPNDD left, MTPNDD right) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        return wrap(orNative(left.nativePtr, right.nativePtr));
+        return wrap(orNative(left.nodeIdx, right.nodeIdx));
     }
 
     static synchronized MTPNDD not(MTPNDD value) {
         Objects.requireNonNull(value, "value");
-        return wrap(notNative(value.nativePtr));
+        return wrap(notNative(value.nodeIdx));
     }
 
     static synchronized MTPNDD diff(MTPNDD left, MTPNDD right) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        return wrap(diffNative(left.nativePtr, right.nativePtr));
+        return wrap(diffNative(left.nodeIdx, right.nodeIdx));
     }
 
     static synchronized MTPNDD exist(MTPNDD value, int fieldId) {
         Objects.requireNonNull(value, "value");
-        return wrap(existNative(value.nativePtr, fieldId));
+        return wrap(existNative(value.nodeIdx, fieldId));
     }
 
     static synchronized double satCount(MTPNDD value) {
         Objects.requireNonNull(value, "value");
-        return satCountNative(value.nativePtr);
+        return satCountNative(value.nodeIdx);
     }
 
     static synchronized MTPNDD terminalTrue() {
@@ -167,17 +167,17 @@ public final class MTPNDDEngine {
 
     static synchronized boolean isTrue(MTPNDD node) {
         Objects.requireNonNull(node, "node");
-        return isTrueNative(node.nativePtr);
+        return isTrueNative(node.nodeIdx);
     }
 
     static synchronized boolean isFalse(MTPNDD node) {
         Objects.requireNonNull(node, "node");
-        return isFalseNative(node.nativePtr);
+        return isFalseNative(node.nodeIdx);
     }
 
     static synchronized boolean isTerminal(MTPNDD node) {
         Objects.requireNonNull(node, "node");
-        return isTerminalNative(node.nativePtr);
+        return isTerminalNative(node.nodeIdx);
     }
 
     public static synchronized MTPNDDStats stats() {

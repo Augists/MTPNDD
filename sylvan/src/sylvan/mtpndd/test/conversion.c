@@ -17,8 +17,8 @@ static void assert_success(mtpndd_error_t err) {
     }
 }
 
-static mtpndd_t *checked_node(mtpndd_t *node) {
-    if (!node) {
+static mtpndd_t checked_node(mtpndd_t node) {
+    if (node == MTPNDD_INVALID) {
         mtpndd_error_info_t info = mtpndd_get_last_error();
         fprintf(stderr, "MTPNDD op failed (%s) at %s:%d\n",
                 mtpndd_error_string(info.code), info.function ? info.function : "?", info.line);
@@ -163,10 +163,12 @@ int main(void) {
     mtpndd_bdd_t ip_a_bdd = build_ip_set_bdd(ip_field_ids, ip_set_a, ip_set_size);
     mtpndd_bdd_t ip_b_bdd = build_ip_set_bdd(ip_field_ids, ip_set_b, ip_set_size);
 
-    mtpndd_t *ip_a_node = NULL;
-    mtpndd_t *ip_b_node = NULL;
+    mtpndd_t ip_a_node = MTPNDD_INVALID;
+    mtpndd_t ip_b_node = MTPNDD_INVALID;
     assert_success(mtbdd_to_mtpndd(ip_a_bdd, &ip_a_node));
     assert_success(mtbdd_to_mtpndd(ip_b_bdd, &ip_b_node));
+    mtpndd_ref(ip_a_node);
+    mtpndd_ref(ip_b_node);
     // TODO: 需要实现mtpndd的printDot来验证mtpndd结果的正确性
 
     // 对集合完成 roundtrip 检查，确保转换流程无信息丢失
@@ -186,10 +188,14 @@ int main(void) {
     mtpndd_bdd_t expected_difference = sylvan_ref(sylvan_and(ip_a_bdd, not_ip_b));
     sylvan_deref(not_ip_b);
 
-    mtpndd_t *union_node = checked_node(mtpndd_or(ip_a_node, ip_b_node));
-    mtpndd_t *intersection_node = checked_node(mtpndd_and(ip_a_node, ip_b_node));
-    mtpndd_t *not_ip_b_node = checked_node(mtpndd_not(ip_b_node));
-    mtpndd_t *difference_node = checked_node(mtpndd_and(ip_a_node, not_ip_b_node));
+    mtpndd_t union_node = checked_node(mtpndd_or(ip_a_node, ip_b_node));
+    mtpndd_t intersection_node = checked_node(mtpndd_and(ip_a_node, ip_b_node));
+    mtpndd_t not_ip_b_node = checked_node(mtpndd_not(ip_b_node));
+    mtpndd_t difference_node = checked_node(mtpndd_and(ip_a_node, not_ip_b_node));
+    mtpndd_ref(union_node);
+    mtpndd_ref(intersection_node);
+    mtpndd_ref(not_ip_b_node);
+    mtpndd_ref(difference_node);
 
     mtpndd_bdd_t union_back = sylvan_false;
     mtpndd_bdd_t intersection_back = sylvan_false;
@@ -210,6 +216,13 @@ int main(void) {
     sylvan_deref(expected_difference);
     sylvan_deref(ip_a_bdd);
     sylvan_deref(ip_b_bdd);
+
+    mtpndd_deref(difference_node);
+    mtpndd_deref(not_ip_b_node);
+    mtpndd_deref(intersection_node);
+    mtpndd_deref(union_node);
+    mtpndd_deref(ip_b_node);
+    mtpndd_deref(ip_a_node);
 #ifdef ENABLE_RECORDING
     print_recording_stats();
 #endif

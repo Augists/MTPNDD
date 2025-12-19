@@ -1,0 +1,139 @@
+// MTPNDD 核心内存设计图（feature/index, idx-based, serial）
+// 生成：dot -Tpng docs/mtpndd_memory_design_zh.dot -o docs/mtpndd_memory_design_zh.png
+digraph MTPNDD_Memory_Design_ZH {
+  rankdir=LR;
+  compound=true;
+  splines=true;
+  nodesep=0.35;
+  ranksep=0.55;
+
+  graph [fontname="Helvetica", fontsize=10, labelloc="t", labeljust="l",
+         label="MTPNDD 核心内存设计（feature/index：idx-based，串行）"];
+  node  [fontname="Helvetica", fontsize=10, shape=record,
+         style="rounded,filled", fillcolor="#ffffff", color="#444444"];
+  edge  [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  // ---- Global singletons / config ----
+  subgraph cluster_global {
+    label="全局单例 / 配置";
+    color="#bdbdbd";
+    style="rounded";
+
+    api_idx [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+      label="标识与约定：\n- mtpndd_t = uint64_t（节点 idx）\n- 0=FALSE, 1=TRUE, >=2 为普通节点\n- mtpndd_bdd_t = uint64_t（Sylvan BDD 节点号）"];
+
+    gcfg [label="{g_mtpndd_config (mtpndd_config_t)|<finfo> field_info: mtpndd_field_info_t**\n(指针数组)|<andc> and_cache: mtpndd_op_cache_t*|<orc> or_cache: mtpndd_op_cache_t*|<notc> not_cache: mtpndd_op_cache_t*|<gcp> gcProtect: mtpndd_gc_protect_t*}"];
+    pal [label="{g_mtpndd_pal_config|mtpndd_nodetable_size: data[] 初始容量 hint|nodetable_bucket_count: hash[] 初始容量 hint|edge_entry_slab_capacity: edge_pool 初始容量 hint|op_cache_size: cache 容量|gc_bucket_count: gcProtect 容量|quick_growth_threshold: GC/compact 阈值}"];
+    stats [label="{g_mtpndd_stats|node_count|recording_enabled|...（计数器/耗时等）}"];
+  }
+
+  // ---- Nodetable + node + edge pool ----
+  subgraph cluster_nodetable {
+    label="节点表（nodetable）：唯一化 + 稳定 idx + 连续边存储";
+    color="#74c476";
+    style="rounded";
+
+    nodetable [label="{mtpndd_nodetable_t|<hash> hash: mtpndd_t* (开放寻址)\n0=empty, 仅存 idx=2+|hash_capacity/mask/count|<data> data: mtpndd_node_record_t*\nidx 直接索引（64B 对齐）|data_capacity/data_size|<free> free_list_head: uint32_t\n(复用节点 idx)|<edgepool> edge_pool: mtpndd_edge_array_pool_t}"];
+
+    hash_arr [shape=box, style="rounded,filled", fillcolor="#e8f5e9", color="#2e7d32",
+      label="hash[]（open addressing）\nslot -> node idx (>=2)\n目的：mk 唯一化/查找\n扩容：只重建 hash[]，不移动 data[]"];
+
+    data_arr [shape=box, style="rounded,filled", fillcolor="#e8f5e9", color="#2e7d32",
+      label="data[]（节点记录数组，idx 稳定）\n- data[0] / data[1] 为终端\n- data[idx] = 节点结构体（16B）\n- 64B cache line ≈ 4 个节点记录"];
+
+    node_rec [label="{mtpndd_node_record_t (16B)|field_id: u32|ref_count: u32\n0=可回收, UINT32_MAX=保护|edge_array_idx: u32\n(边切片起点)|edge_num: u32\n(边数)}"];
+
+    freelist [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+      label="free-list（复用 idx）：\n- free_list_head 指向一个可复用 idx\n- 回收节点时：node.edge_array_idx 复用为 next 指针\n- mk 优先从 free-list 取 idx，避免无限增长"];
+
+    edgepool [label="{mtpndd_edge_array_pool_t|<edata> data: mtpndd_edge_record_t*|capacity/size\n(append-only + realloc-zextend)\nGC 可 compact：重建新数组并 free 旧数组}"];
+
+    edge_arr [shape=box, style="rounded,filled", fillcolor="#e8f5e9", color="#2e7d32",
+      label="edge_pool.data[]（连续边记录数组）\n每条边 16B：{ child_idx, label_bdd }\n节点通过 (edge_array_idx, edge_num) 指向切片"];
+
+    edge_rec [label="{mtpndd_edge_record_t (16B)|child: mtpndd_t (idx)|label: mtpndd_bdd_t (Sylvan id)}"];
+  }
+
+  // ---- Operation cache ----
+  subgraph cluster_cache {
+    label="Operation cache（串行，无锁）";
+    color="#6baed6";
+    style="rounded";
+
+    andc [label="{and_cache (mtpndd_op_cache_t)|<entries> entries: mtpndd_op_cache_entry_t*|capacity/mask (2^k)|arity=2}"];
+    orc  [label="{or_cache (mtpndd_op_cache_t)|<entries> entries: mtpndd_op_cache_entry_t*|capacity/mask (2^k)|arity=2}"];
+    notc [label="{not_cache (mtpndd_op_cache_t)|<entries> entries: mtpndd_op_cache_entry_t*|capacity/mask (2^k)|arity=1}"];
+
+    op_entries [shape=box, style="rounded,filled", fillcolor="#e3f2fd", color="#1565c0",
+      label="entries[]（calloc，0=empty）\n单槽映射（冲突直接覆盖）\nkey: operands idx\nval: result_plus_one (=result+1)"];
+    op_entry [label="{mtpndd_op_cache_entry_t|operands[2]: mtpndd_t|result_plus_one: u64\n(0=empty)}"];
+  }
+
+  // ---- gcProtect ----
+  subgraph cluster_gcprotect {
+    label="gcProtect（临时根集合，串行，无锁）";
+    color="#fdae6b";
+    style="rounded";
+
+    gcp [label="{mtpndd_gc_protect_t|<slots> slots: mtpndd_t*\n(open addressing)|capacity/mask/count\n(2^k)}"];
+    gcp_slots [shape=box, style="rounded,filled", fillcolor="#fff3e0", color="#ef6c00",
+      label="slots[]（calloc）\n存储 node_idx+1（0=empty）\n用途：保护中间结果避免 GC 回收"];
+  }
+
+  // ---- Field info (vars pinned) ----
+  subgraph cluster_fields {
+    label="Field info（预构建变量；节点常驻，避免 GC 回收）";
+    color="#9e9ac8";
+    style="rounded";
+
+    finfo_arr [shape=box, style="rounded,filled", fillcolor="#ede7f6", color="#4527a0",
+      label="field_info[]（指针数组）\nfield_id -> *mtpndd_field_info_t"];
+
+    finfo [label="{mtpndd_field_info_t|field_id/bit_width/start_var|bdd_vars[] / bdd_not_vars[]\n(Sylvan ids, protect)|mtpndd_vars[] / mtpndd_not_vars[]\n(MTPNDD idx, protect)}"];
+
+    pinned_note [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+      label="declare_field 时：\n- 用 mk 创建 var/not_var 节点（边集长度=1）\n- 对这些 idx 执行 mtpndd_protect => ref_count=UINT32_MAX\n=> 这些节点作为常驻根，不会被 GC 回收"];
+  }
+
+  // ---- GC flow (conceptual) ----
+  gc [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+    label="GC（stop-the-world）：mtpndd_gc_collect()\n1) 清理 op cache（memset entries[]）\n2) 用 gcProtect / 保护节点 做根集合\n3) nodetable_collect_garbage：\n   - 递减子节点 ref_count\n   - 节点进入 free-list\n   - 重建 hash[]\n   - 碎片高时 compact edge_pool"];
+
+  // ---- Wiring: pointers / relationships ----
+  gcfg:finfo -> finfo_arr [label="field_id -> ptr"];
+  finfo_arr -> finfo [label="*field_info[i]"];
+  finfo -> node_rec [style="dashed", label="protect(var/not_var)\nref_count=UINT32_MAX"];
+
+  gcfg:andc -> andc [lhead=cluster_cache, label="init"];
+  gcfg:orc  -> orc  [lhead=cluster_cache, label="init"];
+  gcfg:notc -> notc [lhead=cluster_cache, label="init"];
+
+  andc:entries -> op_entries [label="ptr"];
+  orc:entries  -> op_entries [label="ptr"];
+  notc:entries -> op_entries [label="ptr"];
+  op_entries -> op_entry [style="dashed", label="entry layout"];
+
+  gcfg:gcp -> gcp [lhead=cluster_gcprotect, label="init"];
+  gcp:slots -> gcp_slots [label="ptr"];
+
+  // nodetable wiring
+  nodetable:hash -> hash_arr [label="ptr"];
+  nodetable:data -> data_arr [label="ptr"];
+  data_arr -> node_rec [style="dashed", label="data[idx]"];
+  nodetable:free -> freelist [style="dashed", label="head"];
+  nodetable:edgepool -> edgepool [label="owns"];
+  edgepool:edata -> edge_arr [label="ptr"];
+  edge_arr -> edge_rec [style="dashed", label="edge_record layout"];
+
+  // node -> edge slice
+  node_rec -> edge_arr [label="slice: [edge_array_idx, edge_num]"];
+  edge_rec -> data_arr [style="dashed", label="child idx -> data[child]"];
+
+  // GC conceptual connections
+  gc -> op_entries [style="dashed", label="clear (memset)"];
+  gc -> gcp_slots  [style="dashed", label="roots"];
+  gc -> nodetable  [style="dashed", label="collect + rebuild + compact"];
+
+  // keep clusters aligned
+  api_idx -> gcfg [style="invis"];
+}

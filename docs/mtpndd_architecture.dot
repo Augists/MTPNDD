@@ -1,57 +1,76 @@
-digraph MTPNDD {
-    rankdir=LR;
-    splines=true;
-    bgcolor="white";
-    node [shape=box, style="rounded,filled", fillcolor="#f7f7f7", color="#555555", fontname="Helvetica", fontsize=11];
-    edge [color="#606060", fontname="Helvetica", fontsize=10, arrowsize=0.8];
+// MTPNDD architecture (feature/index)
+// Generate: dot -Tpng docs/mtpndd_architecture.dot -o docs/mtpndd_architecture.png
+digraph MTPNDD_Architecture {
+  rankdir=LR;
+  compound=true;
+  splines=true;
+  nodesep=0.35;
+  ranksep=0.55;
 
-    subgraph cluster_api {
-        label="API Surface";
-        style="dashed";
-        color="#b0b0b0";
-        api [label="mtpndd.h\n• single include\n• exposes init/shutdown & ops", shape=component, fillcolor="#d7ecff"];
-    }
+  graph [fontname="Helvetica", fontsize=10, labelloc="t", labeljust="l"];
+  node  [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444"];
+  edge  [fontname="Helvetica", fontsize=9, color="#555555"];
 
-    subgraph cluster_core {
-        label="Core Library";
-        style="rounded";
-        color="#c0c0c0";
-        common [label="mtpndd_common.c\n• runtime init/quit\n• field & config registry\n• error/status tracking", fillcolor="#ffe5cc"];
-        config [label="Global State\n(g_mtpndd_config, g_mtpndd_pal_config)\n• holds per-field metadata\n• owns nodetables & caches\n• tracks GC protection", fillcolor="#fff4d9"];
-        node_ops [label="mtpndd_node.c\n• node/edge structures\n• boolean & quantifier tasks\n• MTBDD conversion bridge", fillcolor="#e4f7d7"];
-        nodetable [label="mtpndd_nodetable.c\n• unique-table lookup\n• refcount updates\n• triggers GC/grow", fillcolor="#e4f7d7"];
-        cache [label="mtpndd_operation_cache.c\n• AND/OR/NOT caches\n• lock-striped entries\n• hash by node identity", fillcolor="#e4f7d7"];
-        gc [label="GC Protect Set\n(mtpndd_gc_protect_t)\n• roots live nodes\n• RW-locked hash buckets", fillcolor="#e4f7d7"];
-    }
+  subgraph cluster_app {
+    label="Applications";
+    color="#bdbdbd";
+    style="rounded";
+    app [label="C / JNI / Benchmarks\n(nqueens, conversion, …)"];
+  }
 
-    subgraph cluster_runtime {
-        label="External Runtime";
-        style="dotted";
-        color="#bcbcbc";
-        lace [label="Lace\n• work-stealing scheduler\n• spawns task-based ops", shape=ellipse, fillcolor="#f0f0f0"];
-        sylvan [label="Sylvan MTBDD\n• BDD/MTBDD storage\n• provides satcount & refs", shape=ellipse, fillcolor="#f0f0f0"];
-    }
+  subgraph cluster_api {
+    label="Public API (idx-based)";
+    color="#6baed6";
+    style="rounded";
+    api [label="mtpndd.h\nmtpndd_t = uint64_t (node idx)\nmtpndd_bdd_t = uint64_t (Sylvan node id)"];
+  }
 
-    api -> common [label="init/quit" weight=2];
-    api -> node_ops [label="boolean ops" weight=2];
-    api -> config [label="stats access"];
+  subgraph cluster_core {
+    label="MTPNDD core (feature/index, serial)";
+    color="#74c476";
+    style="rounded";
 
-    common -> config [label="initializes & maintains" weight=2];
-    common -> lace [label="lace_start" minlen=2];
-    common -> sylvan [label="sylvan_init_*" minlen=2];
+    common [label="mtpndd_common.{c,h}\n- init/quit\n- config/stats/error\n- field_info + prebuilt vars\n- gcProtect (roots)"];
+    nodeops [label="mtpndd_node.{c,h}\n- AND/OR/NOT/EXIST/DIFF\n- satcount\n- dot + conversions"];
+    nodetable [label="mtpndd_nodetable.{c,h}\nUnique table (mk)\n- hash[]: open addressing\n- data[]: node records"];
+    opcache [label="mtpndd_operation_cache.{c,h}\n- and/or/not caches\n(key: operand idx)\n(val: result idx)"];
+    builder [label="mtpndd_edge_builder.{c,h}\nTemp edge builder\n- push\n- sort + merge\n(child duplicates => OR labels)"];
+    edgepool [label="mtpndd_edge_array_pool.{c,h}\nAppend-only edge storage\nedge_record = { child_idx, label_bdd }\n(node points to slice: edge_array_idx + edge_num)"];
+  }
 
-    node_ops -> nodetable [label="mtpndd_mk/find" weight=2];
-    node_ops -> cache [label="lookup/store"];
-    node_ops -> sylvan [label="MTBDD labels" minlen=2];
-    node_ops -> config [label="field layout"];
+  subgraph cluster_sylvan {
+    label="Sylvan / Lace";
+    color="#fdae6b";
+    style="rounded";
+    lace   [label="Lace runtime\n(task scheduler)"];
+    sylvan [label="Sylvan BDD/MTBDD\n- node tables\n- caches\n- sylvan_and/or/not\n- mtbdd_satcount"];
+  }
 
-    nodetable -> config [label="updates stats"];
-    nodetable -> gc [label="protect checks"];
+  // high-level wiring
+  app -> api;
 
-    cache -> config [label="registered caches"];
+  api -> common;
+  api -> nodeops;
+  api -> nodetable;
 
-    gc -> config [label="protect registry"];
+  common -> lace   [label="lace_start"];
+  common -> sylvan [label="sylvan_init + ithvar/not"];
+  common -> nodetable [label="nodetable init"];
+  common -> opcache [label="cache init"];
 
-    config -> sylvan [label="size parameters"];
-    config -> cache [label="capacity" dir="both" style="dashed"];
+  nodeops -> opcache   [label="lookup / store"];
+  nodeops -> builder   [label="build edges"];
+  nodeops -> nodetable [label="mk / ref / deref"];
+  nodeops -> sylvan    [label="BDD ops"];
+
+  builder -> sylvan    [style="dashed", label="merge: OR labels"];
+  nodetable -> edgepool [label="alloc + copy edges"];
+  nodetable -> sylvan   [style="dashed", label="ref/deref edge labels"];
+
+  sylvan -> lace [style="dashed", label="parallelism only inside\nBDD operations"];
+
+  // legend
+  legend [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+          label="Notes:\n- MTPNDD itself is serial on this branch\n- Node/edge identity is stable via idx (no pointer-based nodes)\n- Edge order is canonicalized via sort+merge to support mk uniqueness"];
+  api -> legend [style="invis"];
 }

@@ -1,7 +1,6 @@
 #include "mtpndd.h"
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
-#include "mtpndd_memory_pool.h"
 
 #include <stdatomic.h>
 #include <sys/stat.h>
@@ -55,25 +54,27 @@ static inline void print_run_stats(const mtpndd_stats_t *stats) {
 #endif
 
 #ifdef MTPNDD_NQUEENS_ENABLE_DOT
-static void dump_dot_file(const char *filename, mtpndd_t *node);
+static void dump_dot_file(const char *filename, mtpndd_t node);
 #else
-static inline void dump_dot_file(const char *filename, mtpndd_t *node) {
+static inline void dump_dot_file(const char *filename, mtpndd_t node) {
     (void)filename;
     (void)node;
 }
 #endif
 
-static mtpndd_t *build_row_at_least_one(const nqueens_ctx_t *ctx, size_t row) {
-    mtpndd_t *accum = &MTPNDD_FALSE;
+static mtpndd_t build_row_at_least_one(const nqueens_ctx_t *ctx, size_t row) {
+    mtpndd_t accum = MTPNDD_FALSE;
     mtpndd_ref(accum);
 
     for (size_t col = 0; col < ctx->size; ++col) {
         uint32_t field = ctx->field_ids[row];
-        mtpndd_t *cell = mtpndd_get_var(field, (uint32_t)col);
-        mtpndd_ref(cell);
-        mtpndd_t *old = accum;
-        mtpndd_t *next = mtpndd_or(old, cell);
-        mtpndd_deref(cell);
+        mtpndd_t cell = mtpndd_get_var(field, (uint32_t)col);
+        mtpndd_t old = accum;
+        mtpndd_t next = mtpndd_or(old, cell);
+        if (next == MTPNDD_INVALID) {
+            mtpndd_deref(old);
+            return MTPNDD_INVALID;
+        }
         mtpndd_ref(next);
         mtpndd_deref(old);
         accum = next;
@@ -82,55 +83,71 @@ static mtpndd_t *build_row_at_least_one(const nqueens_ctx_t *ctx, size_t row) {
     return accum;
 }
 
-static void append_implication(mtpndd_t **accum, mtpndd_t *guard_neg, mtpndd_t *neg_literal) {
-    mtpndd_ref(neg_literal);
-    mtpndd_t *imp = mtpndd_or(guard_neg, neg_literal);
-    mtpndd_deref(neg_literal);
+static bool append_implication(mtpndd_t *accum, mtpndd_t guard_neg, mtpndd_t neg_literal) {
+    mtpndd_t imp = mtpndd_or(guard_neg, neg_literal);
+    if (imp == MTPNDD_INVALID) {
+        return false;
+    }
     mtpndd_ref(imp);
-    mtpndd_t *old = *accum;
-    mtpndd_t *next = mtpndd_and(old, imp);
+
+    mtpndd_t old = *accum;
+    mtpndd_t next = mtpndd_and(old, imp);
     mtpndd_deref(imp);
+    if (next == MTPNDD_INVALID) {
+        return false;
+    }
     mtpndd_ref(next);
     mtpndd_deref(old);
     *accum = next;
+    return true;
 }
 
-static mtpndd_t *build_cell_implication(const nqueens_ctx_t *ctx, size_t row, size_t col) {
-    mtpndd_t *accum = &MTPNDD_TRUE;
+static mtpndd_t build_cell_implication(const nqueens_ctx_t *ctx, size_t row, size_t col) {
+    mtpndd_t accum = MTPNDD_TRUE;
     mtpndd_ref(accum);
 
-    mtpndd_t *guard_neg = mtpndd_get_not_var((uint32_t)(row + 1), (uint32_t)col);
-    mtpndd_ref(guard_neg);
+    mtpndd_t guard_neg = mtpndd_get_not_var((uint32_t)(row + 1), (uint32_t)col);
 
     size_t n = ctx->size;
 
     for (size_t other_col = 0; other_col < n; ++other_col) {
         if (other_col == col) continue;
-        append_implication(&accum, guard_neg,
-                                mtpndd_get_not_var((uint32_t)(row + 1), (uint32_t)other_col));
+        if (!append_implication(&accum, guard_neg,
+                                mtpndd_get_not_var((uint32_t)(row + 1), (uint32_t)other_col))) {
+            mtpndd_deref(accum);
+            return MTPNDD_INVALID;
+        }
     }
 
     for (size_t other_row = 0; other_row < n; ++other_row) {
         if (other_row == row) continue;
-        append_implication(&accum, guard_neg,
-                                mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)col));
+        if (!append_implication(&accum, guard_neg,
+                                mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)col))) {
+            mtpndd_deref(accum);
+            return MTPNDD_INVALID;
+        }
     }
 
     for (size_t other_row = 0; other_row < n; ++other_row) {
         if (other_row == row) continue;
         long diag_up = (long)other_row - (long)row + (long)col;
         if (diag_up >= 0 && (size_t)diag_up < n) {
-            append_implication(&accum, guard_neg,
-                                    mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)diag_up));
+            if (!append_implication(&accum, guard_neg,
+                                    mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)diag_up))) {
+                mtpndd_deref(accum);
+                return MTPNDD_INVALID;
+            }
         }
         long diag_down = (long)row + (long)col - (long)other_row;
         if (diag_down >= 0 && (size_t)diag_down < n) {
-            append_implication(&accum, guard_neg,
-                                    mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)diag_down));
+            if (!append_implication(&accum, guard_neg,
+                                    mtpndd_get_not_var((uint32_t)(other_row + 1), (uint32_t)diag_down))) {
+                mtpndd_deref(accum);
+                return MTPNDD_INVALID;
+            }
         }
     }
 
-    mtpndd_deref(guard_neg);
     return accum;
 }
 
@@ -147,17 +164,15 @@ static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
     return true;
 }
 
-static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formula) {
+static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t *out_formula) {
     size_t n = ctx->size;
     bool ok = false;
-    mtpndd_t *formula = NULL;
-    mtpndd_t *base = &MTPNDD_TRUE;
-    mtpndd_ref(base);
-    formula = base;
+    mtpndd_t formula = MTPNDD_TRUE;
+    mtpndd_ref(formula);
 
     for (size_t row = 0; row < n; ++row) {
-        mtpndd_t *at_least = build_row_at_least_one(ctx, row);
-        if (!at_least) goto cleanup;
+        mtpndd_t at_least = build_row_at_least_one(ctx, row);
+        if (at_least == MTPNDD_INVALID) goto cleanup;
 #ifdef MTPNDD_NQUEENS_ENABLE_DOT
         if (ctx->size <= 12) {
             char name[128];
@@ -165,12 +180,12 @@ static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formu
             dump_dot_file(name, at_least);
         }
 #endif
-        mtpndd_t *old = formula;
-        mtpndd_t *next = mtpndd_and(old, at_least);
+        mtpndd_t old = formula;
+        mtpndd_t next = mtpndd_and(old, at_least);
         mtpndd_deref(at_least);
-        if (!next) {
+        if (next == MTPNDD_INVALID) {
             mtpndd_deref(old);
-            formula = NULL;
+            formula = MTPNDD_INVALID;
             goto cleanup;
         }
         mtpndd_ref(next);
@@ -187,8 +202,8 @@ static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formu
 #endif
     for (size_t row = 0; row < n; ++row) {
         for (size_t col = 0; col < n; ++col) {
-            mtpndd_t *imp = build_cell_implication(ctx, row, col);
-            if (!imp) goto cleanup;
+            mtpndd_t imp = build_cell_implication(ctx, row, col);
+            if (imp == MTPNDD_INVALID) goto cleanup;
 #ifdef MTPNDD_NQUEENS_ENABLE_DOT
             if (ctx->size <= 12) {
                 char name[160];
@@ -196,12 +211,12 @@ static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formu
                 dump_dot_file(name, imp);
             }
 #endif
-            mtpndd_t *old = formula;
-            mtpndd_t *next = mtpndd_and(old, imp);
+            mtpndd_t old = formula;
+            mtpndd_t next = mtpndd_and(old, imp);
             mtpndd_deref(imp);
-            if (!next) {
+            if (next == MTPNDD_INVALID) {
                 mtpndd_deref(old);
-                formula = NULL;
+                formula = MTPNDD_INVALID;
                 goto cleanup;
             }
             mtpndd_ref(next);
@@ -215,11 +230,11 @@ static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formu
     }
 
     *out_formula = formula;
-    formula = NULL;
+    formula = MTPNDD_INVALID;
     ok = true;
 
 cleanup:
-    if (formula) mtpndd_deref(formula);
+    if (formula != MTPNDD_INVALID) mtpndd_deref(formula);
     return ok;
 }
 
@@ -231,7 +246,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
 
     bool ok = false;
     nqueens_ctx_t ctx = {0};
-    mtpndd_t *formula = NULL;
+    mtpndd_t formula = MTPNDD_INVALID;
 
     size_t bdd_size = 1 << 19;
     size_t ndd_size = 1 << 21;
@@ -348,13 +363,6 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     const mtpndd_stats_t *stats = mtpndd_get_stats();
 #ifdef ENABLE_RECORDING
     print_run_stats(stats);
-
-    mtpndd_memory_pool_stats_t pool_stats = {0};
-    mtpndd_memory_pools_snapshot(&pool_stats);
-
-    printf(".. mem: node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu\n",
-           pool_stats.node_slabs, pool_stats.node_in_use, pool_stats.node_capacity_per_slab,
-           pool_stats.edge_entry_slabs, pool_stats.edge_entry_in_use);
 #endif
 
     if (metrics) {
@@ -392,9 +400,9 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     printf("run  %8.3f\n", elapsed);
 
 cleanup:
-    if (formula) {
+    if (formula != MTPNDD_INVALID) {
         mtpndd_deref(formula);
-        formula = NULL;
+        formula = MTPNDD_INVALID;
     }
     nqueens_ctx_destroy(&ctx);
     if (mtpndd_quit() != MTPNDD_SUCCESS) {
@@ -543,8 +551,8 @@ static void ensure_dot_dir(void) {
     created = true;
 }
 
-static void dump_dot_file(const char *filename, mtpndd_t *node) {
-    if (!filename || !node) return;
+static void dump_dot_file(const char *filename, mtpndd_t node) {
+    if (!filename || node == MTPNDD_INVALID) return;
     ensure_dot_dir();
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", DOT_OUTPUT_DIR, filename);

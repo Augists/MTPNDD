@@ -2,828 +2,507 @@
 // Copyright (C) Augists
 // Copyright (C) XJTU ANTS Netverify Lab
 
-#include "mtpndd_common.h"
 #include "mtpndd_node.h"
-#include "mtpndd_nodetable.h"
-#include "mtpndd_operation_cache.h"
-#include "mtpndd_memory_pool.h"
-#include "sylvan.h"
-#include "sylvan_mtbdd.h"
-#include <stdatomic.h>
-#include <string.h>
+
+#include <inttypes.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <inttypes.h>
-#ifdef ENABLE_RECORDING
-#include <time.h>
-#endif
+#include <stdlib.h>
+#include <string.h>
 
-mtpndd_t MTPNDD_TRUE = {0};
-mtpndd_t MTPNDD_FALSE = {0};
+#include "mtpndd_edge_builder.h"
+#include "mtpndd_nodetable.h"
+#include "mtpndd_operation_cache.h"
 
-static inline mtpndd_bdd_t mtpndd_edge_label_load(edge_bucket_entry_t *entry);
-static inline void mtpndd_residual_apply_mask(edge_bucket_entry_t *entry, mtpndd_bdd_t mask);
-static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest);
-static void mtpndd_edge_map_reset(mtpndd_edge_t *edges);
-void mtpndd_edge_map_free(mtpndd_edge_t *edges);
+#include "sylvan.h"
+#include "sylvan_mtbdd.h"
 
-void mtpndd_edge_map_init(mtpndd_edge_t *edges) {
-    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
-    edges->edge_count = 0;
-    for (size_t i = 0; i < bucket_cnt; i++) {
-        edges->buckets[i] = NULL;
-    }
+static inline mtpndd_node_record_t mtpndd_node_read(mtpndd_t idx) {
+    return g_mtpndd_nodetable.data[(size_t)idx];
 }
 
-size_t mtpndd_hash_node_identity(const mtpndd_node_t *node) {
-    if (!node) return 0;
-
-    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-    uint64_t field_id = (uint64_t)node->field_id;
-    uintptr_t edges_addr = (uintptr_t)node->edges;
-
-    hash ^= field_id;
-    hash *= 1099511628211ULL;             /* FNV prime */
-    hash ^= edges_addr;
-    hash *= 1099511628211ULL;
-
-    return (size_t)hash;
+static inline mtpndd_edge_record_t mtpndd_node_edge(const mtpndd_node_record_t node, uint32_t i) {
+    return mtpndd_edge_at(node.edge_array_idx + i);
 }
 
-static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest) {
-    dest->edge_count = source->edge_count;
+static mtpndd_t mtpndd_and_rec(mtpndd_t a, mtpndd_t b);
+static mtpndd_t mtpndd_or_rec(mtpndd_t a, mtpndd_t b);
+static mtpndd_t mtpndd_not_rec(mtpndd_t a);
+static mtpndd_t mtpndd_exist_rec(mtpndd_t a, uint32_t field);
 
-    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
-
-    for (size_t i = 0; i < bucket_cnt; ++i) {
-        dest->buckets[i] = NULL;
+/********************************
+ * AND
+ ********************************/
+static mtpndd_t mtpndd_and_rec(mtpndd_t a, mtpndd_t b) {
+    if (mtpndd_is_false(a) || mtpndd_is_true(b)) {
+        return a;
+    }
+    if (mtpndd_is_false(b) || mtpndd_is_true(a) || a == b) {
+        return b;
     }
 
-    if (!source->buckets) {
-        return MTPNDD_SUCCESS;
+    // cache key canonicalization for commutative op
+    mtpndd_t lhs = a;
+    mtpndd_t rhs = b;
+    if (lhs > rhs) {
+        mtpndd_t tmp = lhs;
+        lhs = rhs;
+        rhs = tmp;
+    }
+    mtpndd_op_cache_t *and_cache = g_mtpndd_config.and_cache;
+    mtpndd_t cached = mtpndd_op_cache_lookup_binary(and_cache, lhs, rhs);
+    if (cached != MTPNDD_INVALID) {
+        return cached;
     }
 
-    for (size_t i = 0; i < bucket_cnt; ++i) {
-        edge_bucket_entry_t *src_entry = source->buckets[i];
-        if (!src_entry) continue;
+    const mtpndd_node_record_t na = mtpndd_node_read(a);
+    const mtpndd_node_record_t nb = mtpndd_node_read(b);
 
-        edge_bucket_entry_t *dst_head = NULL;
-        edge_bucket_entry_t *dst_tail = NULL;
+    mtpndd_edge_builder_t builder = {0};
+    size_t estimate = 0;
+    if (na.field_id == nb.field_id) {
+        estimate = (size_t)na.edge_num * (size_t)nb.edge_num;
+    } else {
+        estimate = na.edge_num;
+    }
+    mtpndd_edge_builder_init(&builder, estimate ? estimate : 4);
+    if (!builder.edges) {
+        return MTPNDD_INVALID;
+    }
 
-        while (src_entry) {
-            edge_bucket_entry_t *new_entry = mtpndd_memory_acquire_edge_entry();
-            if (!new_entry) {
-                mtpndd_edge_map_reset(dest);
-                return MTPNDD_ERROR_OUT_OF_MEMORY;
+    if (na.field_id == nb.field_id) {
+        for (uint32_t ia = 0; ia < na.edge_num; ++ia) {
+            const mtpndd_edge_record_t ea = mtpndd_node_edge(na, ia);
+            for (uint32_t ib = 0; ib < nb.edge_num; ++ib) {
+                const mtpndd_edge_record_t eb = mtpndd_node_edge(nb, ib);
+                mtpndd_bdd_t label = sylvan_ref(sylvan_and(ea.label, eb.label));
+                if (label == sylvan_false) {
+                    sylvan_deref(label);
+                    continue;
+                }
+                mtpndd_t child = mtpndd_and_rec(ea.child, eb.child);
+                if (child == MTPNDD_INVALID) {
+                    sylvan_deref(label);
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
+                if (!mtpndd_edge_builder_push(&builder, child, label)) {
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
             }
-            new_entry->child = src_entry->child;
-            if (new_entry->child && !mtpndd_is_terminal(new_entry->child)) {
-                mtpndd_ref(new_entry->child);
-            }
-            mtpndd_bdd_t label = atomic_load_explicit(&src_entry->label, memory_order_relaxed);
-            atomic_store_explicit(&new_entry->label, sylvan_ref(label), memory_order_relaxed);
-
-            new_entry->next = NULL;
-            if (dst_tail) {
-                dst_tail->next = new_entry;
-            } else {
-                dst_head = new_entry;
-            }
-            dst_tail = new_entry;
-
-            src_entry = src_entry->next;
+        }
+    } else {
+        // ensure a is the smaller field
+        mtpndd_t top = a;
+        mtpndd_t other = b;
+        mtpndd_node_record_t top_node = na;
+        if (na.field_id > nb.field_id) {
+            top = b;
+            other = a;
+            top_node = nb;
         }
 
-        dest->buckets[i] = dst_head;
-    }
-
-    return MTPNDD_SUCCESS;
-}
-
-static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
-    if (!edges) {
-        return;
-    }
-    if (edges->buckets) {
-        size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
-        for (size_t i = 0; i < bucket_cnt; ++i) {
-            edge_bucket_entry_t *entry = edges->buckets[i];
-            while (entry) {
-                edge_bucket_entry_t *next = entry->next;
-                mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
-                sylvan_deref(label);
-                mtpndd_memory_release_edge_entry(entry);
-                entry = next;
+        for (uint32_t i = 0; i < top_node.edge_num; ++i) {
+            const mtpndd_edge_record_t e = mtpndd_node_edge(top_node, i);
+            mtpndd_t child = mtpndd_and_rec(e.child, other);
+            if (child == MTPNDD_INVALID) {
+                mtpndd_edge_builder_destroy(&builder);
+                return MTPNDD_INVALID;
             }
-            edges->buckets[i] = NULL;
+            if (!mtpndd_edge_builder_push(&builder, child, sylvan_ref(e.label))) {
+                mtpndd_edge_builder_destroy(&builder);
+                return MTPNDD_INVALID;
+            }
         }
+        a = top;
     }
-    edges->edge_count = 0;
+
+    mtpndd_t res = mtpndd_mk(mtpndd_node_read(a).field_id, &builder);
+    mtpndd_edge_builder_destroy(&builder);
+    if (res == MTPNDD_INVALID) {
+        return MTPNDD_INVALID;
+    }
+    mtpndd_gc_protect_add(res);
+    mtpndd_op_cache_store_binary(and_cache, lhs, rhs, res);
+    return res;
 }
 
-void mtpndd_edge_map_free(mtpndd_edge_t *edges) {
-    if (!edges) {
-        return;
-    }
-    mtpndd_edge_map_reset(edges);
-    mtpndd_memory_release_edge_map(edges);
-}
-
-/**
- * Find edge entry in hash table
- * Returns NULL if not found
- */
-edge_bucket_entry_t *find_edge_entry(mtpndd_edge_t *edge, mtpndd_node_t *key) {
-    if (edge == NULL || key == NULL || edge->buckets == NULL) {
-        return NULL;
-    }
-    
-    size_t hash = EDGE_MAP_HASH_VAL(edge, key);
-    
-    edge_bucket_entry_t *entry = NULL;
-    FOR_EACH_ENTRY_IN_BUCKET(edge, hash, entry) {
-        if (EDGE_BUCKET_ENTRY_EQUAL(entry, key)) {
-            return entry;
+/********************************
+ * OR
+ ********************************/
+static mtpndd_edge_record_t *mtpndd_residual_find(mtpndd_edge_record_t *edges, uint32_t edge_num, mtpndd_t child) {
+    uint32_t lo = 0;
+    uint32_t hi = edge_num;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        mtpndd_t v = edges[mid].child;
+        if (v < child) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
         }
     }
-    
+    if (lo < edge_num && edges[lo].child == child) {
+        return &edges[lo];
+    }
     return NULL;
 }
 
-mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpndd_bdd_t label_bdd) {
-    if (mtpndd_is_false(descendant)) {
-        sylvan_deref(label_bdd);
-        return MTPNDD_SUCCESS;
-    }
-
-    mtpndd_bdd_t old_label = sylvan_false;
-    size_t hash = EDGE_MAP_HASH_VAL(edges, descendant);
-
-    mtpndd_error_t status = MTPNDD_SUCCESS;
-    edge_bucket_entry_t *entry = NULL;
-    edge_bucket_entry_t *bucket_head = edges->buckets[hash];
-#ifdef ENABLE_RECORDING
-    bool created_entry = false;
-    bool collision_on_insert = false;
-#endif
-
-    edge_bucket_entry_t *prev = NULL;
-    edge_bucket_entry_t *cursor = bucket_head;
-    while (cursor) {
-        if (EDGE_BUCKET_ENTRY_EQUAL(cursor, descendant)) {
-            old_label = atomic_load_explicit(&cursor->label, memory_order_acquire);
-            if (prev) {
-                prev->next = cursor->next;
-            } else {
-                bucket_head = cursor->next;
-            }
-            entry = cursor;
-            edges->edge_count--;
-            break;
-        }
-        prev = cursor;
-        cursor = cursor->next;
-    }
-
-    if (!entry) {
-        entry = mtpndd_memory_acquire_edge_entry();
-        if (!entry) {
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-            status = MTPNDD_ERROR_OUT_OF_MEMORY;
-            goto unlock_and_return;
-        }
-        entry->child = descendant;
-#ifdef ENABLE_RECORDING
-        created_entry = true;
-        if (bucket_head != NULL) {
-            collision_on_insert = true;
-        }
-#endif
-    }
-
-    // Update label
-    mtpndd_bdd_t new_label = sylvan_ref(sylvan_or(old_label, label_bdd));
-    atomic_store_explicit(&entry->label, new_label, memory_order_release);
-    sylvan_deref(old_label);
-    sylvan_deref(label_bdd);
-
-    // Insert into bucket at the front
-    entry->next = bucket_head;
-    bucket_head = entry;
-
-    edges->buckets[hash] = bucket_head;
-    edges->edge_count++;
-#ifdef ENABLE_RECORDING
-    if (created_entry) {
-        MTPNDD_STAT_ADD(edge_insert_total, 1);
-        MTPNDD_STAT_ADD(edge_entry_total, 1);
-        if (collision_on_insert) {
-            MTPNDD_STAT_ADD(edge_collision_total, 1);
-        }
-        MTPNDD_STAT_MAX(max_edges_per_node, edges->edge_count);
-    }
-#endif
-unlock_and_return:
-    if (status != MTPNDD_SUCCESS) {
-        return status;
-    }
-    return MTPNDD_SUCCESS;
+static inline void mtpndd_residual_apply_mask(mtpndd_edge_record_t *edge, mtpndd_bdd_t mask) {
+    if (!edge) return;
+    if (edge->label == sylvan_false) return;
+    mtpndd_bdd_t updated = sylvan_ref(sylvan_and(edge->label, mask));
+    sylvan_deref(edge->label);
+    edge->label = updated;
 }
 
-bool mtpndd_is_true(mtpndd_t *ndd) {
-    return ndd == &MTPNDD_TRUE;
-}
-
-bool mtpndd_is_false(mtpndd_t *ndd) {
-    return ndd == &MTPNDD_FALSE;
-}
-
-bool mtpndd_is_terminal(mtpndd_t *ndd) {
-    return ndd->field_id == 0;
-}
-
-static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result);
-static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result);
-static mtpndd_error_t mtpndd_not_rec(mtpndd_t *a, mtpndd_t **result);
-static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **result);
-
-/********************************
- * MTPNDD operations (sub task)
- ********************************/
-static mtpndd_error_t mtpndd_and_same_field(edge_bucket_entry_t *entry_a,
-        edge_bucket_entry_t *entry_b, mtpndd_edge_t *res_edges)
-{
-    mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
-    mtpndd_bdd_t label_b = mtpndd_edge_label_load(entry_b);
-    mtpndd_bdd_t combined_label = sylvan_ref(sylvan_and(label_a, label_b));
-    if (combined_label == sylvan_false) {
-        sylvan_deref(combined_label);
-        return MTPNDD_SUCCESS;
-    }
-
-    mtpndd_node_t *sub_result = NULL;
-    mtpndd_error_t status = mtpndd_and_rec(entry_a->child, entry_b->child, &sub_result);
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(combined_label);
-        return status;
-    }
-
-    status = mtpndd_add_edge(res_edges, sub_result, combined_label);
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(combined_label);
-    }
-    return status;
-}
-
-static mtpndd_error_t mtpndd_and_diff_field(edge_bucket_entry_t *entry_a,
-        mtpndd_t *b, mtpndd_edge_t *res_edges)
-{
-    mtpndd_node_t *sub_result = NULL;
-    mtpndd_error_t status = mtpndd_and_rec(entry_a->child, b, &sub_result);
-    if (status != MTPNDD_SUCCESS) {
-        return status;
-    }
-
-    mtpndd_bdd_t label_a = sylvan_ref(mtpndd_edge_label_load(entry_a));
-    status = mtpndd_add_edge(res_edges, sub_result, label_a);
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(label_a);
-    }
-    return status;
-}
-
-static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result) {
-    if (mtpndd_is_false(a) || mtpndd_is_true(b)) {
-        *result = a;
-        return MTPNDD_SUCCESS;
-    } else if (mtpndd_is_false(b) || mtpndd_is_true(a) || a == b) {
-        *result = b;
-        return MTPNDD_SUCCESS;
-    }
-
-    mtpndd_node_t *cache_a = a;
-    mtpndd_node_t *cache_b = b;
-    if ((uintptr_t)cache_a > (uintptr_t)cache_b) {
-        mtpndd_node_t *tmp = cache_a;
-        cache_a = cache_b;
-        cache_b = tmp;
-    }
-    mtpndd_op_cache_t *and_cache = g_mtpndd_config.and_cache;
-    mtpndd_node_t *cached = mtpndd_op_cache_lookup_binary(and_cache, cache_a, cache_b);
-    if (cached) {
-        *result = cached;
-        return MTPNDD_SUCCESS;
-    }
-
-    mtpndd_t *res_node = NULL;
-    mtpndd_edge_t *res_edges = mtpndd_memory_acquire_edge_map();
-    if (!res_edges) {
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    mtpndd_edge_map_init(res_edges);
-    if (a->field_id == b->field_id) {
-        // Same field, combine edges
-        edge_bucket_entry_t *entry_a;
-        edge_bucket_entry_t *entry_b;
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            FOR_EACH_ENTRY_IN_ALL_BUCKETS(b->edges, entry_b) {
-                mtpndd_error_t status = mtpndd_and_same_field(entry_a, entry_b, res_edges);
-                if (status != MTPNDD_SUCCESS) {
-                    mtpndd_edge_map_free(res_edges);
-                    return status;
-                }
-            }
-        }
-    } else {
-        // Different fields
-    if (a->field_id > b->field_id) {
-        mtpndd_t *temp = a;
-        a = b;
-        b = temp;
-    }
-
-        edge_bucket_entry_t *entry_a;
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            mtpndd_error_t status = mtpndd_and_diff_field(entry_a, b, res_edges);
-            if (status != MTPNDD_SUCCESS) {
-                mtpndd_edge_map_free(res_edges);
-                return status;
-            }
-        }
-    }
-
-    mtpndd_mk(a->field_id, res_edges, &res_node);
-    if (!res_node) {
-        mtpndd_edge_map_free(res_edges);
-        return mtpndd_get_last_error().code;
-    }
-
-    mtpndd_gc_protect_add(res_node);
-
-    mtpndd_op_cache_store_binary(and_cache, cache_a, cache_b, res_node);
-
-    *result = res_node;
-    return MTPNDD_SUCCESS;
-}
-
-static inline void mtpndd_residual_apply_mask(edge_bucket_entry_t *entry, mtpndd_bdd_t mask) {
-    if (!entry) {
-        return;
-    }
-
-    mtpndd_bdd_t expected = atomic_load_explicit(&entry->label, memory_order_acquire);
-
-    while (expected != sylvan_false) {
-        mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, mask));
-        if (atomic_compare_exchange_weak_explicit(
-                &entry->label, &expected, updated,
-                memory_order_acq_rel, memory_order_acquire)) {
-            sylvan_deref(expected);
-            return;
-        }
-        sylvan_deref(updated);
-    }
-}
-
-static inline mtpndd_bdd_t mtpndd_edge_label_load(edge_bucket_entry_t *entry) {
-    if (!entry) {
-        return sylvan_false;
-    }
-    return atomic_load_explicit(&entry->label, memory_order_acquire);
-}
-
-static mtpndd_error_t mtpndd_or_same_field(edge_bucket_entry_t *entry_a,
-        edge_bucket_entry_t *entry_b,
-        mtpndd_edge_t *res_edges,
-        mtpndd_edge_t *residualA,
-        mtpndd_edge_t *residualB)
-{
-    mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
-    mtpndd_bdd_t label_b = mtpndd_edge_label_load(entry_b);
-    mtpndd_bdd_t intersect = sylvan_ref(sylvan_and(label_a, label_b));
-    if (intersect == sylvan_false) {
-        sylvan_deref(intersect);
-        return MTPNDD_SUCCESS;
-    }
-
-    mtpndd_bdd_t notIntersect = sylvan_ref(sylvan_not(intersect));
-    edge_bucket_entry_t *residual_entry_a = find_edge_entry(residualA, entry_a->child);
-    edge_bucket_entry_t *residual_entry_b = find_edge_entry(residualB, entry_b->child);
-    mtpndd_residual_apply_mask(residual_entry_a, notIntersect);
-    mtpndd_residual_apply_mask(residual_entry_b, notIntersect);
-    sylvan_deref(notIntersect);
-
-    mtpndd_node_t *subResult = NULL;
-    mtpndd_error_t status = mtpndd_or_rec(entry_a->child, entry_b->child, &subResult);
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(intersect);
-        return status;
-    }
-
-    status = mtpndd_add_edge(res_edges, subResult, intersect);
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(intersect);
-    }
-    return status;
-}
-
-static mtpndd_error_t mtpndd_or_diff_field(edge_bucket_entry_t *entry_a,
-        mtpndd_t *b,
-        mtpndd_edge_t *res_edges,
-        _Atomic(mtpndd_bdd_t) *residualB)
-{
-    mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
-    mtpndd_bdd_t notIntersect = sylvan_ref(sylvan_not(label_a));
-    mtpndd_bdd_t expected = atomic_load_explicit(residualB, memory_order_relaxed);
-    for (;;) {
-        mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, notIntersect));
-        if (atomic_compare_exchange_weak_explicit(
-                residualB, &expected, updated,
-                memory_order_acq_rel, memory_order_acquire)) {
-            sylvan_deref(expected);
-            break;
-        }
-        sylvan_deref(updated);
-    }
-    sylvan_deref(notIntersect);
-
-    mtpndd_node_t *subResult = NULL;
-    mtpndd_error_t status = mtpndd_or_rec(entry_a->child, b, &subResult);
-    if (status != MTPNDD_SUCCESS) {
-        return status;
-    }
-
-    status = mtpndd_add_edge(res_edges, subResult, sylvan_ref(label_a));
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(label_a);
-    }
-    return status;
-}
-
-
-static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result) {
+static mtpndd_t mtpndd_or_rec(mtpndd_t a, mtpndd_t b) {
     if (mtpndd_is_true(a) || mtpndd_is_false(b)) {
-        *result = a;
-        return MTPNDD_SUCCESS;
-    } else if (mtpndd_is_true(b) || mtpndd_is_false(a) || a == b) {
-        *result = b;
-        return MTPNDD_SUCCESS;
+        return a;
+    }
+    if (mtpndd_is_true(b) || mtpndd_is_false(a) || a == b) {
+        return b;
     }
 
-    mtpndd_node_t *cache_a = a;
-    mtpndd_node_t *cache_b = b;
-    if ((uintptr_t)cache_a > (uintptr_t)cache_b) {
-        mtpndd_node_t *tmp = cache_a;
-        cache_a = cache_b;
-        cache_b = tmp;
+    // cache key canonicalization for commutative op
+    mtpndd_t lhs = a;
+    mtpndd_t rhs = b;
+    if (lhs > rhs) {
+        mtpndd_t tmp = lhs;
+        lhs = rhs;
+        rhs = tmp;
     }
     mtpndd_op_cache_t *or_cache = g_mtpndd_config.or_cache;
-    mtpndd_node_t *cached = mtpndd_op_cache_lookup_binary(or_cache, cache_a, cache_b);
-    if (cached) {
-        *result = cached;
-        return MTPNDD_SUCCESS;
+    mtpndd_t cached = mtpndd_op_cache_lookup_binary(or_cache, lhs, rhs);
+    if (cached != MTPNDD_INVALID) {
+        return cached;
     }
 
-    mtpndd_t *res_node = NULL;
-    mtpndd_edge_t *res_edges = mtpndd_memory_acquire_edge_map();
-    if (!res_edges) {
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    mtpndd_edge_map_init(res_edges);
+    const mtpndd_node_record_t na = mtpndd_node_read(a);
+    const mtpndd_node_record_t nb = mtpndd_node_read(b);
 
-    if (a->field_id == b->field_id) {
-        // Same field, combine edges
-        mtpndd_edge_t *residualA = mtpndd_memory_acquire_edge_map();
-        if (!residualA) {
-            mtpndd_edge_map_free(res_edges);
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-            return MTPNDD_ERROR_OUT_OF_MEMORY;
-        }
-        if (mtpndd_edge_map_deep_clone(a->edges, residualA) != MTPNDD_SUCCESS) {
-            mtpndd_edge_map_free(residualA);
-            mtpndd_edge_map_free(res_edges);
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-            return MTPNDD_ERROR_OUT_OF_MEMORY;
-        }
-        mtpndd_edge_t *residualB = mtpndd_memory_acquire_edge_map();
-        if (!residualB) {
-            mtpndd_edge_map_free(residualA);
-            mtpndd_edge_map_free(res_edges);
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-            return MTPNDD_ERROR_OUT_OF_MEMORY;
-        }
-        if (mtpndd_edge_map_deep_clone(b->edges, residualB) != MTPNDD_SUCCESS) {
-            mtpndd_edge_map_free(residualA);
-            mtpndd_edge_map_free(residualB);
-            mtpndd_edge_map_free(res_edges);
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-            return MTPNDD_ERROR_OUT_OF_MEMORY;
-        }
-        // already sylvan_ref when deep cloning
-
-        edge_bucket_entry_t *entry_a;
-        edge_bucket_entry_t *entry_b;
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            FOR_EACH_ENTRY_IN_ALL_BUCKETS(b->edges, entry_b) {
-                mtpndd_error_t status = mtpndd_or_same_field(entry_a, entry_b, res_edges, residualA, residualB);
-                if (status != MTPNDD_SUCCESS) {
-                    mtpndd_edge_map_free(residualA);
-                    mtpndd_edge_map_free(residualB);
-                    mtpndd_edge_map_free(res_edges);
-                    return status;
-                }
-            }
-        }
-        /**
-         * Each residual of A doesn't match with any explicit edge of B,
-         * and will match with the edge pointing to FALSE of B, which is omitted.
-         * The situation is the same for B.
-         */
-        edge_bucket_entry_t *entry_res;
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(residualA, entry_res) {
-            mtpndd_bdd_t res_label = mtpndd_edge_label_load(entry_res);
-            if (res_label != sylvan_false) {
-                mtpndd_error_t status = mtpndd_add_edge(res_edges, entry_res->child, sylvan_ref(res_label));
-                if (status != MTPNDD_SUCCESS) {
-                    mtpndd_edge_map_free(residualA);
-                    mtpndd_edge_map_free(residualB);
-                    mtpndd_edge_map_free(res_edges);
-                    return status;
-                }
-            }
-        }
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(residualB, entry_res) {
-            mtpndd_bdd_t res_label = mtpndd_edge_label_load(entry_res);
-            if (res_label != sylvan_false) {
-                mtpndd_error_t status = mtpndd_add_edge(res_edges, entry_res->child, sylvan_ref(res_label));
-                if (status != MTPNDD_SUCCESS) {
-                    mtpndd_edge_map_free(residualA);
-                    mtpndd_edge_map_free(residualB);
-                    mtpndd_edge_map_free(res_edges);
-                    return status;
-                }
-            }
-        }
-        mtpndd_edge_map_free(residualA);
-        mtpndd_edge_map_free(residualB);
+    mtpndd_edge_builder_t builder = {0};
+    size_t estimate = 0;
+    if (na.field_id == nb.field_id) {
+        estimate = (size_t)na.edge_num * (size_t)nb.edge_num + na.edge_num + nb.edge_num;
     } else {
-        // Different fields
-    if (a->field_id > b->field_id) {
-        mtpndd_t *temp = a;
-        a = b;
-        b = temp;
+        estimate = na.edge_num + 1;
+    }
+    mtpndd_edge_builder_init(&builder, estimate ? estimate : 4);
+    if (!builder.edges) {
+        return MTPNDD_INVALID;
     }
 
-        _Atomic(mtpndd_bdd_t) residualB = sylvan_true;
-        edge_bucket_entry_t *entry_a;
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            mtpndd_error_t status = mtpndd_or_diff_field(entry_a, b, res_edges, &residualB);
-            if (status != MTPNDD_SUCCESS) {
-                mtpndd_edge_map_free(res_edges);
-                return status;
+    uint32_t result_field = na.field_id;
+
+    if (na.field_id == nb.field_id) {
+        // residual copies (sorted by child)
+        mtpndd_edge_record_t *residualA = NULL;
+        mtpndd_edge_record_t *residualB = NULL;
+        if (na.edge_num > 0) {
+            residualA = (mtpndd_edge_record_t *)malloc(sizeof(mtpndd_edge_record_t) * na.edge_num);
+        }
+        if (nb.edge_num > 0) {
+            residualB = (mtpndd_edge_record_t *)malloc(sizeof(mtpndd_edge_record_t) * nb.edge_num);
+        }
+        if ((na.edge_num > 0 && !residualA) || (nb.edge_num > 0 && !residualB)) {
+            free(residualA);
+            free(residualB);
+            mtpndd_edge_builder_destroy(&builder);
+            MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+            return MTPNDD_INVALID;
+        }
+        for (uint32_t i = 0; i < na.edge_num; ++i) {
+            mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+            residualA[i].child = e.child;
+            residualA[i].label = sylvan_ref(e.label);
+        }
+        for (uint32_t i = 0; i < nb.edge_num; ++i) {
+            mtpndd_edge_record_t e = mtpndd_node_edge(nb, i);
+            residualB[i].child = e.child;
+            residualB[i].label = sylvan_ref(e.label);
+        }
+
+        for (uint32_t ia = 0; ia < na.edge_num; ++ia) {
+            const mtpndd_edge_record_t ea = mtpndd_node_edge(na, ia);
+            for (uint32_t ib = 0; ib < nb.edge_num; ++ib) {
+                const mtpndd_edge_record_t eb = mtpndd_node_edge(nb, ib);
+                mtpndd_bdd_t intersect = sylvan_ref(sylvan_and(ea.label, eb.label));
+                if (intersect == sylvan_false) {
+                    sylvan_deref(intersect);
+                    continue;
+                }
+
+                mtpndd_bdd_t not_intersect = sylvan_ref(sylvan_not(intersect));
+                mtpndd_residual_apply_mask(mtpndd_residual_find(residualA, na.edge_num, ea.child), not_intersect);
+                mtpndd_residual_apply_mask(mtpndd_residual_find(residualB, nb.edge_num, eb.child), not_intersect);
+                sylvan_deref(not_intersect);
+
+                mtpndd_t child = mtpndd_or_rec(ea.child, eb.child);
+                if (child == MTPNDD_INVALID) {
+                    sylvan_deref(intersect);
+                    for (uint32_t i = 0; i < na.edge_num; ++i) sylvan_deref(residualA[i].label);
+                    for (uint32_t i = 0; i < nb.edge_num; ++i) sylvan_deref(residualB[i].label);
+                    free(residualA);
+                    free(residualB);
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
+                if (!mtpndd_edge_builder_push(&builder, child, intersect)) {
+                    for (uint32_t i = 0; i < na.edge_num; ++i) sylvan_deref(residualA[i].label);
+                    for (uint32_t i = 0; i < nb.edge_num; ++i) sylvan_deref(residualB[i].label);
+                    free(residualA);
+                    free(residualB);
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
             }
         }
-        mtpndd_bdd_t residualB_val = atomic_load_explicit(&residualB, memory_order_relaxed);
-        if (residualB_val != sylvan_false) {
-            mtpndd_error_t status = mtpndd_add_edge(res_edges, b, residualB_val);
-            if (status != MTPNDD_SUCCESS) {
-                sylvan_deref(residualB_val);
-                mtpndd_edge_map_free(res_edges);
-                return status;
+
+        // add residuals
+        for (uint32_t i = 0; i < na.edge_num; ++i) {
+            if (residualA[i].label != sylvan_false) {
+                mtpndd_bdd_t moved = residualA[i].label;
+                residualA[i].label = sylvan_false;
+                if (!mtpndd_edge_builder_push(&builder, residualA[i].child, moved)) {
+                    for (uint32_t j = i + 1; j < na.edge_num; ++j) sylvan_deref(residualA[j].label);
+                    for (uint32_t j = 0; j < nb.edge_num; ++j) sylvan_deref(residualB[j].label);
+                    free(residualA);
+                    free(residualB);
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
+            } else {
+                sylvan_deref(residualA[i].label);
             }
         }
-    }
-
-    mtpndd_mk(a->field_id, res_edges, &res_node);
-    if (!res_node) {
-        mtpndd_edge_map_free(res_edges);
-        return mtpndd_get_last_error().code;
-    }
-    mtpndd_gc_protect_add(res_node);
-
-    mtpndd_op_cache_store_binary(or_cache, cache_a, cache_b, res_node);
-
-    *result = res_node;
-    return MTPNDD_SUCCESS;
-}
-
-static mtpndd_error_t mtpndd_not_expand(edge_bucket_entry_t *entry_a,
-        mtpndd_edge_t *res_edges,
-        _Atomic(mtpndd_bdd_t) *residual)
-{
-    mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
-    mtpndd_bdd_t notIntersect = sylvan_ref(sylvan_not(label_a));
-    mtpndd_bdd_t expected = atomic_load_explicit(residual, memory_order_relaxed);
-    for (;;) {
-        mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, notIntersect));
-        if (atomic_compare_exchange_weak_explicit(
-                residual, &expected, updated,
-                memory_order_acq_rel, memory_order_acquire)) {
-            sylvan_deref(expected);
-            break;
+        for (uint32_t i = 0; i < nb.edge_num; ++i) {
+            if (residualB[i].label != sylvan_false) {
+                mtpndd_bdd_t moved = residualB[i].label;
+                residualB[i].label = sylvan_false;
+                if (!mtpndd_edge_builder_push(&builder, residualB[i].child, moved)) {
+                    for (uint32_t j = i + 1; j < nb.edge_num; ++j) sylvan_deref(residualB[j].label);
+                    free(residualA);
+                    free(residualB);
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
+            } else {
+                sylvan_deref(residualB[i].label);
+            }
         }
-        sylvan_deref(updated);
-    }
-    sylvan_deref(notIntersect);
 
-    mtpndd_node_t *subResult = NULL;
-    mtpndd_error_t status = mtpndd_not_rec(entry_a->child, &subResult);
-    if (status != MTPNDD_SUCCESS) {
-        return status;
+        free(residualA);
+        free(residualB);
+    } else {
+        // ensure a is the smaller field
+        mtpndd_t top = a;
+        mtpndd_t other = b;
+        mtpndd_node_record_t top_node = na;
+        if (na.field_id > nb.field_id) {
+            top = b;
+            other = a;
+            top_node = nb;
+        }
+        result_field = top_node.field_id;
+
+        mtpndd_bdd_t residual_other = sylvan_ref(sylvan_true);
+        for (uint32_t i = 0; i < top_node.edge_num; ++i) {
+            const mtpndd_edge_record_t e = mtpndd_node_edge(top_node, i);
+
+            mtpndd_bdd_t not_intersect = sylvan_ref(sylvan_not(e.label));
+            mtpndd_bdd_t updated = sylvan_ref(sylvan_and(residual_other, not_intersect));
+            sylvan_deref(residual_other);
+            sylvan_deref(not_intersect);
+            residual_other = updated;
+
+            mtpndd_t child = mtpndd_or_rec(e.child, other);
+            if (child == MTPNDD_INVALID) {
+                sylvan_deref(residual_other);
+                mtpndd_edge_builder_destroy(&builder);
+                return MTPNDD_INVALID;
+            }
+            if (!mtpndd_edge_builder_push(&builder, child, sylvan_ref(e.label))) {
+                sylvan_deref(residual_other);
+                mtpndd_edge_builder_destroy(&builder);
+                return MTPNDD_INVALID;
+            }
+        }
+        if (residual_other != sylvan_false) {
+            if (!mtpndd_edge_builder_push(&builder, other, residual_other)) {
+                mtpndd_edge_builder_destroy(&builder);
+                return MTPNDD_INVALID;
+            }
+        } else {
+            sylvan_deref(residual_other);
+        }
+        a = top;
     }
 
-    status = mtpndd_add_edge(res_edges, subResult, sylvan_ref(label_a));
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(label_a);
+    mtpndd_t res = mtpndd_mk(result_field, &builder);
+    mtpndd_edge_builder_destroy(&builder);
+    if (res == MTPNDD_INVALID) {
+        return MTPNDD_INVALID;
     }
-    return status;
+    mtpndd_gc_protect_add(res);
+    mtpndd_op_cache_store_binary(or_cache, lhs, rhs, res);
+    return res;
 }
 
-static mtpndd_error_t mtpndd_not_rec(mtpndd_t *a, mtpndd_t **result) {
-    if (mtpndd_is_true(a)) {
-        *result = &MTPNDD_FALSE;
-        return MTPNDD_SUCCESS;
-    } else if (mtpndd_is_false(a)) {
-        *result = &MTPNDD_TRUE;
-        return MTPNDD_SUCCESS;
-    }
+/********************************
+ * NOT
+ ********************************/
+static mtpndd_t mtpndd_not_rec(mtpndd_t a) {
+    if (mtpndd_is_true(a)) return MTPNDD_FALSE;
+    if (mtpndd_is_false(a)) return MTPNDD_TRUE;
 
     mtpndd_op_cache_t *not_cache = g_mtpndd_config.not_cache;
-    mtpndd_node_t *cached = mtpndd_op_cache_lookup_unary(not_cache, a);
-    if (cached) {
-        *result = cached;
-        return MTPNDD_SUCCESS;
+    mtpndd_t cached = mtpndd_op_cache_lookup_unary(not_cache, a);
+    if (cached != MTPNDD_INVALID) {
+        return cached;
     }
 
-    mtpndd_edge_t *res_edges = mtpndd_memory_acquire_edge_map();
-    if (!res_edges) {
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    mtpndd_edge_map_init(res_edges);
+    const mtpndd_node_record_t na = mtpndd_node_read(a);
 
-    _Atomic(mtpndd_bdd_t) residual = sylvan_true;
-    mtpndd_t *res_node = NULL;
-    edge_bucket_entry_t *entry_a;
-    FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-        mtpndd_error_t status = mtpndd_not_expand(entry_a, res_edges, &residual);
-        if (status != MTPNDD_SUCCESS) {
-            mtpndd_edge_map_free(res_edges);
-            return status;
+    mtpndd_edge_builder_t builder = {0};
+    mtpndd_edge_builder_init(&builder, na.edge_num + 1);
+    if (!builder.edges) {
+        return MTPNDD_INVALID;
+    }
+
+    mtpndd_bdd_t residual = sylvan_ref(sylvan_true);
+    for (uint32_t i = 0; i < na.edge_num; ++i) {
+        const mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+
+        mtpndd_bdd_t not_intersect = sylvan_ref(sylvan_not(e.label));
+        mtpndd_bdd_t updated = sylvan_ref(sylvan_and(residual, not_intersect));
+        sylvan_deref(residual);
+        sylvan_deref(not_intersect);
+        residual = updated;
+
+        mtpndd_t child = mtpndd_not_rec(e.child);
+        if (child == MTPNDD_INVALID) {
+            sylvan_deref(residual);
+            mtpndd_edge_builder_destroy(&builder);
+            return MTPNDD_INVALID;
+        }
+        if (!mtpndd_edge_builder_push(&builder, child, sylvan_ref(e.label))) {
+            sylvan_deref(residual);
+            mtpndd_edge_builder_destroy(&builder);
+            return MTPNDD_INVALID;
         }
     }
-    mtpndd_bdd_t residual_val = atomic_load_explicit(&residual, memory_order_relaxed);
-    if (residual_val != sylvan_false) {
-        mtpndd_error_t status = mtpndd_add_edge(res_edges, &MTPNDD_TRUE, residual_val);
-        if (status != MTPNDD_SUCCESS) {
-            sylvan_deref(residual_val);
-            mtpndd_edge_map_free(res_edges);
-            return status;
-        }
-    }
-    mtpndd_mk(a->field_id, res_edges, &res_node);
-    if (!res_node) {
-        mtpndd_edge_map_free(res_edges);
-        return mtpndd_get_last_error().code;
-    }
-    mtpndd_gc_protect_add(res_node);
 
-    mtpndd_op_cache_store_unary(not_cache, a, res_node);
-
-    *result = res_node;
-    return MTPNDD_SUCCESS;
-}
-
-// diff = a AND (NOT b)
-static mtpndd_error_t mtpndd_exist_expand(edge_bucket_entry_t *entry_a,
-        mtpndd_edge_t *res_edges, uint32_t field)
-{
-    mtpndd_t *subResult = NULL;
-    mtpndd_error_t status = mtpndd_exist_rec(entry_a->child, field, &subResult);
-    if (status != MTPNDD_SUCCESS) {
-        return status;
-    }
-    mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
-    status = mtpndd_add_edge(res_edges, subResult, sylvan_ref(label_a));
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(label_a);
-    }
-    return status;
-}
-
-static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **result) {
-    if (mtpndd_is_terminal(a)) {
-        *result = a;
-        return MTPNDD_SUCCESS;
-    }
-
-    mtpndd_t *res_node = &MTPNDD_FALSE;
-    if (a->field_id == field) {
-        edge_bucket_entry_t *entry_a = NULL;
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            mtpndd_error_t status = mtpndd_or_rec(res_node, entry_a->child, &res_node);
-            if (status != MTPNDD_SUCCESS) {
-                return status;
-            }
+    if (residual != sylvan_false) {
+        if (!mtpndd_edge_builder_push(&builder, MTPNDD_TRUE, residual)) {
+            mtpndd_edge_builder_destroy(&builder);
+            return MTPNDD_INVALID;
         }
     } else {
-        // Keep this field
-        mtpndd_edge_t *res_edges = mtpndd_memory_acquire_edge_map();
-        if (!res_edges) {
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-            return MTPNDD_ERROR_OUT_OF_MEMORY;
-        }
-        mtpndd_edge_map_init(res_edges);
+        sylvan_deref(residual);
+    }
 
-        edge_bucket_entry_t *entry_a;
-        FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            mtpndd_error_t status = mtpndd_exist_expand(entry_a, res_edges, field);
-            if (status != MTPNDD_SUCCESS) {
-                mtpndd_edge_map_free(res_edges);
-                return status;
+    mtpndd_t res = mtpndd_mk(na.field_id, &builder);
+    mtpndd_edge_builder_destroy(&builder);
+    if (res == MTPNDD_INVALID) {
+        return MTPNDD_INVALID;
+    }
+    mtpndd_gc_protect_add(res);
+    mtpndd_op_cache_store_unary(not_cache, a, res);
+    return res;
+}
+
+/********************************
+ * EXIST
+ ********************************/
+static mtpndd_t mtpndd_exist_rec(mtpndd_t a, uint32_t field) {
+    if (mtpndd_is_terminal(a)) {
+        return a;
+    }
+    const mtpndd_node_record_t na = mtpndd_node_read(a);
+
+    if (na.field_id == field) {
+        mtpndd_t acc = MTPNDD_FALSE;
+        for (uint32_t i = 0; i < na.edge_num; ++i) {
+            const mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+            acc = mtpndd_or_rec(acc, e.child);
+            if (acc == MTPNDD_INVALID) {
+                return MTPNDD_INVALID;
             }
         }
-        mtpndd_mk(a->field_id, res_edges, &res_node);
-        if (!res_node) {
-            mtpndd_edge_map_free(res_edges);
-            return mtpndd_get_last_error().code;
+        return acc;
+    }
+
+    mtpndd_edge_builder_t builder = {0};
+    mtpndd_edge_builder_init(&builder, na.edge_num);
+    if (!builder.edges) {
+        return MTPNDD_INVALID;
+    }
+    for (uint32_t i = 0; i < na.edge_num; ++i) {
+        const mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+        mtpndd_t child = mtpndd_exist_rec(e.child, field);
+        if (child == MTPNDD_INVALID) {
+            mtpndd_edge_builder_destroy(&builder);
+            return MTPNDD_INVALID;
+        }
+        if (!mtpndd_edge_builder_push(&builder, child, sylvan_ref(e.label))) {
+            mtpndd_edge_builder_destroy(&builder);
+            return MTPNDD_INVALID;
         }
     }
-    mtpndd_gc_protect_add(res_node);
-    *result = res_node;
-    return MTPNDD_SUCCESS;
+
+    mtpndd_t res = mtpndd_mk(na.field_id, &builder);
+    mtpndd_edge_builder_destroy(&builder);
+    if (res == MTPNDD_INVALID) {
+        return MTPNDD_INVALID;
+    }
+    mtpndd_gc_protect_add(res);
+    return res;
 }
 
 /********************************
- * MTPNDD operations (wrappers)
+ * Public wrappers
  ********************************/
-mtpndd_t *mtpndd_and(mtpndd_t *a, mtpndd_t *b) {
+mtpndd_t mtpndd_and(mtpndd_t a, mtpndd_t b) {
     mtpndd_gc_protect_clear();
-    mtpndd_t *result = NULL;
-    if (mtpndd_and_rec(a, b, &result) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return result;
+    return mtpndd_and_rec(a, b);
 }
 
-mtpndd_t *mtpndd_or(mtpndd_t *a, mtpndd_t *b) {
+mtpndd_t mtpndd_or(mtpndd_t a, mtpndd_t b) {
     mtpndd_gc_protect_clear();
-    mtpndd_t *result = NULL;
-    if (mtpndd_or_rec(a, b, &result) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return result;
+    return mtpndd_or_rec(a, b);
 }
 
-mtpndd_t *mtpndd_not(mtpndd_t *a) {
+mtpndd_t mtpndd_not(mtpndd_t a) {
     mtpndd_gc_protect_clear();
-    mtpndd_t *result = NULL;
-    if (mtpndd_not_rec(a, &result) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return result;
+    return mtpndd_not_rec(a);
 }
 
-mtpndd_t *mtpndd_diff(mtpndd_t *a, mtpndd_t *b) {
+mtpndd_t mtpndd_diff(mtpndd_t a, mtpndd_t b) {
     mtpndd_gc_protect_clear();
-    mtpndd_t *result = NULL;
-    mtpndd_t *not_b = NULL;
-    if (mtpndd_not_rec(b, &not_b) != MTPNDD_SUCCESS) {
-        return NULL;
+    mtpndd_t not_b = mtpndd_not_rec(b);
+    if (not_b == MTPNDD_INVALID) {
+        return MTPNDD_INVALID;
     }
-    if (mtpndd_and_rec(a, not_b, &result) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return result;
+    return mtpndd_and_rec(a, not_b);
 }
 
-mtpndd_t *mtpndd_exist(mtpndd_t *a, uint32_t field) {
+mtpndd_t mtpndd_exist(mtpndd_t a, uint32_t field) {
     mtpndd_gc_protect_clear();
-    mtpndd_t *result = NULL;
-    if (mtpndd_exist_rec(a, field, &result) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return result;
+    return mtpndd_exist_rec(a, field);
 }
 
 /********************************
- * MTPNDD <-> MTBDD convertion
+ * MTPNDD <-> MTBDD conversion
  ********************************/
 typedef struct {
-    mtpndd_node_t **keys;
+    mtpndd_t *keys;
     mtpndd_bdd_t *values;
     size_t capacity;
     size_t count;
 } mtpndd_to_mtbdd_cache_t;
-
-typedef struct {
-    mtpndd_bdd_t *keys;
-    mtpndd_node_t **values;
-    size_t capacity;
-    size_t count;
-} mtbdd_to_mtpndd_cache_t;
 
 static mtpndd_error_t mtpndd_to_mtbdd_cache_init(mtpndd_to_mtbdd_cache_t *cache, size_t initial_capacity) {
     cache->capacity = 1;
@@ -831,23 +510,21 @@ static mtpndd_error_t mtpndd_to_mtbdd_cache_init(mtpndd_to_mtbdd_cache_t *cache,
         cache->capacity <<= 1;
     }
     cache->count = 0;
-    cache->keys = (mtpndd_node_t **)calloc(cache->capacity, sizeof(mtpndd_node_t *));
+    cache->keys = (mtpndd_t *)calloc(cache->capacity, sizeof(mtpndd_t));
     cache->values = (mtpndd_bdd_t *)calloc(cache->capacity, sizeof(mtpndd_bdd_t));
     if (!cache->keys || !cache->values) {
         free(cache->keys);
         free(cache->values);
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
     return MTPNDD_SUCCESS;
 }
 
 static void mtpndd_to_mtbdd_cache_destroy(mtpndd_to_mtbdd_cache_t *cache) {
-    if (!cache || !cache->keys) {
-        return;
-    }
+    if (!cache || !cache->keys) return;
     for (size_t i = 0; i < cache->capacity; ++i) {
-        if (cache->keys[i]) {
+        if (cache->keys[i] != 0) {
             sylvan_deref(cache->values[i]);
         }
     }
@@ -859,31 +536,13 @@ static void mtpndd_to_mtbdd_cache_destroy(mtpndd_to_mtbdd_cache_t *cache) {
     cache->count = 0;
 }
 
-static inline void mtpndd_to_mtbdd_cache_place(
-        mtpndd_to_mtbdd_cache_t *cache,
-        mtpndd_node_t *key,
-        mtpndd_bdd_t value,
-        bool take_ref)
-{
+static bool mtpndd_to_mtbdd_cache_lookup(mtpndd_to_mtbdd_cache_t *cache, mtpndd_t key, mtpndd_bdd_t *value_out) {
+    if (!cache || !cache->keys || cache->count == 0) return false;
     size_t mask = cache->capacity - 1;
-    size_t idx = mtpndd_hash_u64((uint64_t)(uintptr_t)key) & mask;
-    while (cache->keys[idx]) {
-        idx = (idx + 1) & mask;
-    }
-    cache->keys[idx] = key;
-    cache->values[idx] = take_ref ? sylvan_ref(value) : value;
-    cache->count++;
-}
-
-static bool mtpndd_to_mtbdd_cache_lookup(mtpndd_to_mtbdd_cache_t *cache, mtpndd_node_t *key, mtpndd_bdd_t *value) {
-    if (!cache->keys || cache->count == 0) {
-        return false;
-    }
-    size_t mask = cache->capacity - 1;
-    size_t idx = mtpndd_hash_u64((uint64_t)(uintptr_t)key) & mask;
-    while (cache->keys[idx]) {
+    size_t idx = mtpndd_hash_u64(key) & mask;
+    while (cache->keys[idx] != 0) {
         if (cache->keys[idx] == key) {
-            *value = sylvan_ref(cache->values[idx]);
+            *value_out = sylvan_ref(cache->values[idx]);
             return true;
         }
         idx = (idx + 1) & mask;
@@ -891,160 +550,58 @@ static bool mtpndd_to_mtbdd_cache_lookup(mtpndd_to_mtbdd_cache_t *cache, mtpndd_
     return false;
 }
 
-static mtpndd_error_t mtpndd_to_mtbdd_cache_insert(mtpndd_to_mtbdd_cache_t *cache, mtpndd_node_t *key, mtpndd_bdd_t value);
-
-static mtpndd_error_t mtpndd_to_mtbdd_cache_rehash(mtpndd_to_mtbdd_cache_t *cache) {
+static bool mtpndd_to_mtbdd_cache_rehash(mtpndd_to_mtbdd_cache_t *cache) {
     size_t new_capacity = cache->capacity << 1;
-    mtpndd_node_t **new_keys = (mtpndd_node_t **)calloc(new_capacity, sizeof(mtpndd_node_t *));
+    mtpndd_t *new_keys = (mtpndd_t *)calloc(new_capacity, sizeof(mtpndd_t));
     mtpndd_bdd_t *new_values = (mtpndd_bdd_t *)calloc(new_capacity, sizeof(mtpndd_bdd_t));
     if (!new_keys || !new_values) {
         free(new_keys);
         free(new_values);
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        return false;
     }
-    size_t old_capacity = cache->capacity;
-    mtpndd_node_t **old_keys = cache->keys;
-    mtpndd_bdd_t *old_values = cache->values;
-    cache->keys = new_keys;
-    cache->values = new_values;
-    cache->capacity = new_capacity;
-    cache->count = 0;
-    for (size_t i = 0; i < old_capacity; ++i) {
-        if (old_keys[i]) {
-            mtpndd_to_mtbdd_cache_place(cache, old_keys[i], old_values[i], false);
-        }
-    }
-    free(old_keys);
-    free(old_values);
-    return MTPNDD_SUCCESS;
-}
-
-static mtpndd_error_t mtpndd_to_mtbdd_cache_insert(mtpndd_to_mtbdd_cache_t *cache, mtpndd_node_t *key, mtpndd_bdd_t value) {
-    if ((cache->count + 1) * 4 >= cache->capacity * 3) {
-        mtpndd_error_t err = mtpndd_to_mtbdd_cache_rehash(cache);
-        if (err != MTPNDD_SUCCESS) {
-            return err;
-        }
-    }
-    mtpndd_to_mtbdd_cache_place(cache, key, value, true);
-    return MTPNDD_SUCCESS;
-}
-
-static mtpndd_error_t mtbdd_to_mtpndd_cache_init(mtbdd_to_mtpndd_cache_t *cache, size_t initial_capacity) {
-    cache->capacity = 1;
-    while (cache->capacity < initial_capacity) {
-        cache->capacity <<= 1;
-    }
-    cache->count = 0;
-    cache->keys = (mtpndd_bdd_t *)calloc(cache->capacity, sizeof(mtpndd_bdd_t));
-    cache->values = (mtpndd_t **)calloc(cache->capacity, sizeof(mtpndd_t *));
-    if (!cache->keys || !cache->values) {
-        free(cache->keys);
-        free(cache->values);
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    return MTPNDD_SUCCESS;
-}
-
-static void mtbdd_to_mtpndd_cache_destroy(mtbdd_to_mtpndd_cache_t *cache) {
-    if (!cache || !cache->keys) {
-        return;
+    size_t new_mask = new_capacity - 1;
+    for (size_t i = 0; i < cache->capacity; ++i) {
+        if (cache->keys[i] == 0) continue;
+        mtpndd_t key = cache->keys[i];
+        mtpndd_bdd_t val = cache->values[i];
+        size_t idx = mtpndd_hash_u64(key) & new_mask;
+        while (new_keys[idx] != 0) idx = (idx + 1) & new_mask;
+        new_keys[idx] = key;
+        new_values[idx] = val;
     }
     free(cache->keys);
     free(cache->values);
-    cache->keys = NULL;
-    cache->values = NULL;
-    cache->capacity = 0;
-    cache->count = 0;
-}
-
-static bool mtbdd_to_mtpndd_cache_lookup(mtbdd_to_mtpndd_cache_t *cache, mtpndd_bdd_t key, mtpndd_t **value) {
-    if (!cache->keys || cache->count == 0) {
-        return false;
-    }
-    size_t mask = cache->capacity - 1;
-    size_t idx = mtpndd_hash_u64(key) & mask;
-    while (cache->keys[idx]) {
-        if (cache->keys[idx] == key) {
-            *value = cache->values[idx];
-            return true;
-        }
-        idx = (idx + 1) & mask;
-    }
-    return false;
-}
-
-static mtpndd_error_t mtbdd_to_mtpndd_cache_insert(mtbdd_to_mtpndd_cache_t *cache, mtpndd_bdd_t key, mtpndd_t *value);
-
-static mtpndd_error_t mtbdd_to_mtpndd_cache_rehash(mtbdd_to_mtpndd_cache_t *cache) {
-    size_t new_capacity = cache->capacity << 1;
-    mtpndd_bdd_t *new_keys = (mtpndd_bdd_t *)calloc(new_capacity, sizeof(mtpndd_bdd_t));
-    mtpndd_t **new_values = (mtpndd_t **)calloc(new_capacity, sizeof(mtpndd_t *));
-    if (!new_keys || !new_values) {
-        free(new_keys);
-        free(new_values);
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    size_t old_capacity = cache->capacity;
-    mtpndd_bdd_t *old_keys = cache->keys;
-    mtpndd_t **old_values = cache->values;
     cache->keys = new_keys;
     cache->values = new_values;
     cache->capacity = new_capacity;
-    cache->count = 0;
-    for (size_t i = 0; i < old_capacity; ++i) {
-        if (old_keys[i]) {
-            mtbdd_to_mtpndd_cache_insert(cache, old_keys[i], old_values[i]);
-        }
-    }
-    free(old_keys);
-    free(old_values);
-    return MTPNDD_SUCCESS;
+    return true;
 }
 
-static mtpndd_error_t mtbdd_to_mtpndd_cache_insert(mtbdd_to_mtpndd_cache_t *cache, mtpndd_bdd_t key, mtpndd_t *value) {
-    if ((cache->count + 1) * 4 >= cache->capacity * 3) {
-        mtpndd_error_t err = mtbdd_to_mtpndd_cache_rehash(cache);
-        if (err != MTPNDD_SUCCESS) {
-            return err;
+static bool mtpndd_to_mtbdd_cache_insert(mtpndd_to_mtbdd_cache_t *cache, mtpndd_t key, mtpndd_bdd_t value) {
+    if ((cache->count + 1) * 10 >= cache->capacity * 7) {
+        if (!mtpndd_to_mtbdd_cache_rehash(cache)) {
+            return false;
         }
     }
     size_t mask = cache->capacity - 1;
     size_t idx = mtpndd_hash_u64(key) & mask;
-    while (cache->keys[idx]) {
+    while (cache->keys[idx] != 0) {
         idx = (idx + 1) & mask;
     }
     cache->keys[idx] = key;
-    cache->values[idx] = value;
+    cache->values[idx] = sylvan_ref(value);
     cache->count++;
-    return MTPNDD_SUCCESS;
+    return true;
 }
 
-static mtpndd_field_info_t *mtpndd_find_field_by_var(uint32_t var) {
-    for (uint32_t i = 1; i <= g_mtpndd_config.field_count; ++i) {
-        mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
-        if (!field) {
-            continue;
-        }
-        uint32_t start = field->start_var;
-        uint32_t end = start + field->bit_width;
-        if (var >= start && var < end) {
-            return field;
-        }
-    }
-    return NULL;
-}
-
-static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t *node, mtpndd_to_mtbdd_cache_t *cache, mtpndd_bdd_t *result) {
+static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t node, mtpndd_to_mtbdd_cache_t *cache, mtpndd_bdd_t *result) {
     if (mtpndd_is_true(node)) {
-        *result = sylvan_true;
+        *result = sylvan_ref(sylvan_true);
         return MTPNDD_SUCCESS;
     }
     if (mtpndd_is_false(node)) {
-        *result = sylvan_false;
+        *result = sylvan_ref(sylvan_false);
         return MTPNDD_SUCCESS;
     }
 
@@ -1054,60 +611,40 @@ static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t *node, mtpndd_to_mtbdd_cache_
         return MTPNDD_SUCCESS;
     }
 
+    const mtpndd_node_record_t n = mtpndd_node_read(node);
     mtpndd_bdd_t acc = sylvan_ref(sylvan_false);
-    mtpndd_error_t status = MTPNDD_SUCCESS;
-    size_t bucket_cnt = (node->edges && node->edges->buckets) ? g_mtpndd_pal_config.edge_bucket_count : 0;
-    for (size_t bucket = 0; bucket < bucket_cnt; ++bucket) {
-        edge_bucket_entry_t *head = node->edges->buckets[bucket];
-        if (!head) {
-            continue;
-        }
-        edge_bucket_entry_t *entry = head;
-        while (entry) {
-            if (entry->child) {
-                mtpndd_bdd_t label = mtpndd_edge_label_load(entry);
-                if (label != sylvan_false) {
-                    mtpndd_bdd_t child_bdd = sylvan_false;
-                    status = mtpndd_to_mtbdd_rec(entry->child, cache, &child_bdd);
-                    if (status != MTPNDD_SUCCESS) {
-                        break;
-                    }
-                    mtpndd_bdd_t conjunct = sylvan_ref(sylvan_and(label, child_bdd));
-                    if (conjunct != sylvan_false) {
-                        mtpndd_bdd_t combined = sylvan_ref(sylvan_or(acc, conjunct));
-                        sylvan_deref(acc);
-                        sylvan_deref(conjunct);
-                        acc = combined;
-                    } else {
-                        sylvan_deref(conjunct);
-                    }
-                }
-            }
-            entry = entry->next;
-        }
+    for (uint32_t i = 0; i < n.edge_num; ++i) {
+        const mtpndd_edge_record_t e = mtpndd_node_edge(n, i);
+        if (e.label == sylvan_false) continue;
+
+        mtpndd_bdd_t child_bdd = sylvan_false;
+        mtpndd_error_t status = mtpndd_to_mtbdd_rec(e.child, cache, &child_bdd);
         if (status != MTPNDD_SUCCESS) {
-            break;
+            sylvan_deref(acc);
+            return status;
+        }
+        mtpndd_bdd_t conjunct = sylvan_ref(sylvan_and(e.label, child_bdd));
+        sylvan_deref(child_bdd);
+        if (conjunct != sylvan_false) {
+            mtpndd_bdd_t combined = sylvan_ref(sylvan_or(acc, conjunct));
+            sylvan_deref(acc);
+            sylvan_deref(conjunct);
+            acc = combined;
+        } else {
+            sylvan_deref(conjunct);
         }
     }
 
-    if (status != MTPNDD_SUCCESS) {
+    if (!mtpndd_to_mtbdd_cache_insert(cache, node, acc)) {
         sylvan_deref(acc);
-        return status;
+        return mtpndd_get_last_error().code;
     }
-
-    mtpndd_error_t err = mtpndd_to_mtbdd_cache_insert(cache, node, acc);
-    if (err != MTPNDD_SUCCESS) {
-        sylvan_deref(acc);
-        return err;
-    }
-
     *result = acc;
     return MTPNDD_SUCCESS;
 }
 
-mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result) {
+mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t node, mtpndd_bdd_t *result) {
     MTPNDD_CHECK_INIT();
-    MTPNDD_CHECK_NULL(node, MTPNDD_ERROR_NULL_POINTER);
     MTPNDD_CHECK_NULL(result, MTPNDD_ERROR_NULL_POINTER);
 
     mtpndd_to_mtbdd_cache_t cache;
@@ -1123,13 +660,10 @@ mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result) {
         return status;
     }
 #ifdef ENABLE_RECORDING
-    if (status == MTPNDD_SUCCESS) {
-        uint64_t nodecount = sylvan_nodecount(tmp);
-        __atomic_store_n(&g_mtpndd_stats.bdd_nodes_converted, nodecount, __ATOMIC_RELAXED);
-        MTPNDD_STAT_ADD(bdd_nodes_processed_total, nodecount);
-    }
+    uint64_t nodecount = sylvan_nodecount(tmp);
+    __atomic_store_n(&g_mtpndd_stats.bdd_nodes_converted, nodecount, __ATOMIC_RELAXED);
+    MTPNDD_STAT_ADD(bdd_nodes_processed_total, nodecount);
 #endif
-
     mtpndd_bdd_t final = sylvan_ref(tmp);
     mtpndd_to_mtbdd_cache_destroy(&cache);
     sylvan_deref(tmp);
@@ -1137,7 +671,113 @@ mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result) {
     return MTPNDD_SUCCESS;
 }
 
-static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cache_t *cache, mtpndd_t **result);
+typedef struct {
+    mtpndd_bdd_t *keys;
+    mtpndd_t *values;
+    size_t capacity;
+    size_t count;
+} mtbdd_to_mtpndd_cache_t;
+
+static mtpndd_error_t mtbdd_to_mtpndd_cache_init(mtbdd_to_mtpndd_cache_t *cache, size_t initial_capacity) {
+    cache->capacity = 1;
+    while (cache->capacity < initial_capacity) {
+        cache->capacity <<= 1;
+    }
+    cache->count = 0;
+    cache->keys = (mtpndd_bdd_t *)calloc(cache->capacity, sizeof(mtpndd_bdd_t));
+    cache->values = (mtpndd_t *)calloc(cache->capacity, sizeof(mtpndd_t));
+    if (!cache->keys || !cache->values) {
+        free(cache->keys);
+        free(cache->values);
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        return MTPNDD_ERROR_OUT_OF_MEMORY;
+    }
+    return MTPNDD_SUCCESS;
+}
+
+static void mtbdd_to_mtpndd_cache_destroy(mtbdd_to_mtpndd_cache_t *cache) {
+    if (!cache) return;
+    free(cache->keys);
+    free(cache->values);
+    cache->keys = NULL;
+    cache->values = NULL;
+    cache->capacity = 0;
+    cache->count = 0;
+}
+
+static bool mtbdd_to_mtpndd_cache_lookup(mtbdd_to_mtpndd_cache_t *cache, mtpndd_bdd_t key, mtpndd_t *value_out) {
+    if (!cache || !cache->keys || cache->count == 0) return false;
+    size_t mask = cache->capacity - 1;
+    size_t idx = mtpndd_hash_u64(key) & mask;
+    while (cache->keys[idx] != 0) {
+        if (cache->keys[idx] == key) {
+            *value_out = cache->values[idx];
+            return true;
+        }
+        idx = (idx + 1) & mask;
+    }
+    return false;
+}
+
+static bool mtbdd_to_mtpndd_cache_rehash(mtbdd_to_mtpndd_cache_t *cache) {
+    size_t new_capacity = cache->capacity << 1;
+    mtpndd_bdd_t *new_keys = (mtpndd_bdd_t *)calloc(new_capacity, sizeof(mtpndd_bdd_t));
+    mtpndd_t *new_values = (mtpndd_t *)calloc(new_capacity, sizeof(mtpndd_t));
+    if (!new_keys || !new_values) {
+        free(new_keys);
+        free(new_values);
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        return false;
+    }
+    size_t new_mask = new_capacity - 1;
+    for (size_t i = 0; i < cache->capacity; ++i) {
+        if (cache->keys[i] == 0) continue;
+        mtpndd_bdd_t key = cache->keys[i];
+        mtpndd_t val = cache->values[i];
+        size_t idx = mtpndd_hash_u64(key) & new_mask;
+        while (new_keys[idx] != 0) idx = (idx + 1) & new_mask;
+        new_keys[idx] = key;
+        new_values[idx] = val;
+    }
+    free(cache->keys);
+    free(cache->values);
+    cache->keys = new_keys;
+    cache->values = new_values;
+    cache->capacity = new_capacity;
+    return true;
+}
+
+static bool mtbdd_to_mtpndd_cache_insert(mtbdd_to_mtpndd_cache_t *cache, mtpndd_bdd_t key, mtpndd_t value) {
+    if ((cache->count + 1) * 10 >= cache->capacity * 7) {
+        if (!mtbdd_to_mtpndd_cache_rehash(cache)) {
+            return false;
+        }
+    }
+    size_t mask = cache->capacity - 1;
+    size_t idx = mtpndd_hash_u64(key) & mask;
+    while (cache->keys[idx] != 0) {
+        idx = (idx + 1) & mask;
+    }
+    cache->keys[idx] = key;
+    cache->values[idx] = value;
+    cache->count++;
+    return true;
+}
+
+static mtpndd_field_info_t *mtpndd_find_field_by_var(uint32_t var) {
+    for (uint32_t i = 1; i <= g_mtpndd_config.field_count; ++i) {
+        mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
+        if (!field) continue;
+        uint32_t start = field->start_var;
+        uint32_t end = start + field->bit_width;
+        if (var >= start && var < end) {
+            return field;
+        }
+    }
+    return NULL;
+}
+
+static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cache_t *cache, mtpndd_t *result);
 
 static mtpndd_error_t mtbdd_to_mtpndd_collect(
         mtpndd_bdd_t current,
@@ -1145,7 +785,7 @@ static mtpndd_error_t mtbdd_to_mtpndd_collect(
         uint32_t offset,
         mtpndd_bdd_t cube,
         mtbdd_to_mtpndd_cache_t *cache,
-        mtpndd_edge_t *edges)
+        mtpndd_edge_builder_t *builder)
 {
     if (current == sylvan_false) {
         return MTPNDD_SUCCESS;
@@ -1154,17 +794,15 @@ static mtpndd_error_t mtbdd_to_mtpndd_collect(
     uint32_t field_end = field->start_var + field->bit_width;
     if (offset >= field->bit_width || mtbdd_isleaf(current) ||
         (!mtbdd_isleaf(current) && sylvan_var(current) >= field_end)) {
-        mtpndd_t *child = NULL;
+        mtpndd_t child = MTPNDD_INVALID;
         mtpndd_error_t status = mtbdd_to_mtpndd_rec(current, cache, &child);
         if (status != MTPNDD_SUCCESS) {
             return status;
         }
-        mtpndd_bdd_t label = sylvan_ref(cube);
-        status = mtpndd_add_edge(edges, child, label);
-        if (status != MTPNDD_SUCCESS) {
-            sylvan_deref(label);
+        if (!mtpndd_edge_builder_push(builder, child, sylvan_ref(cube))) {
+            return mtpndd_get_last_error().code;
         }
-        return status;
+        return MTPNDD_SUCCESS;
     }
 
     uint32_t var = field->start_var + offset;
@@ -1181,31 +819,30 @@ static mtpndd_error_t mtbdd_to_mtpndd_collect(
         }
     }
 
-    mtpndd_error_t status;
     mtpndd_bdd_t cube_low = sylvan_ref(sylvan_and(cube, literal_neg));
-    status = mtbdd_to_mtpndd_collect(low_child, field, offset + 1, cube_low, cache, edges);
+    mtpndd_error_t status = mtbdd_to_mtpndd_collect(low_child, field, offset + 1, cube_low, cache, builder);
     sylvan_deref(cube_low);
     if (status != MTPNDD_SUCCESS) {
         return status;
     }
 
     mtpndd_bdd_t cube_high = sylvan_ref(sylvan_and(cube, literal_pos));
-    status = mtbdd_to_mtpndd_collect(high_child, field, offset + 1, cube_high, cache, edges);
+    status = mtbdd_to_mtpndd_collect(high_child, field, offset + 1, cube_high, cache, builder);
     sylvan_deref(cube_high);
     return status;
 }
 
-static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cache_t *cache, mtpndd_t **result) {
+static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cache_t *cache, mtpndd_t *result) {
     if (bdd == sylvan_false) {
-        *result = &MTPNDD_FALSE;
+        *result = MTPNDD_FALSE;
         return MTPNDD_SUCCESS;
     }
     if (bdd == sylvan_true) {
-        *result = &MTPNDD_TRUE;
+        *result = MTPNDD_TRUE;
         return MTPNDD_SUCCESS;
     }
 
-    mtpndd_t *cached;
+    mtpndd_t cached = MTPNDD_INVALID;
     if (mtbdd_to_mtpndd_cache_lookup(cache, bdd, &cached)) {
         *result = cached;
         return MTPNDD_SUCCESS;
@@ -1214,36 +851,36 @@ static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cach
     uint32_t var = sylvan_var(bdd);
     mtpndd_field_info_t *field = mtpndd_find_field_by_var(var);
     if (!field) {
-        mtpndd_set_error(MTPNDD_ERROR_INVALID_FIELD, __func__, __LINE__);
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_INVALID_FIELD);
         return MTPNDD_ERROR_INVALID_FIELD;
     }
 
-    mtpndd_edge_t *edges = mtpndd_memory_acquire_edge_map();
-    if (!edges) {
-        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
+    mtpndd_edge_builder_t builder = {0};
+    mtpndd_edge_builder_init(&builder, 16);
+    if (!builder.edges) {
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
-    mtpndd_edge_map_init(edges);
 
-    mtpndd_error_t status = mtbdd_to_mtpndd_collect(bdd, field, 0, sylvan_true, cache, edges);
+    mtpndd_error_t status = mtbdd_to_mtpndd_collect(bdd, field, 0, sylvan_true, cache, &builder);
     if (status != MTPNDD_SUCCESS) {
-        mtpndd_edge_map_free(edges);
+        mtpndd_edge_builder_destroy(&builder);
         return status;
     }
 
-    mtpndd_t *node = NULL;
-    mtpndd_mk(field->field_id, edges, &node);
-    if (!node) {
-        mtpndd_edge_map_free(edges);
+    mtpndd_t node = mtpndd_mk(field->field_id, &builder);
+    mtpndd_edge_builder_destroy(&builder);
+    if (node == MTPNDD_INVALID) {
         return mtpndd_get_last_error().code;
     }
 
-    mtbdd_to_mtpndd_cache_insert(cache, bdd, node);
+    if (!mtbdd_to_mtpndd_cache_insert(cache, bdd, node)) {
+        return mtpndd_get_last_error().code;
+    }
     *result = node;
     return MTPNDD_SUCCESS;
 }
 
-mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result) {
+mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t *result) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_NULL(result, MTPNDD_ERROR_NULL_POINTER);
 
@@ -1259,13 +896,12 @@ mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result) {
         return status;
     }
 
-    mtpndd_t *tmp = NULL;
+    mtpndd_t tmp = MTPNDD_INVALID;
     status = mtbdd_to_mtpndd_rec(bdd, &cache, &tmp);
     mtbdd_to_mtpndd_cache_destroy(&cache);
     if (status != MTPNDD_SUCCESS) {
         return status;
     }
-
     *result = tmp;
     return MTPNDD_SUCCESS;
 }
@@ -1274,9 +910,7 @@ static size_t mtpndd_total_bdd_vars(void) {
     size_t total = 0;
     for (uint32_t i = 1; i <= g_mtpndd_config.field_count; ++i) {
         mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
-        if (!field) {
-            continue;
-        }
+        if (!field) continue;
         size_t end = (size_t)field->start_var + field->bit_width;
         if (end > total) {
             total = end;
@@ -1285,20 +919,16 @@ static size_t mtpndd_total_bdd_vars(void) {
     return total;
 }
 
-double mtpndd_satcount(mtpndd_t *node) {
+double mtpndd_satcount(mtpndd_t node) {
     MTPNDD_CHECK_INIT();
-    MTPNDD_CHECK_NULL(node, MTPNDD_ERROR_NULL_POINTER);
-
     mtpndd_bdd_t bdd = sylvan_false;
     mtpndd_error_t status = mtpndd_to_mtbdd(node, &bdd);
     if (status != MTPNDD_SUCCESS) {
-        return status;
+        return 0.0;
     }
-
     size_t nvars = mtpndd_total_bdd_vars();
     double count = mtbdd_satcount(bdd, nvars);
     sylvan_deref(bdd);
-
     return count;
 }
 
@@ -1306,7 +936,7 @@ double mtpndd_satcount(mtpndd_t *node) {
  * DOT visualization utilities
  ********************************/
 typedef struct mtpndd_dot_visit_s {
-    const mtpndd_node_t *node;
+    mtpndd_t node;
     size_t id;
     struct mtpndd_dot_visit_s *next;
 } mtpndd_dot_visit_t;
@@ -1314,14 +944,11 @@ typedef struct mtpndd_dot_visit_s {
 typedef struct {
     mtpndd_dot_visit_t *visited;
     size_t next_id;
-    const mtpndd_t *root;
     bool error;
 } mtpndd_dot_ctx_t;
 
 static void mtpndd_dot_ctx_cleanup(mtpndd_dot_ctx_t *ctx) {
-    if (!ctx) {
-        return;
-    }
+    if (!ctx) return;
     mtpndd_dot_visit_t *entry = ctx->visited;
     while (entry) {
         mtpndd_dot_visit_t *next = entry->next;
@@ -1333,165 +960,75 @@ static void mtpndd_dot_ctx_cleanup(mtpndd_dot_ctx_t *ctx) {
     ctx->error = false;
 }
 
-static size_t mtpndd_dot_ctx_get_id(mtpndd_dot_ctx_t *ctx, const mtpndd_node_t *node, bool *is_new) {
-    if (!ctx || !node) {
-        if (is_new) {
-            *is_new = false;
-        }
-        return 0;
-    }
-
+static size_t mtpndd_dot_ctx_get_id(mtpndd_dot_ctx_t *ctx, mtpndd_t node, bool *is_new) {
+    if (is_new) *is_new = false;
     for (mtpndd_dot_visit_t *entry = ctx->visited; entry; entry = entry->next) {
         if (entry->node == node) {
-            if (is_new) {
-                *is_new = false;
-            }
             return entry->id;
         }
     }
-
     mtpndd_dot_visit_t *entry = (mtpndd_dot_visit_t *)malloc(sizeof(mtpndd_dot_visit_t));
     if (!entry) {
         ctx->error = true;
-        if (is_new) {
-            *is_new = false;
-        }
         return 0;
     }
-
     entry->node = node;
     entry->id = ctx->next_id++;
     entry->next = ctx->visited;
     ctx->visited = entry;
-
-    if (is_new) {
-        *is_new = true;
-    }
+    if (is_new) *is_new = true;
     return entry->id;
 }
 
-static void mtpndd_dot_format_edge_label(mtpndd_bdd_t label, char *buffer, size_t buffer_size) {
-    if (!buffer || buffer_size == 0) {
+static void mtpndd_dot_emit_node(FILE *out, mtpndd_t node, size_t id) {
+    if (mtpndd_is_true(node)) {
+        fprintf(out, "  n%zu [shape=box,label=\"TRUE\"];\n", id);
         return;
     }
-    if (label == sylvan_true) {
-        (void)snprintf(buffer, buffer_size, "TRUE");
-    } else if (label == sylvan_false) {
-        (void)snprintf(buffer, buffer_size, "FALSE");
-    } else {
-        (void)snprintf(buffer, buffer_size, "0x%" PRIx64, (uint64_t)label);
+    if (mtpndd_is_false(node)) {
+        fprintf(out, "  n%zu [shape=box,label=\"FALSE\"];\n", id);
+        return;
+    }
+    mtpndd_node_record_t rec = mtpndd_node_read(node);
+    fprintf(out, "  n%zu [label=\"f=%u idx=%" PRIu64 "\"];\n", id, rec.field_id, (uint64_t)node);
+}
+
+static void mtpndd_dot_emit_edges(FILE *out, mtpndd_dot_ctx_t *ctx, mtpndd_t node, size_t from_id) {
+    if (mtpndd_is_terminal(node)) {
+        return;
+    }
+    mtpndd_node_record_t rec = mtpndd_node_read(node);
+    for (uint32_t i = 0; i < rec.edge_num; ++i) {
+        mtpndd_edge_record_t e = mtpndd_edge_at(rec.edge_array_idx + i);
+        bool child_new = false;
+        size_t child_id = mtpndd_dot_ctx_get_id(ctx, e.child, &child_new);
+        if (ctx->error) return;
+        if (child_new) {
+            mtpndd_dot_emit_node(out, e.child, child_id);
+        }
+        fprintf(out, "  n%zu -> n%zu [label=\"%lu\"];\n",
+                from_id, child_id, (unsigned long)e.label);
+        if (child_new) {
+            mtpndd_dot_emit_edges(out, ctx, e.child, child_id);
+            if (ctx->error) return;
+        }
     }
 }
 
-static void mtpndd_dot_emit_node(FILE *out, const mtpndd_t *node, size_t node_id, bool highlight_root) {
-    if (!out || !node) {
-        return;
-    }
-
-    if (mtpndd_is_true((mtpndd_t *)node)) {
-        (void)fprintf(out,
-                "    n%zu [label=\"TRUE\", shape=box, style=\"filled\", fillcolor=\"#dff0d8\", peripheries=%d];\n",
-                node_id,
-                highlight_root ? 2 : 1);
-        return;
-    }
-
-    if (mtpndd_is_false((mtpndd_t *)node)) {
-        (void)fprintf(out,
-                "    n%zu [label=\"FALSE\", shape=box, style=\"filled\", fillcolor=\"#f2dede\", peripheries=%d];\n",
-                node_id,
-                highlight_root ? 2 : 1);
-        return;
-    }
-
-    const mtpndd_field_info_t *field = (node->field_id > 0 && node->field_id <= g_mtpndd_config.field_count)
-                                           ? g_mtpndd_config.field_info[node->field_id]
-                                           : NULL;
-    size_t edge_count = (node->edges != NULL) ? node->edges->edge_count : 0;
-    uint32_t field_id = node->field_id;
-    uint32_t bit_width = field ? field->bit_width : 0;
-
-    (void)fprintf(out,
-            "    n%zu [label=\"Field %u\\nBits %u\\nEdges %zu\", shape=ellipse, peripheries=%d];\n",
-            node_id,
-            field_id,
-            bit_width,
-            edge_count,
-            highlight_root ? 2 : 1);
-}
-
-static void mtpndd_fprint_dot_rec(FILE *out, mtpndd_t *node, mtpndd_dot_ctx_t *ctx) {
-    if (!out || !node || !ctx || ctx->error) {
-        return;
-    }
-
+void mtpndd_fprint_dot(FILE *out, mtpndd_t root) {
+    if (!out) return;
+    mtpndd_dot_ctx_t ctx = {0};
+    fprintf(out, "digraph MTPNDD {\n");
     bool is_new = false;
-    size_t node_id = mtpndd_dot_ctx_get_id(ctx, node, &is_new);
-    if (ctx->error || !is_new) {
-        return;
+    size_t root_id = mtpndd_dot_ctx_get_id(&ctx, root, &is_new);
+    if (!ctx.error) {
+        mtpndd_dot_emit_node(out, root, root_id);
+        mtpndd_dot_emit_edges(out, &ctx, root, root_id);
     }
-
-    mtpndd_dot_emit_node(out, node, node_id, node == ctx->root);
-
-    if (!node->edges || node->edges->edge_count == 0) {
-        return;
-    }
-
-    edge_bucket_entry_t *entry = NULL;
-    FOR_EACH_ENTRY_IN_ALL_BUCKETS(node->edges, entry) {
-        if (!entry || !entry->child) {
-            continue;
-        }
-        mtpndd_t *child = entry->child;
-        bool child_is_new = false;
-        size_t child_id = mtpndd_dot_ctx_get_id(ctx, child, &child_is_new);
-        if (ctx->error) {
-            return;
-        }
-
-        char label_buffer[32] = {0};
-        mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
-        mtpndd_dot_format_edge_label(label, label_buffer, sizeof(label_buffer));
-
-        (void)fprintf(out,
-                "    n%zu -> n%zu [label=\"%s\"];\n",
-                node_id,
-                child_id,
-                label_buffer);
-
-        if (child_is_new) {
-            mtpndd_fprint_dot_rec(out, child, ctx);
-        }
-    }
-}
-
-void mtpndd_fprint_dot(FILE *out, mtpndd_t *root) {
-    if (!root) {
-        return;
-    }
-    if (!out) {
-        out = stdout;
-    }
-
-    mtpndd_dot_ctx_t ctx = {
-        .visited = NULL,
-        .next_id = 0,
-        .root = root,
-        .error = false
-    };
-
-    (void)fprintf(out, "digraph MTPNDD {\n");
-    (void)fprintf(out, "    rankdir=TB;\n");
-    (void)fprintf(out, "    node [fontname=\"Helvetica\"];\n");
-    (void)fprintf(out, "    edge [fontname=\"Helvetica\"];\n");
-
-    mtpndd_fprint_dot_rec(out, root, &ctx);
-
-    (void)fprintf(out, "}\n");
-
+    fprintf(out, "}\n");
     mtpndd_dot_ctx_cleanup(&ctx);
 }
 
-void mtpndd_print_dot(mtpndd_t *root) {
+void mtpndd_print_dot(mtpndd_t root) {
     mtpndd_fprint_dot(stdout, root);
 }

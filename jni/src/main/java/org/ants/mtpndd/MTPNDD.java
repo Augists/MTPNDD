@@ -5,17 +5,19 @@ import java.util.Objects;
 /**
  * Immutable handle to an MTPNDD node exposed to Java callers.
  *
- * <p>Instances are thin wrappers around native pointers. All node-transforming operations create
- * new {@link MTPNDD} instances; original nodes remain valid after the call.</p>
+ * <p>Instances are thin wrappers around native node indices (idx-based representation).
+ * All node-transforming operations create new {@link MTPNDD} instances; original nodes remain valid
+ * after the call.</p>
  */
 public final class MTPNDD {
-    final long nativePtr;
+    static final long INVALID_HANDLE = -1L; // UINT64_MAX in native code
+    final long nodeIdx;
 
     MTPNDD(long nativePointer) {
-        if (nativePointer == 0L) {
-            throw new MTPNDDException("Native runtime returned an empty MTPNDD pointer.");
+        if (nativePointer == INVALID_HANDLE) {
+            throw new MTPNDDException("Native runtime returned an invalid MTPNDD node handle.");
         }
-        this.nativePtr = nativePointer;
+        this.nodeIdx = nativePointer;
     }
 
     /**
@@ -106,16 +108,16 @@ public final class MTPNDD {
             return false;
         }
         MTPNDD mtpndd = (MTPNDD)o;
-        return nativePtr == mtpndd.nativePtr;
+        return nodeIdx == mtpndd.nodeIdx;
     }
 
     @Override
     public int hashCode() {
-        return Long.hashCode(nativePtr);
+        return Long.hashCode(nodeIdx);
     }
 
     @Override
     public String toString() {
-        return "MTPNDD{nativePtr=0x" + Long.toHexString(nativePtr) + '}';
+        return "MTPNDD{idx=" + Long.toUnsignedString(nodeIdx) + '}';
     }
 }

@@ -2,9 +2,22 @@
 
 使用 C 语言重构 NDD，并实现并行和多终端节点需求
 
+> 分支说明
+>
+> ndd: 原始 ndd 修改 guava 依赖
+> feature/sylvan: java 改 单例模式 JSylvan 串行
+> feature/lockmap: java JSylvan parallelStream 并行（失败）
+> feature/c: hashmap 并行
+> feature/serial: hashmap 串行
+> feature/index: array 串行
+
 ## Architecture
 
-![architecture](docs/mtpndd_architecture_en.png)
+![architecture](docs/mtpndd_architecture.png)
+
+## Core Memory Design（feature/index）
+
+![memory-design](docs/mtpndd_memory_design_zh.png)
 
 ## Build and Run
 
@@ -41,34 +54,34 @@ mvn -Dorg.ants.mtpndd.library.path="$PWD/build/libmtpnddjni.so" test
 java -Dorg.ants.mtpndd.library.path=$PWD/build/libmtpnddjni.so -cp target/mtpndd-java-0.1.0-SNAPSHOT.jar:target/test-classes org.ants.mtpndd.NQueensMTPNDD 8 onehot
 ```
 
-### Configuration
+### Configuration（feature/index：idx-based）
 
-可通过 `mtpndd_pal_config_t` 提供的可选字段调整内部哈希表的桶数量：
+`feature/index` 分支中，MTPNDD 节点改为 `idx` 表示（`mtpndd_t = uint64_t`），边集改为连续数组（`edge_array_pool`），不再使用“节点边集 hashmap / slab memory pool”结构。配置项更偏向于：初始容量（hint）+ 缓存大小。
 
 ```c
 mtpndd_pal_config_t config = {
     .n_workers = 0,
     .lace_dqsize = 1 << 18,
+
+    // Sylvan (BDD/MTBDD) sizes
     .bdd_nodetable_size = 1 << 16,
-    .mtpndd_nodetable_size = 1 << 14,
     .op_cache_size = 1 << 12,
-    .edge_bucket_count = 8,            // 必须 <= 64（单个 64-bit bitset），默认为 8
-    .nodetable_bucket_count = 1 << 12, // 默认为 1024 或 65537 (LARGE_NODETABLE)
-    .node_slab_capacity = 1024,        // 节点/edge/nodetable/edge-map 含义接近，统一容量，便于调优
-    .edge_entry_slab_capacity = 1024,
-    .nodetable_entry_slab_capacity = 1024,
-    .edge_map_slab_capacity = 1024,
-    .gc_bucket_count = 64,        // 默认为 1024 或 65537
-    .gc_protect_entry_slab_capacity = 256 // 默认 256，可按需要增减
+
+    // MTPNDD (idx nodetable) sizing hints
+    .mtpndd_nodetable_size = 1 << 14,     // nodetable.data[] 初始容量（节点记录数）
+    .nodetable_bucket_count = 1 << 12,    // nodetable.hash[] 初始容量（开放寻址）
+    .edge_entry_slab_capacity = 1 << 14,  // edge_array_pool 初始容量 hint（单位：edge_record 个数）
+
+    // gcProtect（临时根集合）容量；GC 触发/compaction 的阈值可用 quick_growth_threshold 控制
+    .gc_bucket_count = 1 << 12,
+    .quick_growth_threshold = 0.10,
 };
 mtpndd_init(&config);
 ```
 
-未配置时会自动使用默认值，适合小规模问题。对于节点/边数量巨大的场景，可以按需增大桶数量或调节 slab 大小以降低哈希冲突和频繁分配的开销。
-
-`gc_protect_entry_slab_capacity` 可较小（例如 256/384/512/640），因为其占用和热点访问都远少于核心池。
-
-节点、边映射以及节点表 entry 均通过 slab 内存池管理，在初始化阶段会按上述容量参数批量预留对象并在回收时复用，避免频繁的 `malloc/free` 带来的锁竞争开销。
+补充：
+- `mtpndd_gc_collect()` 会清理算子缓存并回收 `ref_count==0` 的节点；当 `edge_array_pool` 碎片比例高时，会在 GC 中进行 compact（整块重建以释放碎片，思路类似 Sylvan 的 stop-the-world GC）。
+- `edge_bucket_count/node_slab_capacity/nodetable_entry_slab_capacity/edge_map_slab_capacity/gc_protect_entry_slab_capacity` 等字段在 `feature/index` 中属于历史遗留/暂未使用（后续会逐步清理或重新命名）。
 
 ## Visualization
 
