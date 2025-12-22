@@ -32,10 +32,10 @@ digraph MTPNDD_Architecture_ZH {
 
     common [label="mtpndd_common.{c,h}\n- init/quit\n- config/stats/error\n- field_info + 预构建变量\n- gcProtect（根集合）"];
     nodeops [label="mtpndd_node.{c,h}\n- AND/OR/NOT/EXIST/DIFF\n- satcount\n- dot + 转换"];
-    nodetable [label="mtpndd_nodetable.{c,h}\n唯一表 mk\n- hash[]：开放寻址\n- data[]：节点记录"];
+    nodetable [label="mtpndd_nodetable.{c,h}\n唯一表 mk\n- hash[]：开放寻址\n  slot=[hash:24|idx:40]\n  cacheline probing（类 Sylvan）\n- data[]：节点记录\n  idx 稳定 + free-list 复用"];
     opcache [label="mtpndd_operation_cache.{c,h}\n- and/or/not 缓存\n(key: 操作数 idx)\n(val: 结果 idx)"];
     builder [label="mtpndd_edge_builder.{c,h}\n临时边集构建器\n- push\n- sort + merge\n(child 相同 => label OR 合并)"];
-    edgepool [label="mtpndd_edge_array_pool.{c,h}\n连续边存储（append-only）\nedge_record = { child_idx, label_bdd }\n节点指向 slice：edge_array_idx + edge_num"];
+    edgepool [label="mtpndd_edge_array_pool.{c,h}\n连续边存储（append-only）\nedge_record = { child_idx, label_bdd }\n节点指向 slice：edge_array_idx + edge_num\nGC 可能会 compact 以降低碎片"];
   }
 
   subgraph cluster_sylvan {
@@ -56,6 +56,8 @@ digraph MTPNDD_Architecture_ZH {
   common -> sylvan [label="sylvan_init + ithvar/not"];
   common -> nodetable [label="初始化 nodetable"];
   common -> opcache [label="初始化 cache"];
+  common -> opcache [style="dashed", label="GC：清理 cache"];
+  common -> nodetable [style="dashed", label="GC：回收 + rebuild hash\n（可能 compact edge_pool）"];
 
   nodeops -> opcache   [label="lookup/store"];
   nodeops -> builder   [label="构建边集"];
@@ -69,7 +71,6 @@ digraph MTPNDD_Architecture_ZH {
   sylvan -> lace [style="dashed", label="并行仅发生在\nBDD 运算内部"];
 
   legend [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
-          label="说明：\n- 本分支 MTPNDD 自身串行\n- 节点/边统一用 idx 表示，减少指针间接访问\n- 边集通过 sort+merge 固定顺序，用于 mk 唯一化"];
+          label="说明：\n- 本分支 MTPNDD 自身串行\n- nodetable slot=packed(u64)=[hash:24|idx:40] + cacheline probing（类 Sylvan）\n- 节点/边统一用 idx 表示，减少指针间接访问\n- 边集通过 sort+merge 固定顺序，用于 mk 唯一化"];
   api -> legend [style="invis"];
 }
-

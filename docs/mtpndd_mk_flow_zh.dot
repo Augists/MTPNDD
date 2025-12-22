@@ -1,0 +1,93 @@
+// MTPNDD mk() / 唯一化流程（feature/index, idx-based, serial）
+// 生成：dot -Tpng docs/mtpndd_mk_flow_zh.dot -o docs/mtpndd_mk_flow_zh.png
+digraph MTPNDD_MK_Flow_ZH {
+  rankdir=TB;
+  compound=true;
+  splines=true;
+  nodesep=0.35;
+  ranksep=0.5;
+
+  graph [fontname="Helvetica", fontsize=10, labelloc="t", labeljust="l",
+         label="mtpndd_mk 唯一化流程（hash slot=[hash:24|idx:40] + cacheline probing）"];
+  node  [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444"];
+  edge  [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  in  [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+       label="输入：field_id + edge_builder（未规范化的边集）\n边记录：{ child_idx(mtpndd_t), label_bdd(mtpndd_bdd_t) }"];
+
+  subgraph cluster_builder {
+    label="1) 规范化边集（mtpndd_edge_builder_finalize）";
+    color="#9e9ac8";
+    style="rounded";
+
+    push   [label="push 边（转移 label 引用）\n- child==FALSE 或 label==sylvan_false：丢弃并 deref(label)"];
+    sortm  [label="finalize：sort by child_idx\nmerge duplicates：OR(labels)\n- 结果边集顺序固定\n- child 相同只保留 1 条边"];
+    dropf  [label="merge 过程中：若合并后 label==false\n或 child==FALSE => 丢弃并 deref(label)"];
+  }
+
+  subgraph cluster_fastpath {
+    label="2) mk 快速化简（避免无意义节点）";
+    color="#6baed6";
+    style="rounded";
+
+    d0 [shape=diamond, label="edge_num == 0 ?"];
+    ret_false [label="返回 FALSE（idx=0）"];
+    d1 [shape=diamond, label="edge_num==1 且 label==TRUE ?"];
+    ret_child [label="返回 child_idx\n并 deref(label)"];
+  }
+
+  subgraph cluster_hash {
+    label="3) 结构哈希 + 唯一表查找（nodetable.hash[]）";
+    color="#74c476";
+    style="rounded";
+
+    h1 [label="计算结构哈希：hash = mix(fnv(field_id, edges))\nhash_bits = hash & MASK_HASH（高 24 位）"];
+    h2 [label="probe 初始化：\nslot = hash & hash_mask\nstep = (((hash>>20)|1) * CL_SLOTS)\n阈值：hash_probe_threshold（cache line 数）"];
+    dslot [shape=diamond, label="slot 为空？"];
+    empty [label="找到插入位置（candidate slot）"];
+    dhash [shape=diamond, label="slot_hash == hash_bits ?"];
+    cmp  [label="读取 idx -> data[idx]\n比较：field_id/edge_num + edge slice\n- 不同：继续 probe\n- 相同：复用节点"];
+    reuse [label="复用：deref(builder.labels)\n返回 existing_idx"];
+    next  [label="probe 下一 slot（同 CL 先扫完）：\nidx=(idx & CL_MASK)|((idx+1)&CL_MASK_R)\n若回到 last：hash += step 进入下个 CL"];
+    dth  [shape=diamond, label="超过阈值？"];
+    grow [label="尝试 rehash 扩容（倍增到 max）\n否则触发一次 GC\n然后 restart probe"];
+  }
+
+  subgraph cluster_insert {
+    label="4) 插入新节点（data[] + edge_pool + 写 slot）";
+    color="#fdae6b";
+    style="rounded";
+
+    alloc_idx [label="分配 idx：\n- 优先从 free_list 取\n- 否则扩容 data[]（倍增到 max）"];
+    alloc_edges [label="edge_pool.alloc(edge_num)\n复制规范化后的边集到连续 slice"];
+    ref_child [label="对每条边：mtpndd_ref(child)\n（父节点持有对子节点的引用）"];
+    write_rec [label="写 node_record：{field_id, ref_count=0,\nedge_array_idx, edge_num}"];
+    write_slot [label="写 hash slot：slot=(hash & MASK_HASH)|(idx & MASK_INDEX)\ncount++，返回 idx"];
+  }
+
+  in -> push -> sortm -> dropf -> d0;
+
+  d0 -> ret_false [label="是"];
+  d0 -> d1 [label="否"];
+  d1 -> ret_child [label="是"];
+  d1 -> h1 [label="否"];
+
+  h1 -> h2 -> dslot;
+  dslot -> empty [label="是"];
+  dslot -> dhash [label="否"];
+  dhash -> next [label="否"];
+  dhash -> cmp  [label="是"];
+  cmp -> reuse  [label="相同"];
+  cmp -> next   [label="不同"];
+  next -> dth;
+  dth -> grow [label="是"];
+  dth -> dslot [label="否"];
+  grow -> h2 [label="restart"];
+
+  empty -> alloc_idx -> alloc_edges -> ref_child -> write_rec -> write_slot;
+
+  note [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+        label="说明：\n- 本分支 MTPNDD 自身串行：hash/data/edge_pool 都无需锁\n- hash_bits 命中后才读取 data[idx]/edge slice，可减少 cache miss\n- 规范化边集（sort+merge）保证 mk 去重正确"];
+  write_slot -> note [style="dashed"];
+}
+

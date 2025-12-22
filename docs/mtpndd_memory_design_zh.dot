@@ -23,7 +23,7 @@ digraph MTPNDD_Memory_Design_ZH {
       label="标识与约定：\n- mtpndd_t = uint64_t（节点 idx）\n- 0=FALSE, 1=TRUE, >=2 为普通节点\n- mtpndd_bdd_t = uint64_t（Sylvan BDD 节点号）"];
 
     gcfg [label="{g_mtpndd_config (mtpndd_config_t)|<finfo> field_info: mtpndd_field_info_t**\n(指针数组)|<andc> and_cache: mtpndd_op_cache_t*|<orc> or_cache: mtpndd_op_cache_t*|<notc> not_cache: mtpndd_op_cache_t*|<gcp> gcProtect: mtpndd_gc_protect_t*}"];
-    pal [label="{g_mtpndd_pal_config|mtpndd_nodetable_size: data[] 初始容量 hint|nodetable_bucket_count: hash[] 初始容量 hint|edge_entry_slab_capacity: edge_pool 初始容量 hint|op_cache_size: cache 容量|gc_bucket_count: gcProtect 容量|quick_growth_threshold: GC/compact 阈值}"];
+    pal [label="{g_mtpndd_pal_config|mtpndd_nodetable_size: data[] min/init|mtpndd_nodetable_max_size: data[] max|nodetable_bucket_count: hash[] min/init|nodetable_bucket_max_count: hash[] max|edge_entry_slab_capacity: edge_pool 初始容量 hint|op_cache_size: cache 容量|gc_bucket_count: gcProtect 容量|quick_growth_threshold: GC/compact 阈值}"];
     stats [label="{g_mtpndd_stats|node_count|recording_enabled|...（计数器/耗时等）}"];
   }
 
@@ -33,10 +33,13 @@ digraph MTPNDD_Memory_Design_ZH {
     color="#74c476";
     style="rounded";
 
-    nodetable [label="{mtpndd_nodetable_t|<hash> hash: uint64_t*（开放寻址）\nslot = [fingerprint:u32 | idx:u32]\nidx=0 表示 empty（不存 0/1 终端）|hash_capacity/mask/count|<data> data: mtpndd_node_record_t*\nidx 直接索引（64B 对齐）|data_capacity/data_size|<free> free_list_head: uint32_t\n(复用节点 idx)|<edgepool> edge_pool: mtpndd_edge_array_pool_t}"];
+    nodetable [label="{mtpndd_nodetable_t|<hash> hash: uint64_t*（开放寻址）\nslot = [hash:24 | idx:40]\nidx=0 表示 empty（不存 0/1 终端）|hash_capacity/mask/count\nhash_capacity_max\nhash_probe_threshold（按 cache line 计）|<data> data: mtpndd_node_record_t*\nidx 直接索引（64B 对齐）|data_capacity/data_size\ndata_capacity_max|<free> free_list_head: mtpndd_t\n(复用节点 idx)|<edgepool> edge_pool: mtpndd_edge_array_pool_t}"];
 
     hash_arr [shape=box, style="rounded,filled", fillcolor="#e8f5e9", color="#2e7d32",
-      label="hash[]（open addressing）\nslot -> packed(u64)\n  - fingerprint(u32)：结构哈希的高位\n  - idx(u32)：node idx（>=2）\n目的：mk 唯一化/查找\nfingerprint 不同 => 跳过边集比较\n扩容：只重建 hash[]，不移动 data[]"];
+      label="hash[]（open addressing）\nslot -> packed(u64)\n  - hash(24-bit)：结构哈希的高 24 位（Sylvan-style）\n  - idx(40-bit)：node idx（>=2）\n目的：mk 唯一化/查找\nhash 不同 => 跳过边集比较\nprobe：先扫当前 cache line 的所有 slot\n再按 step 跳到下一个 cache line（Sylvan-style）\n阈值：hash_probe_threshold（cache line 数）\n扩容：只重建 hash[]，不移动 data[]"];
+
+    probe_note [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
+      label="slot bit layout（对齐 Sylvan）：\n- MASK_INDEX = 0x000000ffffffffff（40-bit idx）\n- MASK_HASH  = 0xffffff0000000000（24-bit hash）\n- slot = (hash & MASK_HASH) | (idx & MASK_INDEX)\n\nprobe（cache line 优先）：\n- next in same CL: idx=(idx & CL_MASK)|((idx+1)&CL_MASK_R)\n- jump to next CL: hash_rehash += step\n  step = (((hash_rehash>>20)|1) * CL_SLOTS)\n\ncollision 处理：\n- 先比 slot_hash；不同直接跳过\n- 相同再比 data[idx] 的 field_id/edge_num + edge slice"];
 
     data_arr [shape=box, style="rounded,filled", fillcolor="#e8f5e9", color="#2e7d32",
       label="data[]（节点记录数组，idx 稳定）\n- data[0] / data[1] 为终端\n- data[idx] = 节点结构体（16B）\n- 64B cache line ≈ 4 个节点记录"];
@@ -44,7 +47,7 @@ digraph MTPNDD_Memory_Design_ZH {
     node_rec [label="{mtpndd_node_record_t (16B)|field_id: u32|ref_count: u32\n0=可回收, UINT32_MAX=保护|edge_array_idx: u32\n(边切片起点)|edge_num: u32\n(边数)}"];
 
     freelist [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
-      label="free-list（复用 idx）：\n- free_list_head 指向一个可复用 idx\n- 回收节点时：node.edge_array_idx 复用为 next 指针\n- mk 优先从 free-list 取 idx，避免无限增长"];
+      label="free-list（复用 idx）：\n- free_list_head 指向一个可复用 idx\n- 回收节点时：用 node.ref_count/edge_array_idx 暂存 next（不扩大 record）\n- mk 优先从 free-list 取 idx，避免无限增长"];
 
     edgepool [label="{mtpndd_edge_array_pool_t|<edata> data: mtpndd_edge_record_t*|capacity/size\n(append-only + realloc-zextend)\nGC 可 compact：重建新数组并 free 旧数组}"];
 
@@ -118,6 +121,7 @@ digraph MTPNDD_Memory_Design_ZH {
 
   // nodetable wiring
   nodetable:hash -> hash_arr [label="ptr"];
+  hash_arr -> probe_note [style="dashed", label="bit/probe"];
   nodetable:data -> data_arr [label="ptr"];
   data_arr -> node_rec [style="dashed", label="data[idx]"];
   nodetable:free -> freelist [style="dashed", label="head"];

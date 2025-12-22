@@ -4,11 +4,18 @@
 
 > 分支说明
 >
+>
+>
 > ndd: 原始 ndd 修改 guava 依赖
+>
 > feature/sylvan: java 改 单例模式 JSylvan 串行
+>
 > feature/lockmap: java JSylvan parallelStream 并行（失败）
+>
 > feature/c: hashmap 并行
+>
 > feature/serial: hashmap 串行
+>
 > feature/index: array 串行
 
 ## Architecture
@@ -68,9 +75,11 @@ mtpndd_pal_config_t config = {
     .op_cache_size = 1 << 12,
 
     // MTPNDD (idx nodetable) sizing hints
-    .mtpndd_nodetable_size = 1 << 14,     // nodetable.data[] 初始容量（节点记录数）
-    .nodetable_bucket_count = 1 << 12,    // nodetable.hash[] 初始容量（开放寻址）
-    .edge_entry_slab_capacity = 1 << 14,  // edge_array_pool 初始容量 hint（单位：edge_record 个数）
+    .mtpndd_nodetable_size = 1 << 14,         // nodetable.data[] 初始/最小容量（节点记录数）
+    .mtpndd_nodetable_max_size = 1 << 20,     // nodetable.data[] 最大容量（增长可倍增到该上限；0/未填 => 等于 min）
+    .nodetable_bucket_count = 1 << 12,        // nodetable.hash[] 初始/最小容量（开放寻址）
+    .nodetable_bucket_max_count = 1 << 20,    // nodetable.hash[] 最大容量（增长可倍增到该上限；0/未填 => 等于 min）
+    .edge_entry_slab_capacity = 1 << 14,      // edge_array_pool 初始容量 hint（单位：edge_record 个数）
 
     // gcProtect（临时根集合）容量；GC 触发/compaction 的阈值可用 quick_growth_threshold 控制
     .gc_bucket_count = 1 << 12,
@@ -81,9 +90,15 @@ mtpndd_init(&config);
 
 补充：
 - `mtpndd_gc_collect()` 会清理算子缓存并回收 `ref_count==0` 的节点；当 `edge_array_pool` 碎片比例高时，会在 GC 中进行 compact（整块重建以释放碎片，思路类似 Sylvan 的 stop-the-world GC）。
+- nodetable 的 `hash[]` slot 采用 Sylvan-style packed：`[hash:24 | idx:40]`（hash 不同可直接跳过边集比较）。
 - `edge_bucket_count/node_slab_capacity/nodetable_entry_slab_capacity/edge_map_slab_capacity/gc_protect_entry_slab_capacity` 等字段在 `feature/index` 中属于历史遗留/暂未使用（后续会逐步清理或重新命名）。
 
 ## Visualization
+
+设计/内存图（见 `docs/`，可用 `dot -Tpng *.dot -o *.png` 重新生成）：
+- `docs/mtpndd_architecture_zh.png`（模块架构）
+- `docs/mtpndd_memory_design_zh.png`（核心内存布局）
+- `docs/mtpndd_mk_flow_zh.png`（`mtpndd_mk` 唯一化流程）
 
 调用 `mtpndd_print_dot(root)` 或 `mtpndd_fprint_dot(file, root)` 可以把当前节点为根的 NDD 导出为 DOT 描述。例如：
 

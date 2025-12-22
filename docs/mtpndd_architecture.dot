@@ -32,10 +32,10 @@ digraph MTPNDD_Architecture {
 
     common [label="mtpndd_common.{c,h}\n- init/quit\n- config/stats/error\n- field_info + prebuilt vars\n- gcProtect (roots)"];
     nodeops [label="mtpndd_node.{c,h}\n- AND/OR/NOT/EXIST/DIFF\n- satcount\n- dot + conversions"];
-    nodetable [label="mtpndd_nodetable.{c,h}\nUnique table (mk)\n- hash[]: open addressing\n- data[]: node records"];
+    nodetable [label="mtpndd_nodetable.{c,h}\nUnique table (mk)\n- hash[]: open addressing\n  slot=[hash:24|idx:40]\n  cacheline probing\n- data[]: node records\n  idx-stable + free-list reuse"];
     opcache [label="mtpndd_operation_cache.{c,h}\n- and/or/not caches\n(key: operand idx)\n(val: result idx)"];
     builder [label="mtpndd_edge_builder.{c,h}\nTemp edge builder\n- push\n- sort + merge\n(child duplicates => OR labels)"];
-    edgepool [label="mtpndd_edge_array_pool.{c,h}\nAppend-only edge storage\nedge_record = { child_idx, label_bdd }\n(node points to slice: edge_array_idx + edge_num)"];
+    edgepool [label="mtpndd_edge_array_pool.{c,h}\nAppend-only edge storage\nedge_record = { child_idx, label_bdd }\n(node points to slice: edge_array_idx + edge_num)\nGC may compact to reduce fragmentation"];
   }
 
   subgraph cluster_sylvan {
@@ -57,6 +57,8 @@ digraph MTPNDD_Architecture {
   common -> sylvan [label="sylvan_init + ithvar/not"];
   common -> nodetable [label="nodetable init"];
   common -> opcache [label="cache init"];
+  common -> opcache [style="dashed", label="GC: clear cache"];
+  common -> nodetable [style="dashed", label="GC: reclaim + rebuild hash\n(+ compact edge_pool)"];
 
   nodeops -> opcache   [label="lookup / store"];
   nodeops -> builder   [label="build edges"];
@@ -71,6 +73,6 @@ digraph MTPNDD_Architecture {
 
   // legend
   legend [shape=note, style="filled", fillcolor="#f7f7f7", color="#bdbdbd",
-          label="Notes:\n- MTPNDD itself is serial on this branch\n- Node/edge identity is stable via idx (no pointer-based nodes)\n- Edge order is canonicalized via sort+merge to support mk uniqueness"];
+          label="Notes:\n- MTPNDD itself is serial on this branch\n- Nodetable slot packed(u64) = [hash:24 | idx:40] + cacheline probing (Sylvan-style)\n- Node/edge identity is stable via idx (no pointer-based nodes)\n- Edge order is canonicalized via sort+merge to support mk uniqueness"];
   api -> legend [style="invis"];
 }

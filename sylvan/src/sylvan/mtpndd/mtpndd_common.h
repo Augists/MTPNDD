@@ -111,11 +111,18 @@ typedef struct mtpndd_pal_config_s {
     int32_t n_workers;
     size_t lace_dqsize;
     size_t bdd_nodetable_size;
+    // MTPNDD nodetable sizing (counts, not bytes)
+    // - mtpndd_nodetable_size: initial/min node record capacity (data[])
+    // - mtpndd_nodetable_max_size: maximum node record capacity (data[]), growth may double up to this limit
     size_t mtpndd_nodetable_size;
+    size_t mtpndd_nodetable_max_size;
     size_t op_cache_size;
     double quick_growth_threshold;
     size_t edge_bucket_count;
+    // nodetable_bucket_count: initial/min hash slot capacity (hash[])
+    // nodetable_bucket_max_count: maximum hash slot capacity (hash[])
     size_t nodetable_bucket_count;
+    size_t nodetable_bucket_max_count;
     size_t gc_bucket_count;
     size_t node_slab_capacity;
     size_t edge_entry_slab_capacity;

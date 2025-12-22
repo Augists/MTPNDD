@@ -597,11 +597,22 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INITIALIZE_FAILED);
     }
 
-    // nodetable + edge pool
-    size_t node_cap_hint = g_mtpndd_pal_config.mtpndd_nodetable_size ? g_mtpndd_pal_config.mtpndd_nodetable_size : (1 << 14);
-    size_t hash_cap_hint = g_mtpndd_pal_config.nodetable_bucket_count ? g_mtpndd_pal_config.nodetable_bucket_count : (node_cap_hint * 2);
+    // nodetable + edge pool (min/max sizing similar to Sylvan: growth may double up to max)
+    size_t node_cap_min = g_mtpndd_pal_config.mtpndd_nodetable_size ? g_mtpndd_pal_config.mtpndd_nodetable_size : (1 << 14);
+    size_t node_cap_max = g_mtpndd_pal_config.mtpndd_nodetable_max_size ? g_mtpndd_pal_config.mtpndd_nodetable_max_size : node_cap_min;
+    if (node_cap_max < node_cap_min) node_cap_max = node_cap_min;
+    // Nodetable hash slot uses Sylvan-style 40-bit idx packing.
+    const size_t nodetable_max_total = (size_t)MTPNDD_NODETABLE_SLOT_MASK_INDEX + 1; // includes terminals 0/1
+    if (node_cap_min + 2 > nodetable_max_total || node_cap_max + 2 > nodetable_max_total) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_CAPACITY_EXCEEDED);
+    }
+
+    size_t hash_cap_min = g_mtpndd_pal_config.nodetable_bucket_count ? g_mtpndd_pal_config.nodetable_bucket_count : (node_cap_min * 2);
+    size_t hash_cap_max = g_mtpndd_pal_config.nodetable_bucket_max_count ? g_mtpndd_pal_config.nodetable_bucket_max_count : hash_cap_min;
+    if (hash_cap_max < hash_cap_min) hash_cap_max = hash_cap_min;
+
     size_t edge_cap_hint = (size_t)g_mtpndd_pal_config.edge_entry_slab_capacity * 8;
-    mtpndd_nodetable_init(&g_mtpndd_nodetable, node_cap_hint + 2, hash_cap_hint, edge_cap_hint);
+    mtpndd_nodetable_init(&g_mtpndd_nodetable, node_cap_min + 2, node_cap_max + 2, hash_cap_min, hash_cap_max, edge_cap_hint);
     if (!g_mtpndd_nodetable.data || !g_mtpndd_nodetable.hash) {
         MTPNDD_RETURN_ERROR(mtpndd_get_last_error().code ? mtpndd_get_last_error().code : MTPNDD_ERROR_OUT_OF_MEMORY);
     }

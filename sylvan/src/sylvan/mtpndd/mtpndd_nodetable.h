@@ -22,24 +22,34 @@ typedef struct mtpndd_node_record_s {
 
 #define MTPNDD_REFCOUNT_PROTECTED UINT32_MAX
 
+// Sylvan-style packed slot layout: 40-bit index + 24-bit hash (top bits).
+// This is used for the open-addressing `hash[]` table to speed up mismatch detection.
+#define MTPNDD_NODETABLE_SLOT_MASK_INDEX ((uint64_t)0x000000ffffffffffULL) // low 40 bits
+#define MTPNDD_NODETABLE_SLOT_MASK_HASH  ((uint64_t)0xffffff0000000000ULL) // high 24 bits
+#define MTPNDD_NODETABLE_SLOT_INDEX_BITS 40u
+#define MTPNDD_NODETABLE_SLOT_HASH_BITS  24u
+
 typedef struct mtpndd_nodetable_s {
     // Open addressing hash table.
     // Each slot stores a packed 64-bit value:
-    //   [ 32-bit hash fingerprint | 32-bit node idx ]
+    //   [ 24-bit hash (top bits) | 40-bit node idx ]
     // where idx==0 means empty (we never store terminals 0/1).
-    // The fingerprint lets us skip expensive edge comparisons when hashes differ (Sylvan-style).
+    // The hash bits let us skip expensive edge comparisons when hashes differ (Sylvan-style).
     uint64_t *hash;
     size_t hash_capacity;
     size_t hash_mask;
     size_t hash_count;
+    size_t hash_capacity_max;
+    size_t hash_probe_threshold; // number of cache lines to probe before giving up (Sylvan-style)
 
     // node records indexed by idx
     mtpndd_node_record_t *data;
     size_t data_capacity;
     size_t data_size; // next idx (>=2)
+    size_t data_capacity_max;
 
     // free-list of reusable node indices (0 means empty)
-    uint32_t free_list_head;
+    mtpndd_t free_list_head;
 
     // backing storage for all edges (append-only, optional compact on GC)
     mtpndd_edge_array_pool_t edge_pool;
@@ -47,7 +57,12 @@ typedef struct mtpndd_nodetable_s {
 
 extern mtpndd_nodetable_t g_mtpndd_nodetable;
 
-void mtpndd_nodetable_init(mtpndd_nodetable_t *table, size_t node_capacity_hint, size_t hash_capacity_hint, size_t edge_capacity_hint);
+void mtpndd_nodetable_init(mtpndd_nodetable_t *table,
+                           size_t node_capacity_min,
+                           size_t node_capacity_max,
+                           size_t hash_capacity_min,
+                           size_t hash_capacity_max,
+                           size_t edge_capacity_hint);
 void mtpndd_nodetable_destroy(mtpndd_nodetable_t *table);
 
 /**
