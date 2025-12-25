@@ -110,13 +110,25 @@ void mtpndd_clear_error();
 typedef struct mtpndd_pal_config_s {
     int32_t n_workers;
     size_t lace_dqsize;
+
+    // Sylvan unique table / computed cache sizing. If `sylvan_memory_cap` is non-zero,
+    // mtpndd_init will use `sylvan_set_limits` with the provided ratio parameters.
+    // Otherwise it uses fixed sizes via `sylvan_set_sizes`.
+    size_t sylvan_memory_cap;
+    int32_t sylvan_table_ratio;
+    int32_t sylvan_initial_ratio;
+    int32_t sylvan_granularity;
+
     size_t bdd_nodetable_size;
     // MTPNDD nodetable sizing (counts, not bytes)
     // - mtpndd_nodetable_size: initial/min node record capacity (data[])
     // - mtpndd_nodetable_max_size: maximum node record capacity (data[]), growth may double up to this limit
     size_t mtpndd_nodetable_size;
     size_t mtpndd_nodetable_max_size;
+    // op_cache_size: Sylvan computed cache size when using `sylvan_set_sizes` (must be power-of-two).
+    // mtpndd_op_cache_size: MTPNDD-level operation cache size (and/or/not), independent from Sylvan.
     size_t op_cache_size;
+    size_t mtpndd_op_cache_size;
     double quick_growth_threshold;
     size_t edge_bucket_count;
     // nodetable_bucket_count: initial/min hash slot capacity (hash[])

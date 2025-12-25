@@ -22,8 +22,11 @@ static inline mtpndd_node_record_t mtpndd_node_read(mtpndd_t idx) {
     return g_mtpndd_nodetable.data[(size_t)idx];
 }
 
-static inline mtpndd_edge_record_t mtpndd_node_edge(const mtpndd_node_record_t node, uint32_t i) {
-    return mtpndd_edge_at(node.edge_array_idx + i);
+static inline mtpndd_edge_record_t mtpndd_node_edge(mtpndd_t node, uint32_t i) {
+    // NOTE: edge_pool may be compacted during GC, which updates `edge_array_idx` in-place.
+    // Avoid caching node records (and especially edge_array_idx) across recursive calls.
+    mtpndd_node_record_t rec = mtpndd_node_read(node);
+    return mtpndd_edge_at(rec.edge_array_idx + i);
 }
 
 static mtpndd_t mtpndd_and_rec(mtpndd_t a, mtpndd_t b);
@@ -73,9 +76,9 @@ static mtpndd_t mtpndd_and_rec(mtpndd_t a, mtpndd_t b) {
 
     if (na.field_id == nb.field_id) {
         for (uint32_t ia = 0; ia < na.edge_num; ++ia) {
-            const mtpndd_edge_record_t ea = mtpndd_node_edge(na, ia);
+            const mtpndd_edge_record_t ea = mtpndd_node_edge(a, ia);
             for (uint32_t ib = 0; ib < nb.edge_num; ++ib) {
-                const mtpndd_edge_record_t eb = mtpndd_node_edge(nb, ib);
+                const mtpndd_edge_record_t eb = mtpndd_node_edge(b, ib);
                 mtpndd_bdd_t label = sylvan_ref(sylvan_and(ea.label, eb.label));
                 if (label == sylvan_false) {
                     sylvan_deref(label);
@@ -105,7 +108,7 @@ static mtpndd_t mtpndd_and_rec(mtpndd_t a, mtpndd_t b) {
         }
 
         for (uint32_t i = 0; i < top_node.edge_num; ++i) {
-            const mtpndd_edge_record_t e = mtpndd_node_edge(top_node, i);
+            const mtpndd_edge_record_t e = mtpndd_node_edge(top, i);
             mtpndd_t child = mtpndd_and_rec(e.child, other);
             if (child == MTPNDD_INVALID) {
                 mtpndd_edge_builder_destroy(&builder);
@@ -215,20 +218,20 @@ static mtpndd_t mtpndd_or_rec(mtpndd_t a, mtpndd_t b) {
             return MTPNDD_INVALID;
         }
         for (uint32_t i = 0; i < na.edge_num; ++i) {
-            mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+            mtpndd_edge_record_t e = mtpndd_node_edge(a, i);
             residualA[i].child = e.child;
             residualA[i].label = sylvan_ref(e.label);
         }
         for (uint32_t i = 0; i < nb.edge_num; ++i) {
-            mtpndd_edge_record_t e = mtpndd_node_edge(nb, i);
+            mtpndd_edge_record_t e = mtpndd_node_edge(b, i);
             residualB[i].child = e.child;
             residualB[i].label = sylvan_ref(e.label);
         }
 
         for (uint32_t ia = 0; ia < na.edge_num; ++ia) {
-            const mtpndd_edge_record_t ea = mtpndd_node_edge(na, ia);
+            const mtpndd_edge_record_t ea = mtpndd_node_edge(a, ia);
             for (uint32_t ib = 0; ib < nb.edge_num; ++ib) {
-                const mtpndd_edge_record_t eb = mtpndd_node_edge(nb, ib);
+                const mtpndd_edge_record_t eb = mtpndd_node_edge(b, ib);
                 mtpndd_bdd_t intersect = sylvan_ref(sylvan_and(ea.label, eb.label));
                 if (intersect == sylvan_false) {
                     sylvan_deref(intersect);
@@ -310,7 +313,7 @@ static mtpndd_t mtpndd_or_rec(mtpndd_t a, mtpndd_t b) {
 
         mtpndd_bdd_t residual_other = sylvan_ref(sylvan_true);
         for (uint32_t i = 0; i < top_node.edge_num; ++i) {
-            const mtpndd_edge_record_t e = mtpndd_node_edge(top_node, i);
+            const mtpndd_edge_record_t e = mtpndd_node_edge(top, i);
 
             mtpndd_bdd_t not_intersect = sylvan_ref(sylvan_not(e.label));
             mtpndd_bdd_t updated = sylvan_ref(sylvan_and(residual_other, not_intersect));
@@ -374,7 +377,7 @@ static mtpndd_t mtpndd_not_rec(mtpndd_t a) {
 
     mtpndd_bdd_t residual = sylvan_ref(sylvan_true);
     for (uint32_t i = 0; i < na.edge_num; ++i) {
-        const mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+        const mtpndd_edge_record_t e = mtpndd_node_edge(a, i);
 
         mtpndd_bdd_t not_intersect = sylvan_ref(sylvan_not(e.label));
         mtpndd_bdd_t updated = sylvan_ref(sylvan_and(residual, not_intersect));
@@ -426,7 +429,7 @@ static mtpndd_t mtpndd_exist_rec(mtpndd_t a, uint32_t field) {
     if (na.field_id == field) {
         mtpndd_t acc = MTPNDD_FALSE;
         for (uint32_t i = 0; i < na.edge_num; ++i) {
-            const mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+            const mtpndd_edge_record_t e = mtpndd_node_edge(a, i);
             acc = mtpndd_or_rec(acc, e.child);
             if (acc == MTPNDD_INVALID) {
                 return MTPNDD_INVALID;
@@ -441,7 +444,7 @@ static mtpndd_t mtpndd_exist_rec(mtpndd_t a, uint32_t field) {
         return MTPNDD_INVALID;
     }
     for (uint32_t i = 0; i < na.edge_num; ++i) {
-        const mtpndd_edge_record_t e = mtpndd_node_edge(na, i);
+        const mtpndd_edge_record_t e = mtpndd_node_edge(a, i);
         mtpndd_t child = mtpndd_exist_rec(e.child, field);
         if (child == MTPNDD_INVALID) {
             mtpndd_edge_builder_destroy(&builder);
@@ -614,7 +617,7 @@ static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t node, mtpndd_to_mtbdd_cache_t
     const mtpndd_node_record_t n = mtpndd_node_read(node);
     mtpndd_bdd_t acc = sylvan_ref(sylvan_false);
     for (uint32_t i = 0; i < n.edge_num; ++i) {
-        const mtpndd_edge_record_t e = mtpndd_node_edge(n, i);
+        const mtpndd_edge_record_t e = mtpndd_node_edge(node, i);
         if (e.label == sylvan_false) continue;
 
         mtpndd_bdd_t child_bdd = sylvan_false;

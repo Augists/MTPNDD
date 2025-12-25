@@ -133,6 +133,10 @@ void mtpndd_gc_run_posthooks(void) {
 #define DEFAULT_QUICK_GROWTH_THRESHOLD 0.1
 
 static void mtpndd_apply_pal_config_defaults(void) {
+    if (g_mtpndd_pal_config.sylvan_granularity <= 0) {
+        g_mtpndd_pal_config.sylvan_granularity = 1;
+    }
+
     if (g_mtpndd_pal_config.edge_bucket_count == 0) {
         g_mtpndd_pal_config.edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
     }
@@ -165,13 +169,21 @@ static void mtpndd_apply_pal_config_defaults(void) {
 static bool mtpndd_lace_init(void) {
     lace_start(g_mtpndd_pal_config.n_workers, g_mtpndd_pal_config.lace_dqsize);
 
-    sylvan_set_sizes(
-            g_mtpndd_pal_config.bdd_nodetable_size,
-            g_mtpndd_pal_config.bdd_nodetable_size,
-            g_mtpndd_pal_config.op_cache_size,
-            g_mtpndd_pal_config.op_cache_size);
+    if (g_mtpndd_pal_config.sylvan_memory_cap > 0) {
+        sylvan_set_limits(
+                g_mtpndd_pal_config.sylvan_memory_cap,
+                g_mtpndd_pal_config.sylvan_table_ratio,
+                g_mtpndd_pal_config.sylvan_initial_ratio);
+    } else {
+        sylvan_set_sizes(
+                g_mtpndd_pal_config.bdd_nodetable_size,
+                g_mtpndd_pal_config.bdd_nodetable_size,
+                g_mtpndd_pal_config.op_cache_size,
+                g_mtpndd_pal_config.op_cache_size);
+    }
     sylvan_init_package();
     sylvan_init_bdd();
+    sylvan_set_granularity(g_mtpndd_pal_config.sylvan_granularity);
     return true;
 }
 
@@ -590,7 +602,7 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     }
 
     if (!mtpndd_op_cache_initialize(
-                config->op_cache_size,
+                g_mtpndd_pal_config.mtpndd_op_cache_size ? g_mtpndd_pal_config.mtpndd_op_cache_size : config->op_cache_size,
                 &g_mtpndd_config.and_cache,
                 &g_mtpndd_config.or_cache,
                 &g_mtpndd_config.not_cache)) {

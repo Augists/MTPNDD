@@ -16,7 +16,7 @@ queen.png
 
 # Build files and artifacts
 sylvan/build/
-**/build/
+**/build*/
 **/*.o
 **/*.a
 **/*.so
