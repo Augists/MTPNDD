@@ -29,7 +29,48 @@ static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t 
 static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable);
 #define NODETABLE_HASH_VAL(key, nodetable) nodetable_hash_edges((key), (nodetable))
 
-#define NODETABLE_BUCKET_ENTRY_EQUAL(entry, keyEdges) ((entry->edges) == (keyEdges))
+// Compare edge map CONTENT, not pointer
+// Returns true if both edge maps have identical (child, label) pairs
+static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_edge_t *b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->edge_count != b->edge_count) return false;
+    if (a->edge_count == 0) return true;
+
+    // For each edge in 'a', find matching edge in 'b'
+    size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    for (size_t i = 0; i < edge_bucket_cnt; i++) {
+        edge_bucket_entry_t *entry_a = a->buckets ? a->buckets[i] : NULL;
+        while (entry_a) {
+            // Find this (child, label) pair in b
+            mtpndd_node_t *child_a = entry_a->child;
+            mtpndd_bdd_t label_a = atomic_load_explicit(&entry_a->label, memory_order_relaxed);
+
+            // Lookup in b's edge map
+            bool found = false;
+            if (b->buckets) {
+                size_t b_bucket = edge_map_hash_child(b, child_a);
+                edge_bucket_entry_t *entry_b = b->buckets[b_bucket];
+                while (entry_b) {
+                    if (entry_b->child == child_a) {
+                        mtpndd_bdd_t label_b = atomic_load_explicit(&entry_b->label, memory_order_relaxed);
+                        if (label_a == label_b) {
+                            found = true;
+                        }
+                        break;
+                    }
+                    entry_b = entry_b->next;
+                }
+            }
+            if (!found) return false;
+
+            entry_a = entry_a->next;
+        }
+    }
+    return true;
+}
+
+#define NODETABLE_BUCKET_ENTRY_EQUAL(entry, keyEdges) nodetable_edges_equal((entry)->edges, (keyEdges))
 
 #define FOR_EACH_ENTRY_IN_NODETABLE_BUCKET(emap, bucket_idx, entry) \
     for (entry = emap->buckets[bucket_idx]; \
@@ -67,14 +108,27 @@ static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t 
         return 0;
     }
 
-    uintptr_t addr = (uintptr_t)key;
-    uintptr_t bucket_addr = key->buckets ? (uintptr_t)key->buckets : 0;
-
+    // Hash edge CONTENT, not pointer address
+    // This matches Java's HashMap behavior: hash based on (child, label) pairs
     uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-    hash ^= addr;
-    hash *= 1099511628211ULL;
-    hash ^= bucket_addr;
-    hash *= 1099511628211ULL;
+
+    if (key->buckets) {
+        size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+        for (size_t i = 0; i < edge_bucket_cnt; i++) {
+            edge_bucket_entry_t *entry = key->buckets[i];
+            while (entry) {
+                // Hash child pointer (node identity)
+                uintptr_t child_addr = (uintptr_t)entry->child;
+                hash ^= child_addr;
+                hash *= 1099511628211ULL;
+                // Hash BDD label value
+                mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+                hash ^= (uint64_t)label;
+                hash *= 1099511628211ULL;
+                entry = entry->next;
+            }
+        }
+    }
 
     return (size_t)(hash % bucket_count);
 }
