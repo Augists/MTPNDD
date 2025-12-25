@@ -56,8 +56,10 @@ static mtpndd_t mtpndd_and_rec(mtpndd_t a, mtpndd_t b) {
     mtpndd_op_cache_t *and_cache = g_mtpndd_config.and_cache;
     mtpndd_t cached = mtpndd_op_cache_lookup_binary(and_cache, lhs, rhs);
     if (cached != MTPNDD_INVALID) {
+        MTPNDD_STAT_ADD(cache_lookup_hits, 1);
         return cached;
     }
+    MTPNDD_STAT_ADD(cache_lookup_misses, 1);
 
     const mtpndd_node_record_t na = mtpndd_node_read(a);
     const mtpndd_node_record_t nb = mtpndd_node_read(b);
@@ -180,8 +182,10 @@ static mtpndd_t mtpndd_or_rec(mtpndd_t a, mtpndd_t b) {
     mtpndd_op_cache_t *or_cache = g_mtpndd_config.or_cache;
     mtpndd_t cached = mtpndd_op_cache_lookup_binary(or_cache, lhs, rhs);
     if (cached != MTPNDD_INVALID) {
+        MTPNDD_STAT_ADD(cache_lookup_hits, 1);
         return cached;
     }
+    MTPNDD_STAT_ADD(cache_lookup_misses, 1);
 
     const mtpndd_node_record_t na = mtpndd_node_read(a);
     const mtpndd_node_record_t nb = mtpndd_node_read(b);
@@ -364,8 +368,10 @@ static mtpndd_t mtpndd_not_rec(mtpndd_t a) {
     mtpndd_op_cache_t *not_cache = g_mtpndd_config.not_cache;
     mtpndd_t cached = mtpndd_op_cache_lookup_unary(not_cache, a);
     if (cached != MTPNDD_INVALID) {
+        MTPNDD_STAT_ADD(cache_lookup_hits, 1);
         return cached;
     }
+    MTPNDD_STAT_ADD(cache_lookup_misses, 1);
 
     const mtpndd_node_record_t na = mtpndd_node_read(a);
 
