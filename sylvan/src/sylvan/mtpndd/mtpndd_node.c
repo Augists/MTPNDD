@@ -278,7 +278,7 @@ VOID_TASK_IMPL_3(mtpndd_and_rec_diff_field_task,
     mtpndd_node_t *subResult = NULL;
     if (CALL(mtpndd_and_rec, entry_a->child, b, &subResult) == MTPNDD_SUCCESS) {
         mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
-        mtpndd_add_edge(res_edges, subResult, label_a);
+        mtpndd_add_edge(res_edges, subResult, sylvan_ref(label_a));
     }
 }
 
