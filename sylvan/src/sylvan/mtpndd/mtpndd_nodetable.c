@@ -27,7 +27,6 @@ static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out);
 static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count);
 static size_t mtpndd_gc_sweep(void);
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node);
-
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
     if (!table) return NULL;
