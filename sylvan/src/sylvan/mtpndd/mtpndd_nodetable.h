@@ -33,12 +33,20 @@ static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd
 
 // Compare edge map CONTENT, not pointer
 // Returns true if both edge maps have identical (child, label) pairs
+// Optimized: first compare cached hash values for fast rejection
 static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_edge_t *b) {
     if (a == b) return true;
     if (!a || !b) return false;
+
+    // Fast path: compare cached hash values first (like Java HashMap)
+    // Different hash means definitely not equal
+    if (a->cached_hash != b->cached_hash) return false;
+
+    // Hash match, now check edge count
     if (a->edge_count != b->edge_count) return false;
     if (a->edge_count == 0) return true;
 
+    // Full comparison only if hash and count match
     // For each edge in 'a', find matching edge in 'b'
     size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
     for (size_t i = 0; i < edge_bucket_cnt; i++) {
@@ -110,27 +118,9 @@ static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t 
         return 0;
     }
 
-    // Hash edge CONTENT, not pointer address
-    // This matches Java's HashMap behavior: hash based on (child, label) pairs
-    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-
-    if (key->buckets) {
-        size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
-        for (size_t i = 0; i < edge_bucket_cnt; i++) {
-            edge_bucket_entry_t *entry = key->buckets[i];
-            while (entry) {
-                // Hash child pointer (node identity)
-                uintptr_t child_addr = (uintptr_t)entry->child;
-                hash ^= child_addr;
-                hash *= 1099511628211ULL;
-                // Hash BDD label value
-                mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
-                hash ^= (uint64_t)label;
-                hash *= 1099511628211ULL;
-                entry = entry->next;
-            }
-        }
-    }
+    // Use cached hash value directly - it was computed when edges were finalized
+    // This is O(1) instead of O(n) for each lookup
+    uint64_t hash = key->cached_hash;
 
     return (size_t)(hash % bucket_count);
 }

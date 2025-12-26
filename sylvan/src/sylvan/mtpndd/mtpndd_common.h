@@ -135,6 +135,8 @@ typedef struct mtpndd_stats_s {
     uint64_t bdd_nodes_converted;
     uint64_t cache_lookup_hits;
     uint64_t cache_lookup_misses;
+    uint64_t cache_store_overwrites;
+    uint64_t cache_store_total;
     uint64_t gc_runs;
     uint64_t nodes_created_total;
     uint64_t nodes_reused_total;

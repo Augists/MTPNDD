@@ -184,6 +184,14 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, 
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     pthread_rwlock_wrlock(&cache->locks[idx]);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
+#ifdef ENABLE_RECORDING
+    __atomic_add_fetch(&g_mtpndd_stats.cache_store_total, 1, __ATOMIC_RELAXED);
+    // Check if we're overwriting a valid entry with different operands
+    if (entry->result != NULL &&
+        (entry->operands[0] != lhs || entry->operands[1] != rhs)) {
+        __atomic_add_fetch(&g_mtpndd_stats.cache_store_overwrites, 1, __ATOMIC_RELAXED);
+    }
+#endif
     entry->operands[0] = lhs;
     entry->operands[1] = rhs;
     entry->result = result;

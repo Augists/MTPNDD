@@ -266,8 +266,8 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t nodetable_bucket_count = ndd_size;
 
     mtpndd_pal_config_t config = {
-        .n_workers = 0,
-        .lace_dqsize = 1024,
+        .n_workers = 0,  // Use single worker for new Lace (n=0 means auto-detect)
+        .lace_dqsize = 1 << 20,
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = cache_size,
@@ -298,31 +298,15 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     }
     clock_gettime(CLOCK_MONOTONIC, &ctx_finish);
 
-#ifdef ENABLE_RECORDING
-    printf(".. building formula\n");
-    fflush(stdout);
-#endif
-
+    // Build the formula directly (serial NDD calling parallel Sylvan)
+    // This matches Java NDD behavior where each BDD call goes through Lace
     if (!build_nqueens_formula(&ctx, &formula)) {
         fprintf(stderr, "Failed to build formula for size %zu.\n", size);
         goto cleanup;
     }
     clock_gettime(CLOCK_MONOTONIC, &op_finish);
 
-#ifdef ENABLE_RECORDING
-    printf(".. formula built\n");
-    fflush(stdout);
-
-    printf(".. running mtpndd_satcount\n");
-    fflush(stdout);
-#endif
-
     double satcount_value = mtpndd_satcount(formula);
-
-#ifdef ENABLE_RECORDING
-    printf(".. satcount done\n");
-    fflush(stdout);
-#endif
 
     clock_gettime(CLOCK_MONOTONIC, &run_finish);
     double elapsed = timespec_diff_seconds(&run_start, &run_finish);
@@ -518,6 +502,13 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->nodes_created_total, stats->nodes_reused_total, stats->nodes_collected_last);
     printf(".. stats: max_edges_per_node=%" PRIu64 ", cache hits/misses=%" PRIu64 "/%" PRIu64 "\n",
            stats->max_edges_per_node, stats->cache_lookup_hits, stats->cache_lookup_misses);
+    printf(".. stats: cache stores=%" PRIu64 ", overwrites=%" PRIu64 " (%.1f%%)\n",
+           stats->cache_store_total, stats->cache_store_overwrites,
+           stats->cache_store_total > 0 ? 100.0 * stats->cache_store_overwrites / stats->cache_store_total : 0.0);
+    printf(".. stats: edge_inserts=%" PRIu64 ", edge_collisions=%" PRIu64 " (%.1f%%), nodetable_collisions=%" PRIu64 "\n",
+           stats->edge_insert_total, stats->edge_collision_total,
+           stats->edge_insert_total > 0 ? 100.0 * stats->edge_collision_total / stats->edge_insert_total : 0.0,
+           stats->nodetable_collision_total);
 }
 
 #endif  // ENABLE_RECORDING

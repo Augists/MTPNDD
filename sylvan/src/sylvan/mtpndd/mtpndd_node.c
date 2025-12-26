@@ -31,7 +31,12 @@ void mtpndd_edge_map_free(mtpndd_edge_t *edges);
 void mtpndd_edge_map_init(mtpndd_edge_t *edges) {
     assert(g_mtpndd_pal_config.edge_bucket_count <= MTPNDD_BUCKET_LOCK_WORD_BITS);
     edges->edge_count = 0;
+    edges->cached_hash = 0;
     edges->bucket_lock_word = 0;
+    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    if (edges->buckets && bucket_cnt) {
+        memset(edges->buckets, 0, bucket_cnt * sizeof(edge_bucket_entry_t *));
+    }
 }
 
 size_t mtpndd_hash_node_identity(const mtpndd_node_t *node) {
@@ -51,6 +56,7 @@ size_t mtpndd_hash_node_identity(const mtpndd_node_t *node) {
 
 static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest) {
     dest->edge_count = source->edge_count;
+    dest->cached_hash = source->cached_hash;
 
     size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
 
@@ -105,6 +111,7 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
     }
     if (edges->buckets) {
         size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+        // Release all entries first
         for (size_t i = 0; i < bucket_cnt; ++i) {
             edge_bucket_entry_t *entry = edges->buckets[i];
             while (entry) {
@@ -114,11 +121,13 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
                 mtpndd_memory_release_edge_entry(entry);
                 entry = next;
             }
-            edges->buckets[i] = NULL;
         }
+        // Use memset to clear all buckets at once
+        memset(edges->buckets, 0, bucket_cnt * sizeof(edge_bucket_entry_t *));
     }
     edges->bucket_lock_word = 0;
     edges->edge_count = 0;
+    edges->cached_hash = 0;
 }
 
 void mtpndd_edge_map_free(mtpndd_edge_t *edges) {

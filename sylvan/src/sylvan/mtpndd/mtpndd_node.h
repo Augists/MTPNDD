@@ -74,9 +74,32 @@ typedef struct edge_bucket_entry_s {
 // mtpndd_t* child -> mtpndd_bdd_t label
 struct mtpndd_edge_s {
     size_t edge_count;
+    uint64_t cached_hash;  // Cached hash value for fast lookup (like Java HashMap)
     atomic_uint_fast64_t bucket_lock_word;
     edge_bucket_entry_t **buckets;
 };
+
+// Compute hash value for edge map content (matches Java Map.hashCode() semantics)
+static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) {
+    if (!edges || !edges->buckets) return 0;
+
+    // Use XOR-based accumulation like Java's HashMap.hashCode()
+    // This is order-independent, matching Java's Map.hashCode() behavior
+    uint64_t hash = 0;
+    size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    for (size_t i = 0; i < edge_bucket_cnt; i++) {
+        edge_bucket_entry_t *entry = edges->buckets[i];
+        while (entry) {
+            // Hash each (child, label) pair and XOR into result
+            uint64_t entry_hash = mtpndd_hash_u64((uintptr_t)entry->child);
+            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            entry_hash ^= mtpndd_hash_u64((uint64_t)label);
+            hash ^= entry_hash;
+            entry = entry->next;
+        }
+    }
+    return hash;
+}
 
 static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd_node_t *child) {
     size_t hash = mtpndd_hash_node_identity(child);
