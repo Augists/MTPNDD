@@ -110,27 +110,25 @@ static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t 
         return 0;
     }
 
-    // Hash edge CONTENT, not pointer address
-    // This matches Java's HashMap behavior: hash based on (child, label) pairs
-    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-
-    if (key->buckets) {
-        size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
-        for (size_t i = 0; i < edge_bucket_cnt; i++) {
-            edge_bucket_entry_t *entry = key->buckets[i];
-            while (entry) {
-                // Hash child pointer (node identity)
-                uintptr_t child_addr = (uintptr_t)entry->child;
-                hash ^= child_addr;
-                hash *= 1099511628211ULL;
-                // Hash BDD label value
-                mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
-                hash ^= (uint64_t)label;
-                hash *= 1099511628211ULL;
-                entry = entry->next;
-            }
+    // Compute hash on-demand by iterating all edges
+    // XOR-based, order-independent hash for edge map content
+    uint64_t hash = 0;
+    size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    for (size_t i = 0; i < edge_bucket_cnt; i++) {
+        edge_bucket_entry_t *entry = key->buckets ? key->buckets[i] : NULL;
+        while (entry) {
+            uint64_t entry_hash = mtpndd_hash_u64((uintptr_t)entry->child);
+            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            entry_hash ^= mtpndd_hash_u64((uint64_t)label);
+            hash ^= entry_hash;
+            entry = entry->next;
         }
     }
+
+    // Mix the hash to spread values better across bucket range
+    hash ^= (hash >> 33);
+    hash *= 0xff51afd7ed558ccdULL;
+    hash ^= (hash >> 33);
 
     return (size_t)(hash % bucket_count);
 }

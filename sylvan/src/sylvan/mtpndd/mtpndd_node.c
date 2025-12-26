@@ -55,10 +55,9 @@ static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mt
 
     size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
 
-    for (size_t i = 0; i < bucket_cnt; ++i) {
-        dest->buckets[i] = NULL;
-        mtpndd_bucket_lock_clear(&dest->bucket_lock_word, i);
-    }
+    // Use memset for faster initialization
+    memset(dest->buckets, 0, sizeof(edge_bucket_entry_t *) * bucket_cnt);
+    dest->bucket_lock_word = 0;
 
     if (!source->buckets) {
         return MTPNDD_SUCCESS;
