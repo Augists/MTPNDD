@@ -157,6 +157,11 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
             return;
         }
     }
+
+    // Compute and cache hash value for edges (like Java HashMap)
+    // This must be done after all edges are added and before lookup
+    edges->cached_hash = mtpndd_edge_map_compute_hash(edges);
+
     mtpndd_nodetable_t *nodetable = g_mtpndd_config.node_tables_by_field[field];
     mtpndd_node_t *node = find_node_in_nodetable(nodetable, edges);
     edge_bucket_entry_t *entry = NULL;

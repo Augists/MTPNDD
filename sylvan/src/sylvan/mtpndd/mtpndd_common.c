@@ -753,14 +753,17 @@ void mtpndd_gc_protect_add(mtpndd_t *node) {
     }
 
     mtpndd_gc_protect_t *gc_protect = g_mtpndd_config.gcProtect;
-    gc_protect_entry_t *entry = mtpndd_memory_acquire_gc_protect_entry();
-    if (!entry) {
-        return;
-    }
     size_t hash = GC_PROTECT_HASH_VAL(gc_protect, node);
+
+    // Check if already protected before allocating
     gc_protect_entry_t *existing = gc_protect_bucket_find(gc_protect, hash, node);
     if (existing) {
-        mtpndd_memory_release_gc_protect_entry(entry);
+        return;
+    }
+
+    // Only allocate after confirming not already protected
+    gc_protect_entry_t *entry = mtpndd_memory_acquire_gc_protect_entry();
+    if (!entry) {
         return;
     }
 
@@ -813,3 +816,4 @@ bool mtpndd_gc_protect_contains(mtpndd_t *node) {
     hash %= gc_protect->bucket_count ? gc_protect->bucket_count : g_mtpndd_pal_config.gc_bucket_count;
     return gc_protect_bucket_find(gc_protect, hash, node) != NULL;
 }
+
