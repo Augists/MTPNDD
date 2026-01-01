@@ -329,6 +329,9 @@ struct mtpndd_gc_protect_s {
     pthread_rwlock_t *bucket_locks;
     void *bucket_storage;
     size_t bucket_count;
+    size_t *used_bucket_indices;
+    size_t used_bucket_count;
+    size_t used_bucket_capacity;
 };
 
 struct gc_protect_entry_s {
@@ -407,7 +410,6 @@ struct gc_protect_entry_s {
 #define GC_PROTECT_BUCKET_RDLOCK(gcp, bucket_idx) pthread_rwlock_rdlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
 #define GC_PROTECT_BUCKET_WRLOCK(gcp, bucket_idx) pthread_rwlock_wrlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
 #define GC_PROTECT_BUCKET_UNLOCK(gcp, bucket_idx) pthread_rwlock_unlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
-
 static inline size_t gc_protect_hash_ptr_impl(const mtpndd_gc_protect_t *gcp, const mtpndd_node_t *key) {
     size_t hash = mtpndd_hash_node_identity(key);
     size_t bucket_cnt = (gcp && gcp->bucket_count) ? gcp->bucket_count : g_mtpndd_pal_config.gc_bucket_count;
@@ -454,7 +456,5 @@ static inline gc_protect_entry_t *gc_protect_bucket_find(mtpndd_gc_protect_t *gc
 
 void mtpndd_gc_protect_clear();
 void mtpndd_gc_protect_add(mtpndd_t *node);
-void mtpndd_gc_protect_remove(mtpndd_t *node);
-bool mtpndd_gc_protect_contains(mtpndd_t *node);
 
 #endif // MTPNDD_COMMON_H

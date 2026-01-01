@@ -599,6 +599,19 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     }
     atomic_init(&g_mtpndd_config.gcProtect->gc_protect_count, 0);
     g_mtpndd_config.gcProtect->bucket_count = g_mtpndd_pal_config.gc_bucket_count;
+    g_mtpndd_config.gcProtect->used_bucket_count = 0;
+    g_mtpndd_config.gcProtect->used_bucket_capacity = 16;
+    g_mtpndd_config.gcProtect->used_bucket_indices = (size_t *)malloc(
+            g_mtpndd_config.gcProtect->used_bucket_capacity * sizeof(size_t));
+    if (!g_mtpndd_config.gcProtect->used_bucket_indices) {
+        free(g_mtpndd_config.gcProtect);
+        g_mtpndd_config.gcProtect = NULL;
+        free(g_mtpndd_config.node_tables_by_field);
+        g_mtpndd_config.node_tables_by_field = NULL;
+        free(g_mtpndd_config.field_info);
+        g_mtpndd_config.field_info = NULL;
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+    }
     size_t gc_bucket_cnt = g_mtpndd_config.gcProtect->bucket_count;
     if (gc_bucket_cnt == 0) {
         gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT;
@@ -607,6 +620,7 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     g_mtpndd_config.gcProtect->buckets = (gc_protect_entry_t **)calloc(
             gc_bucket_cnt, sizeof(gc_protect_entry_t *));
     if (!g_mtpndd_config.gcProtect->buckets) {
+        free(g_mtpndd_config.gcProtect->used_bucket_indices);
         free(g_mtpndd_config.gcProtect);
         g_mtpndd_config.gcProtect = NULL;
         free(g_mtpndd_config.node_tables_by_field);
@@ -765,6 +779,8 @@ mtpndd_error_t mtpndd_quit() {
         }
         g_mtpndd_config.gcProtect->bucket_locks = NULL;
         g_mtpndd_config.gcProtect->buckets = NULL;
+        free(g_mtpndd_config.gcProtect->used_bucket_indices);
+        g_mtpndd_config.gcProtect->used_bucket_indices = NULL;
         free(g_mtpndd_config.gcProtect);
         g_mtpndd_config.gcProtect = NULL;
     }
@@ -786,11 +802,50 @@ mtpndd_error_t mtpndd_quit() {
 /********************************
  * GC protection hash set
  ********************************/
+static bool gc_protect_record_used_bucket(mtpndd_gc_protect_t *gc_protect, size_t bucket_idx) {
+    if (!gc_protect || !gc_protect->used_bucket_indices) {
+        return false;
+    }
+    // only record when bucket becomes non-empty
+    if (gc_protect->used_bucket_count >= gc_protect->used_bucket_capacity) {
+        size_t new_cap = gc_protect->used_bucket_capacity * 2;
+        size_t *new_arr = (size_t *)realloc(gc_protect->used_bucket_indices, new_cap * sizeof(size_t));
+        if (!new_arr) {
+            return false;
+        }
+        gc_protect->used_bucket_indices = new_arr;
+        gc_protect->used_bucket_capacity = new_cap;
+    }
+    gc_protect->used_bucket_indices[gc_protect->used_bucket_count++] = bucket_idx;
+    return true;
+}
+
+static void gc_protect_clear_all(mtpndd_gc_protect_t *gc_protect) {
+    if (!gc_protect || atomic_load_explicit(&gc_protect->gc_protect_count, memory_order_relaxed) == 0) {
+        return;
+    }
+    size_t used_cnt = gc_protect->used_bucket_count;
+    for (size_t i = 0; i < used_cnt; ++i) {
+        size_t bucket_idx = gc_protect->used_bucket_indices[i];
+        gc_protect_entry_t *entry = gc_protect->buckets ? gc_protect->buckets[bucket_idx] : NULL;
+        while (entry) {
+            gc_protect_entry_t *next_entry = entry->next;
+            mtpndd_memory_release_gc_protect_entry(entry);
+            entry = next_entry;
+        }
+        if (gc_protect->buckets) {
+            gc_protect->buckets[bucket_idx] = NULL;
+        }
+    }
+    gc_protect->used_bucket_count = 0;
+    atomic_store_explicit(&gc_protect->gc_protect_count, 0, memory_order_relaxed);
+}
+
 void mtpndd_gc_protect_clear() {
     if (!g_mtpndd_config.gcProtect) {
         return;
     }
-    GC_PROTECT_CLEAR(g_mtpndd_config.gcProtect);
+    gc_protect_clear_all(g_mtpndd_config.gcProtect);
 }
 
 void mtpndd_gc_protect_add(mtpndd_t *node) {
