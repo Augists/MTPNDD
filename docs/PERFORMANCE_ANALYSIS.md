@@ -165,3 +165,29 @@ kcachegrind callgrind.out.*
 | 节点创建 | `mtpndd_nodetable.c:560` | `mtpndd_mk` |
 | GC | `mtpndd_nodetable.c:401` | `mtpndd_gc_collect` |
 | 测试 | `test/nqueens.c` | `main` |
+
+---
+
+## 追加：与 Java 参考实现的差异&主要变慢原因
+
+### 1. 关键实现差异
+- **数据结构**：C 版使用固定桶数组（边映射/节点表）+ slab 池；Java 版 `HashMap` 随负载自动扩容。C 版默认桶数不足时碰撞严重，遍历成本高。
+- **GC/保护策略**：C 版 `gc_protect` 是固定桶的哈希集合；每次公共逻辑操作都会清空全部桶。Java 版 `temporarilyProtect` 只是小 `HashSet`，`clear()` 与元素数量相关。
+- **归约规则**：Java `NodeTable.mk` 会在“仅一条 TRUE 边”时直接返回子节点；C 版试图做同样优化，但实现错误导致大量可消除节点被保留。
+- **引用计数与释放**：Java 在 GC 时对所有边的子节点减引用；C 版释放节点时遗漏了每个桶的第一个边项（只从 `head->next` 开始），导致子节点 ref 没减，节点表膨胀。
+- **并行/串行构建**：NQueens Java 版的逻辑操作都走 JSylvan 并重用缓存；当前分支的 `test/nqueens.c` 完全串行地构造公式，且每步都会触发上述保护清空。
+
+### 2. 已确认的变慢主因（需对齐 Java 行为）
+- **节点无法回收（ref 泄漏）**：`mtpndd_release_node` 只对 `head->next` 迭代，桶头边未减引用；子节点永久保活，GC 难以回收，节点表越滚越大。位置：`sylvan/src/sylvan/mtpndd/mtpndd_nodetable.c:404-419`。
+- **每次 and/or/not 都 O(桶数) 清空保护集**：`mtpndd_gc_protect_clear()` 遍历 1k/64k 桶并释放 entry；在 NQueens 大量调用下成为固定高成本。位置：`mtpndd_node.c:765-807` 调用，宏定义 `mtpndd_common.h:293-310`。
+- **单边 TRUE 归约失效**：`mtpndd_mk` 检测唯一边时使用 `head->next`，实际永远找不到正确的唯一边，无法像 Java 那样直接返回子节点，产生大量冗余节点。位置：`mtpndd_nodetable.c:145-158`。
+- **哈希桶固定且可能偏小**：边表和节点表的桶数只在初始化/手动 grow 时调整；碰撞会让 `mtpndd_add_edge`、`nodetable_edges_equal` 退化为链表全扫。Java HashMap 会自动扩容、负载因子控制。
+- **额外开销**：C 版在串行路径使用大量原子操作与 BDD ref/deref；`satcount` 必须先把整棵 NDD 转成 MTBDD 再计数，缺少 Java 版的直接计数路径。
+
+这些差异/问题是后续优化的直接目标：修正 refcount 释放、按需清理保护集、恢复单边归约、引入自适应桶或加桶调优，并减少无谓原子/转换开销，以使 C 版更贴近 Java 参考实现的性能。
+
+### 3. GC Protect 设计与使用梳理
+- **结构**：`mtpndd_gc_protect_t` 由固定桶数组 + slab entry 组成，新增 `used_bucket_indices` 仅跟踪非空桶，清理时只遍历被占用的桶；统计 `gc_protect_count` 记录保护中的节点数。实现文件：`mtpndd_common.h/c`。
+- **写入路径**：在 `and/or/not/diff/exist` 等操作的递归结果创建后调用 `mtpndd_gc_protect_add`（`mtpndd_node.c` 多处）；GC root 收集时遍历 `gcProtect` 并 `ref` 后放入根列表（`mtpndd_nodetable.c:338+`）。
+- **清理路径**：每个公开操作入口先调用 `mtpndd_gc_protect_clear`，使用 `used_bucket_indices` 仅清理实际用到的桶；`mtpndd_quit` 也调用一次。删除了未使用的 `contains` 接口，减少无意义遍历。
+- **改进方向**：保持 HashSet 行为：新增路径已是 O(1) 插入/查找，清理已经缩到 O(used bucket)；后续可按 Java 行为进一步优化：在递归结束处批量清空（避免多次清空）、将 `used_bucket_indices` 容量与操作深度对齐、在调试构建下提供轻量计数断言取代原子操作。

@@ -282,6 +282,9 @@ struct mtpndd_gc_protect_s {
     atomic_size_t gc_protect_count;
     gc_protect_entry_t **buckets;
     size_t bucket_count;
+    size_t *used_bucket_indices;
+    size_t used_bucket_count;
+    size_t used_bucket_capacity;
 };
 
 struct gc_protect_entry_s {
@@ -289,25 +292,6 @@ struct gc_protect_entry_s {
     struct gc_protect_entry_s *prev;
     mtpndd_node_t *node;
 };
-
-#define GC_PROTECT_CLEAR(gcp) do { \
-        size_t _gc_bucket_cnt = (gcp)->bucket_count ? (gcp)->bucket_count : g_mtpndd_pal_config.gc_bucket_count; \
-        if (_gc_bucket_cnt == 0) { \
-            _gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT; \
-        } \
-        if ((gcp)->buckets) { \
-            for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
-                gc_protect_entry_t *entry = (gcp)->buckets[i]; \
-                while (entry) { \
-                    gc_protect_entry_t *next_entry = entry->next; \
-                    mtpndd_memory_release_gc_protect_entry(entry); \
-                    entry = next_entry; \
-                } \
-                (gcp)->buckets[i] = NULL; \
-            } \
-        } \
-        atomic_store_explicit(&(gcp)->gc_protect_count, 0, memory_order_relaxed); \
-    } while(0)
 
 static inline size_t gc_protect_hash_ptr_impl(const mtpndd_gc_protect_t *gcp, const mtpndd_node_t *key) {
     size_t hash = mtpndd_hash_node_identity(key);
@@ -343,7 +327,5 @@ static inline gc_protect_entry_t *gc_protect_bucket_find(mtpndd_gc_protect_t *gc
 
 void mtpndd_gc_protect_clear();
 void mtpndd_gc_protect_add(mtpndd_t *node);
-void mtpndd_gc_protect_remove(mtpndd_t *node);
-bool mtpndd_gc_protect_contains(mtpndd_t *node);
 
 #endif // MTPNDD_COMMON_H
