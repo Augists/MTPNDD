@@ -186,6 +186,10 @@ kcachegrind callgrind.out.*
 
 这些差异/问题是后续优化的直接目标：修正 refcount 释放、按需清理保护集、恢复单边归约、引入自适应桶或加桶调优，并减少无谓原子/转换开销，以使 C 版更贴近 Java 参考实现的性能。
 
+### 3. 近期修复（对齐归约规则与引用计数）
+- **单边 TRUE 归约**：`mtpndd_mk` 现在正确查找唯一边（直接使用桶首 entry），当唯一边标签为 TRUE 时直接返回子节点，与 Java 行为一致。
+- **引用计数释放**：GC 释放节点时不再跳过桶首 entry，会对每条边的子节点做 deref，避免引用计数泄漏导致节点无法回收。
+
 ### 3. GC Protect 设计与使用梳理
 - **结构**：`mtpndd_gc_protect_t` 由固定桶数组 + slab entry 组成，新增 `used_bucket_indices` 仅跟踪非空桶，清理时只遍历被占用的桶；统计 `gc_protect_count` 记录保护中的节点数。实现文件：`mtpndd_common.h/c`。
 - **写入路径**：在 `and/or/not/diff/exist` 等操作的递归结果创建后调用 `mtpndd_gc_protect_add`（`mtpndd_node.c` 多处）；GC root 收集时遍历 `gcProtect` 并 `ref` 后放入根列表（`mtpndd_nodetable.c:338+`）。

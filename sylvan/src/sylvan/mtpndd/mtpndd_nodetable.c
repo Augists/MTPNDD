@@ -146,10 +146,8 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         size_t bucket_cnt = (edges && edges->buckets) ? g_mtpndd_pal_config.edge_bucket_count : 0;
         for (size_t i = 0; i < bucket_cnt && !only_entry; ++i) {
             edge_bucket_entry_t *head = edges->buckets[i];
-            if (!head) continue;
-            edge_bucket_entry_t *walker = head->next;
-            if (walker && walker != head) {
-                only_entry = walker;
+            if (head) {
+                only_entry = head;
             }
         }
         if (only_entry && atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
@@ -409,8 +407,8 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
             if (!head) {
                 continue;
             }
-            edge_bucket_entry_t *edge_entry = head->next;
-            while (edge_entry && edge_entry != head) {
+            edge_bucket_entry_t *edge_entry = head;
+            while (edge_entry) {
                 mtpndd_node_t *child = edge_entry->child;
                 if (child && !mtpndd_is_terminal(child)) {
                     mtpndd_deref(child);
