@@ -47,11 +47,8 @@ else()
         target_link_libraries(mtpndd PUBLIC ${SYLVAN_LIBRARY})
     else()
         set(LACE_CANDIDATES
-            "${SYLVAN_ROOT}/src/lace/lace14.c"
             "${SYLVAN_ROOT}/src/lace/lace.c"
-            "${SYLVAN_ROOT}/src/lace14.c"
             "${SYLVAN_ROOT}/src/lace.c"
-            "${SYLVAN_ROOT}/lace14.c"
             "${SYLVAN_ROOT}/lace.c"
         )
         foreach(f ${LACE_CANDIDATES})

@@ -10,6 +10,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <lace.h>
+#ifdef ENABLE_RECORDING
+#include <time.h>
+#endif
 
 #include "mtpndd_edge_builder.h"
 #include "mtpndd_nodetable.h"

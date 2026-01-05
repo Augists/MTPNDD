@@ -16,6 +16,7 @@
  */
 
 #include <sylvan.h>
+#include <stdatomic.h>
 #include <sylvan_align.h>
 #include <sylvan_refs.h>
 #include <sylvan_hash.h>
