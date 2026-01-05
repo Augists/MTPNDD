@@ -45,6 +45,18 @@
 #include <lace.h>
 #include <sylvan_tls.h>
 
+#ifndef SYLVAN_LACE_COMPAT
+#define SYLVAN_LACE_COMPAT
+#ifdef TOGETHER
+#undef TOGETHER
+#define TOGETHER(f, ...) ({ LACE_ME; WRAP(f##_TOGETHER, ##__VA_ARGS__); })
+#endif
+#endif
+
+#ifndef RUN
+#define RUN(f, ...) ({ LACE_ME; CALL(f, ##__VA_ARGS__); })
+#endif
+
 #ifdef __cplusplus
 namespace sylvan {
 #endif
