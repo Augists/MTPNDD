@@ -233,42 +233,42 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     nqueens_ctx_t ctx = {0};
     mtpndd_t *formula = NULL;
 
-    size_t bdd_size = 1 << 19;
-    size_t ndd_size = 1 << 21;
-    size_t cache_size = 1 << 18;
-    size_t edge_bucket_count = 32;
-    size_t gc_bucket_count = 256;
+    size_t bdd_size = 1 << 18;
+    size_t ndd_size = 1 << 18;
+    size_t cache_size = 1 << 19; // smaller op cache to reduce overhead
+    size_t edge_bucket_count = 16;
+    size_t gc_bucket_count = 128;
     size_t node_slab_capacity = 1024;
     size_t edge_entry_slab_capacity = 2048;
     size_t nodetable_entry_slab_capacity = 1024;
     size_t edge_map_slab_capacity = 512;
 
     if (size > 6 && size <= 8) {
-        bdd_size = 1 << 20;
-        ndd_size = 1 << 22;
+        bdd_size = 1 << 19;
+        ndd_size = 1 << 19;
         cache_size = 1 << 19;
-        edge_bucket_count = 64;
-        gc_bucket_count = 512;
+        edge_bucket_count = 16;
+        gc_bucket_count = 256;
         node_slab_capacity = 1536;
         edge_entry_slab_capacity = 3072;
         nodetable_entry_slab_capacity = 1536;
         edge_map_slab_capacity = 768;
     } else if (size > 8 && size <= 10) {
-        bdd_size = 1 << 21;
-        ndd_size = 1 << 23;
+        bdd_size = 1 << 20;
+        ndd_size = 1 << 19; // reduce nodetable buckets to be closer to node count
         cache_size = 1 << 20;
-        edge_bucket_count = 160;
-        gc_bucket_count = 1024;
+        edge_bucket_count = 16;
+        gc_bucket_count = 512;
         node_slab_capacity = 2048;
         edge_entry_slab_capacity = 4096;
         nodetable_entry_slab_capacity = 2048;
         edge_map_slab_capacity = 1024;
     } else if (size > 10) {
-        bdd_size = 1 << 22;
-        ndd_size = 1 << 24;
-        cache_size = 1 << 21;
-        edge_bucket_count = 256;
-        gc_bucket_count = 2048;
+        bdd_size = 1 << 20;
+        ndd_size = 1 << 19; // significantly smaller nodetable to approach rehash threshold
+        cache_size = 1 << 20;
+        edge_bucket_count = 16;
+        gc_bucket_count = 1024;
         node_slab_capacity = 3072;
         edge_entry_slab_capacity = 6144;
         nodetable_entry_slab_capacity = 3072;
@@ -510,6 +510,24 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->nodes_created_total, stats->nodes_reused_total, stats->nodes_collected_last);
     printf(".. stats: max_edges_per_node=%" PRIu64 ", cache hits/misses=%" PRIu64 "/%" PRIu64 "\n",
            stats->max_edges_per_node, stats->cache_lookup_hits, stats->cache_lookup_misses);
+    printf(".. stats: time and/or/not = %.3f/%.3f/%.3f s\n",
+           stats->and_time_ns / 1e9, stats->or_time_ns / 1e9, stats->not_time_ns / 1e9);
+    printf(".. stats: and fast/cache/build/diff/mk = %.3f/%.3f/%.3f/%.3f/%.3f s\n",
+           stats->and_fastpath_ns / 1e9,
+           stats->and_cache_hit_ns / 1e9,
+           stats->and_build_edges_ns / 1e9,
+           stats->and_diff_field_ns / 1e9,
+           stats->and_mk_ns / 1e9);
+    printf(".. stats: and same outer/inner/label/bdd/add = %.3f/%.3f/%.3f/%.3f/%.3f s (total=%.3f)\n",
+           stats->and_same_outer_loop_ns / 1e9,
+           stats->and_same_inner_loop_ns / 1e9,
+           stats->and_same_label_load_ns / 1e9,
+           stats->and_same_bdd_op_ns / 1e9,
+           stats->and_same_add_edge_ns / 1e9,
+           stats->and_same_field_ns / 1e9);
+    printf(".. stats: edge_map rehash=%" PRIu64 " max_buckets=%" PRIu64 " | nodetable rehash=%" PRIu64 " max_buckets=%" PRIu64 "\n",
+           stats->edge_map_rehash_total, stats->edge_map_max_buckets,
+           stats->nodetable_rehash_total, stats->nodetable_max_buckets);
     printf(".. stats: cache stores=%" PRIu64 ", overwrites=%" PRIu64 " (%.1f%%)\n",
            stats->cache_store_total, stats->cache_store_overwrites,
            stats->cache_store_total > 0 ? 100.0 * stats->cache_store_overwrites / stats->cache_store_total : 0.0);

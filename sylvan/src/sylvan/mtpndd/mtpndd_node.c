@@ -187,6 +187,10 @@ static bool mtpndd_edge_map_rehash(mtpndd_edge_t *edges, size_t new_bucket_count
     edges->buckets_malloced = true;
     edges->bucket_count = new_bucket_count;
     edges->load_threshold = new_bucket_count - (new_bucket_count >> 3);
+#ifdef ENABLE_RECORDING
+    MTPNDD_STAT_ADD(edge_map_rehash_total, 1);
+    MTPNDD_STAT_MAX(edge_map_max_buckets, new_bucket_count);
+#endif
     return true;
 }
 
@@ -332,31 +336,124 @@ static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result)
 static mtpndd_error_t mtpndd_not_rec(mtpndd_t *a, mtpndd_t **result);
 static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **result);
 
+#ifdef ENABLE_RECORDING
+typedef enum {
+    MTPNDD_AND_PROF_OTHER = 0,
+    MTPNDD_AND_PROF_FASTPATH,
+    MTPNDD_AND_PROF_CACHE_HIT,
+    MTPNDD_AND_PROF_BUILD_EDGES,
+    MTPNDD_AND_PROF_SAME_OUTER_LOOP,
+    MTPNDD_AND_PROF_SAME_INNER_LOOP,
+    MTPNDD_AND_PROF_SAME_LABEL_LOAD,
+    MTPNDD_AND_PROF_SAME_BDD_OP,
+    MTPNDD_AND_PROF_SAME_ADD_EDGE,
+    MTPNDD_AND_PROF_DIFF_FIELD,
+    MTPNDD_AND_PROF_MK,
+    MTPNDD_AND_PROF_COUNT
+} mtpndd_and_prof_bucket_t;
+
+typedef struct {
+    bool recording;
+    mtpndd_and_prof_bucket_t active;
+    struct timespec last_switch;
+    uint64_t bucket_ns[MTPNDD_AND_PROF_COUNT];
+} mtpndd_and_prof_ctx_t;
+
+static _Thread_local uint32_t mtpndd_and_depth = 0;
+static _Thread_local mtpndd_and_prof_ctx_t mtpndd_and_prof_ctx = {0};
+
+static inline void mtpndd_and_prof_start(void) {
+    if (mtpndd_and_depth == 0) {
+        mtpndd_and_prof_ctx.recording = true;
+        mtpndd_and_prof_ctx.active = MTPNDD_AND_PROF_OTHER;
+        for (size_t i = 0; i < MTPNDD_AND_PROF_COUNT; i++) {
+            mtpndd_and_prof_ctx.bucket_ns[i] = 0;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &mtpndd_and_prof_ctx.last_switch);
+    }
+    mtpndd_and_depth++;
+}
+
+static inline void mtpndd_and_prof_switch(mtpndd_and_prof_bucket_t bucket) {
+    if (!mtpndd_and_prof_ctx.recording) return;
+    struct timespec now = {0};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t delta = mtpndd_timespec_diff_ns(&mtpndd_and_prof_ctx.last_switch, &now);
+    mtpndd_and_prof_ctx.bucket_ns[mtpndd_and_prof_ctx.active] += delta;
+    mtpndd_and_prof_ctx.active = bucket;
+    mtpndd_and_prof_ctx.last_switch = now;
+}
+
+static inline void mtpndd_and_prof_finish(void) {
+    if (mtpndd_and_prof_ctx.recording && mtpndd_and_depth == 1) {
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_OTHER);
+        mtpndd_and_prof_ctx.recording = false;
+        uint64_t total_ns = 0;
+        for (size_t i = 0; i < MTPNDD_AND_PROF_COUNT; i++) {
+            total_ns += mtpndd_and_prof_ctx.bucket_ns[i];
+        }
+        uint64_t same_total =
+                mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_OUTER_LOOP] +
+                mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_INNER_LOOP] +
+                mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_LABEL_LOAD] +
+                mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_BDD_OP] +
+                mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_ADD_EDGE];
+        MTPNDD_STAT_ADD(and_fastpath_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_FASTPATH]);
+        MTPNDD_STAT_ADD(and_cache_hit_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_CACHE_HIT]);
+        MTPNDD_STAT_ADD(and_build_edges_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_BUILD_EDGES]);
+        MTPNDD_STAT_ADD(and_same_field_ns, same_total);
+        MTPNDD_STAT_ADD(and_same_outer_loop_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_OUTER_LOOP]);
+        MTPNDD_STAT_ADD(and_same_inner_loop_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_INNER_LOOP]);
+        MTPNDD_STAT_ADD(and_same_label_load_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_LABEL_LOAD]);
+        MTPNDD_STAT_ADD(and_same_bdd_op_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_BDD_OP]);
+        MTPNDD_STAT_ADD(and_same_add_edge_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_SAME_ADD_EDGE]);
+        MTPNDD_STAT_ADD(and_diff_field_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_DIFF_FIELD]);
+        MTPNDD_STAT_ADD(and_mk_ns, mtpndd_and_prof_ctx.bucket_ns[MTPNDD_AND_PROF_MK]);
+        MTPNDD_STAT_ADD(and_time_ns, total_ns);
+    }
+    if (mtpndd_and_depth > 0) mtpndd_and_depth--;
+}
+
+#define MTPNDD_AND_RETURN(val) do { mtpndd_and_prof_finish(); return (val); } while(0)
+#else
+#define mtpndd_and_prof_start() ((void)0)
+#define mtpndd_and_prof_switch(bucket) ((void)0)
+#define mtpndd_and_prof_finish() ((void)0)
+#define MTPNDD_AND_RETURN(val) return (val)
+#endif
+
 /********************************
  * MTPNDD operations (sub task)
  ********************************/
 static mtpndd_error_t mtpndd_and_same_field(edge_bucket_entry_t *entry_a,
         edge_bucket_entry_t *entry_b, mtpndd_edge_t *res_edges)
 {
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_LABEL_LOAD);
     mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
     mtpndd_bdd_t label_b = mtpndd_edge_label_load(entry_b);
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_BDD_OP);
     mtpndd_bdd_t combined_label = sylvan_ref(sylvan_and(label_a, label_b));
     if (combined_label == sylvan_false) {
         sylvan_deref(combined_label);
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
         return MTPNDD_SUCCESS;
     }
 
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_OTHER);
     mtpndd_node_t *sub_result = NULL;
     mtpndd_error_t status = mtpndd_and_rec(entry_a->child, entry_b->child, &sub_result);
     if (status != MTPNDD_SUCCESS) {
         sylvan_deref(combined_label);
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
         return status;
     }
 
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_ADD_EDGE);
     status = mtpndd_add_edge(res_edges, sub_result, combined_label);
     if (status != MTPNDD_SUCCESS) {
         sylvan_deref(combined_label);
     }
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
     return status;
 }
 
@@ -378,12 +475,16 @@ static mtpndd_error_t mtpndd_and_diff_field(edge_bucket_entry_t *entry_a,
 }
 
 static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result) {
+    mtpndd_and_prof_start();
+    mtpndd_error_t status = MTPNDD_SUCCESS;
     if (mtpndd_is_false(a) || mtpndd_is_true(b)) {
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_FASTPATH);
         *result = a;
-        return MTPNDD_SUCCESS;
+        MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
     } else if (mtpndd_is_false(b) || mtpndd_is_true(a) || a == b) {
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_FASTPATH);
         *result = b;
-        return MTPNDD_SUCCESS;
+        MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
     }
 
     mtpndd_node_t *cache_a = a;
@@ -394,54 +495,60 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
         cache_b = tmp;
     }
     mtpndd_op_cache_t *and_cache = g_mtpndd_config.and_cache;
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_CACHE_HIT);
     mtpndd_node_t *cached = mtpndd_op_cache_lookup_binary(and_cache, cache_a, cache_b);
     if (cached) {
         *result = cached;
-        return MTPNDD_SUCCESS;
+        MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
     }
 
     mtpndd_t *res_node = NULL;
     mtpndd_edge_t *res_edges = mtpndd_memory_acquire_edge_map();
     if (!res_edges) {
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
+        MTPNDD_AND_RETURN(MTPNDD_ERROR_OUT_OF_MEMORY);
     }
     mtpndd_edge_map_init(res_edges);
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_BUILD_EDGES);
     if (a->field_id == b->field_id) {
         // Same field, combine edges
         edge_bucket_entry_t *entry_a;
         edge_bucket_entry_t *entry_b;
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_OUTER_LOOP);
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
+            mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
             FOR_EACH_ENTRY_IN_ALL_BUCKETS(b->edges, entry_b) {
-                mtpndd_error_t status = mtpndd_and_same_field(entry_a, entry_b, res_edges);
+                status = mtpndd_and_same_field(entry_a, entry_b, res_edges);
                 if (status != MTPNDD_SUCCESS) {
                     mtpndd_edge_map_free(res_edges);
-                    return status;
+                    MTPNDD_AND_RETURN(status);
                 }
             }
+            mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_OUTER_LOOP);
         }
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_BUILD_EDGES);
     } else {
         // Different fields
-    if (a->field_id > b->field_id) {
-        mtpndd_t *temp = a;
-        a = b;
-        b = temp;
-    }
-
+        if (a->field_id > b->field_id) {
+            mtpndd_t *temp = a;
+            a = b;
+            b = temp;
+        }
+        mtpndd_and_prof_switch(MTPNDD_AND_PROF_DIFF_FIELD);
         edge_bucket_entry_t *entry_a;
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            mtpndd_error_t status = mtpndd_and_diff_field(entry_a, b, res_edges);
+            status = mtpndd_and_diff_field(entry_a, b, res_edges);
             if (status != MTPNDD_SUCCESS) {
                 mtpndd_edge_map_free(res_edges);
-                return status;
+                MTPNDD_AND_RETURN(status);
             }
         }
     }
-
+    mtpndd_and_prof_switch(MTPNDD_AND_PROF_MK);
     mtpndd_mk(a->field_id, res_edges, &res_node);
     if (!res_node) {
         mtpndd_edge_map_free(res_edges);
-        return mtpndd_get_last_error().code;
+        MTPNDD_AND_RETURN(mtpndd_get_last_error().code);
     }
 
     mtpndd_gc_protect_add(res_node);
@@ -449,7 +556,7 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
     mtpndd_op_cache_store_binary(and_cache, cache_a, cache_b, res_node);
 
     *result = res_node;
-    return MTPNDD_SUCCESS;
+    MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
 }
 
 static inline void mtpndd_residual_apply_mask(edge_bucket_entry_t *entry, mtpndd_bdd_t mask) {
@@ -856,18 +963,22 @@ mtpndd_t *mtpndd_and(mtpndd_t *a, mtpndd_t *b) {
 mtpndd_t *mtpndd_or(mtpndd_t *a, mtpndd_t *b) {
     mtpndd_gc_protect_clear();
     mtpndd_t *result = NULL;
+    MTPNDD_RECORD_TIME_START(_t_or);
     if (mtpndd_or_rec(a, b, &result) != MTPNDD_SUCCESS) {
         return NULL;
     }
+    MTPNDD_RECORD_TIME_END(or_time_ns, _t_or);
     return result;
 }
 
 mtpndd_t *mtpndd_not(mtpndd_t *a) {
     mtpndd_gc_protect_clear();
     mtpndd_t *result = NULL;
+    MTPNDD_RECORD_TIME_START(_t_not);
     if (mtpndd_not_rec(a, &result) != MTPNDD_SUCCESS) {
         return NULL;
     }
+    MTPNDD_RECORD_TIME_END(not_time_ns, _t_not);
     return result;
 }
 

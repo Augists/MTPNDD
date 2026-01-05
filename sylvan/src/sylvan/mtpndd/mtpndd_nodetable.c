@@ -500,6 +500,10 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
     table->buckets = new_buckets;
     table->nodetable_bucket_count = new_bucket_count;
     table->load_threshold = new_bucket_count - (new_bucket_count >> 2);
+#ifdef ENABLE_RECORDING
+    MTPNDD_STAT_ADD(nodetable_rehash_total, 1);
+    MTPNDD_STAT_MAX(nodetable_max_buckets, new_bucket_count);
+#endif
     return true;
 }
 

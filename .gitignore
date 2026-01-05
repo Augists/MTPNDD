@@ -5,6 +5,7 @@
 nqueen.txt
 queen
 queen.png
+.cache/
 
 # MacOS file
 **/.DS_Store
@@ -49,3 +50,4 @@ target/
 reference/
 archive_unused/
 TASK*.md
+AGENT*.md
