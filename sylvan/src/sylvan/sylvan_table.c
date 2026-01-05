@@ -16,6 +16,7 @@
  */
 
 #include <sylvan_int.h>
+#include <stdatomic.h>
 #include <sylvan_align.h>
 
 #include <errno.h>  // for errno

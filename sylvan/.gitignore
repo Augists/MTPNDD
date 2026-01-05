@@ -1,0 +1,13 @@
+# CMake build tree
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+
+# Generated artifacts
+*.o
+*.a
+*.so
+*.dll
+*.dylib

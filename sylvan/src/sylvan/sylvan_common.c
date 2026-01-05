@@ -16,6 +16,7 @@
  */
 
 #include <sylvan_int.h>
+#include <stdatomic.h>
 
 /**
  * Implementation of garbage collection
@@ -437,5 +438,4 @@ VOID_TASK_IMPL_2(sylvan_table_usage, size_t*, filled, size_t*, total)
     if (filled != NULL) *filled = llmsset_count_marked(nodes);
     if (total != NULL) *total = tot;
 }
-
 
