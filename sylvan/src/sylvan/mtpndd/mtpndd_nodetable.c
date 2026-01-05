@@ -21,6 +21,8 @@
 static void gc_internal(void);
 static void grow_internal(void);
 static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket_count);
+static void mtpndd_nodetable_maybe_rehash(mtpndd_nodetable_t *table);
+static size_t mtpndd_round_up_pow2(size_t v);
 
 static void gcOrGrow(void);
 static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out);
@@ -37,6 +39,10 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     if (bucket_cnt == 0) {
         bucket_cnt = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
+    // encourage moderate load to allow rehash when needed
+    if (bucket_cnt > (1 << 21)) bucket_cnt = (1 << 21);
+    if (bucket_cnt < 16) bucket_cnt = 16;
+    bucket_cnt = mtpndd_round_up_pow2(bucket_cnt);
     table->nodetable_bucket_count = bucket_cnt;
 
     table->buckets =
@@ -49,6 +55,8 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     for (size_t i = 0; i < bucket_cnt; i++) {
         table->buckets[i] = NULL;
     }
+    table->entry_count = 0;
+    table->load_threshold = bucket_cnt - (bucket_cnt >> 2);
 
     return table;
 }
@@ -143,7 +151,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         return;
     } else if (edges->edge_count == 1) {
         edge_bucket_entry_t *only_entry = NULL;
-        size_t bucket_cnt = (edges && edges->buckets) ? g_mtpndd_pal_config.edge_bucket_count : 0;
+    size_t bucket_cnt = (edges && edges->buckets) ? (edges->bucket_count ? edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count) : 0;
         for (size_t i = 0; i < bucket_cnt && !only_entry; ++i) {
             edge_bucket_entry_t *head = edges->buckets[i];
             if (head) {
@@ -242,6 +250,8 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         nodetable->buckets[hash]->prev = new_entry;
     }
     nodetable->buckets[hash] = new_entry;
+    nodetable->entry_count++;
+    mtpndd_nodetable_maybe_rehash(nodetable);
     __atomic_add_fetch(&g_mtpndd_stats.node_count, 1, __ATOMIC_RELAXED);
 #ifdef ENABLE_RECORDING
     MTPNDD_STAT_ADD(nodes_created_total, 1);
@@ -401,7 +411,7 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
 
     mtpndd_edge_t *edges = node->edges;
     if (edges && edges->buckets) {
-        size_t edge_bucket_count = g_mtpndd_pal_config.edge_bucket_count;
+        size_t edge_bucket_count = edges->bucket_count ? edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
         for (size_t eb = 0; eb < edge_bucket_count; ++eb) {
             edge_bucket_entry_t *head = edges->buckets[eb];
             if (!head) {
@@ -421,6 +431,9 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
 
     mtpndd_memory_release_node(node);
     mtpndd_memory_release_nodetable_entry(entry);
+    if (table->entry_count > 0) {
+        table->entry_count--;
+    }
 }
 
 static size_t mtpndd_gc_sweep(void) {
@@ -457,6 +470,9 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
         return false;
     }
 
+    if (new_bucket_count < 16) new_bucket_count = 16;
+    new_bucket_count = mtpndd_round_up_pow2(new_bucket_count);
+
     mtpndd_nodetable_bucket_entry_t **new_buckets =
             (mtpndd_nodetable_bucket_entry_t **)calloc(new_bucket_count, sizeof(*new_buckets));
     if (!new_buckets) {
@@ -483,7 +499,35 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
     free(table->buckets);
     table->buckets = new_buckets;
     table->nodetable_bucket_count = new_bucket_count;
+    table->load_threshold = new_bucket_count - (new_bucket_count >> 2);
     return true;
+}
+
+static void mtpndd_nodetable_maybe_rehash(mtpndd_nodetable_t *table) {
+    if (!table) return;
+    if (table->entry_count >= table->load_threshold) {
+        size_t target = table->nodetable_bucket_count ? table->nodetable_bucket_count * 2 : 16;
+        if (mtpndd_nodetable_rehash(table, target)) {
+            if (target > g_mtpndd_pal_config.nodetable_bucket_count) {
+                g_mtpndd_pal_config.nodetable_bucket_count = target;
+            }
+        }
+    }
+}
+
+static size_t mtpndd_round_up_pow2(size_t v) {
+    if (v == 0) return 1;
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    if (sizeof(size_t) == 8) {
+        v |= v >> 32;
+    }
+    v++;
+    return v;
 }
 
 static void grow_internal(void) {

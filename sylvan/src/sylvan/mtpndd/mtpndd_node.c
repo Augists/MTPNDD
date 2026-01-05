@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <stdbool.h>
+#include <stdlib.h>
 #ifdef ENABLE_RECORDING
 #include <time.h>
 #endif
@@ -26,11 +28,19 @@ static inline void mtpndd_residual_apply_mask(edge_bucket_entry_t *entry, mtpndd
 static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest);
 static void mtpndd_edge_map_reset(mtpndd_edge_t *edges);
 void mtpndd_edge_map_free(mtpndd_edge_t *edges);
+static void mtpndd_edge_map_maybe_rehash(mtpndd_edge_t *edges);
+static size_t mtpndd_round_up_pow2(size_t v);
+static bool mtpndd_edge_map_rehash(mtpndd_edge_t *edges, size_t new_bucket_count);
 
 void mtpndd_edge_map_init(mtpndd_edge_t *edges) {
-    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    size_t bucket_cnt = edges->bucket_count ? edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
+    if (bucket_cnt < MTPNDD_DEFAULT_EDGE_BUCKET_COUNT) bucket_cnt = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
+    bucket_cnt = mtpndd_round_up_pow2(bucket_cnt);
+    edges->bucket_count = bucket_cnt;
+    edges->load_threshold = bucket_cnt - (bucket_cnt >> 3); // ~0.875 load factor (default 0.8+)
     edges->edge_count = 0;
     edges->cached_hash = 0;
+    edges->buckets_malloced = false;
     // Use memset for faster initialization than loop
     memset(edges->buckets, 0, bucket_cnt * sizeof(edge_bucket_entry_t *));
 }
@@ -54,10 +64,26 @@ static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mt
     dest->edge_count = source->edge_count;
     dest->cached_hash = source->cached_hash;
 
-    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
-
-    // Use memset for faster initialization
-    memset(dest->buckets, 0, bucket_cnt * sizeof(edge_bucket_entry_t *));
+    size_t bucket_cnt = source->bucket_count ? source->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
+    if (bucket_cnt < MTPNDD_DEFAULT_EDGE_BUCKET_COUNT) bucket_cnt = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
+    bucket_cnt = mtpndd_round_up_pow2(bucket_cnt);
+    if (bucket_cnt != dest->bucket_count) {
+        if (dest->buckets_malloced && dest->buckets) {
+            free(dest->buckets);
+        }
+        dest->buckets = (edge_bucket_entry_t **)calloc(bucket_cnt, sizeof(edge_bucket_entry_t *));
+        if (!dest->buckets) {
+            dest->bucket_count = 0;
+            dest->load_threshold = 0;
+            dest->buckets_malloced = false;
+            return MTPNDD_ERROR_OUT_OF_MEMORY;
+        }
+        dest->buckets_malloced = true;
+        dest->bucket_count = bucket_cnt;
+        dest->load_threshold = bucket_cnt - (bucket_cnt >> 2);
+    } else {
+        memset(dest->buckets, 0, bucket_cnt * sizeof(edge_bucket_entry_t *));
+    }
 
     if (!source->buckets) {
         return MTPNDD_SUCCESS;
@@ -105,7 +131,7 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
         return;
     }
     if (edges->buckets) {
-        size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+        size_t bucket_cnt = edges->bucket_count ? edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
         // Release all entries first
         for (size_t i = 0; i < bucket_cnt; ++i) {
             edge_bucket_entry_t *entry = edges->buckets[i];
@@ -130,6 +156,61 @@ void mtpndd_edge_map_free(mtpndd_edge_t *edges) {
     }
     mtpndd_edge_map_reset(edges);
     mtpndd_memory_release_edge_map(edges);
+}
+
+static bool mtpndd_edge_map_rehash(mtpndd_edge_t *edges, size_t new_bucket_count) {
+    if (!edges) return false;
+    if (new_bucket_count < MTPNDD_DEFAULT_EDGE_BUCKET_COUNT) new_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
+    new_bucket_count = mtpndd_round_up_pow2(new_bucket_count);
+
+    edge_bucket_entry_t **new_buckets = (edge_bucket_entry_t **)calloc(new_bucket_count, sizeof(edge_bucket_entry_t *));
+    if (!new_buckets) {
+        return false;
+    }
+
+    size_t old_bucket_cnt = edges->bucket_count ? edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
+    for (size_t i = 0; i < old_bucket_cnt; ++i) {
+        edge_bucket_entry_t *entry = edges->buckets[i];
+        while (entry) {
+            edge_bucket_entry_t *next = entry->next;
+            size_t hash = mtpndd_hash_node_identity(entry->child) % new_bucket_count;
+            entry->next = new_buckets[hash];
+            new_buckets[hash] = entry;
+            entry = next;
+        }
+    }
+
+    if (edges->buckets_malloced && edges->buckets) {
+        free(edges->buckets);
+    }
+    edges->buckets = new_buckets;
+    edges->buckets_malloced = true;
+    edges->bucket_count = new_bucket_count;
+    edges->load_threshold = new_bucket_count - (new_bucket_count >> 3);
+    return true;
+}
+
+static void mtpndd_edge_map_maybe_rehash(mtpndd_edge_t *edges) {
+    if (!edges) return;
+    if (edges->edge_count >= edges->load_threshold) {
+        size_t target = edges->bucket_count ? edges->bucket_count * 2 : (g_mtpndd_pal_config.edge_bucket_count ? g_mtpndd_pal_config.edge_bucket_count * 2 : 16);
+        mtpndd_edge_map_rehash(edges, target);
+    }
+}
+
+static size_t mtpndd_round_up_pow2(size_t v) {
+    if (v == 0) return 1;
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    if (sizeof(size_t) == 8) {
+        v |= v >> 32;
+    }
+    v++;
+    return v;
 }
 
 /**
@@ -216,6 +297,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
 
     edges->buckets[hash] = bucket_head;
     edges->edge_count++;
+    mtpndd_edge_map_maybe_rehash(edges);
 #ifdef ENABLE_RECORDING
     if (created_entry) {
         MTPNDD_STAT_ADD(edge_insert_total, 1);
@@ -1059,7 +1141,7 @@ static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t *node, mtpndd_to_mtbdd_cache_
 
     mtpndd_bdd_t acc = sylvan_ref(sylvan_false);
     mtpndd_error_t status = MTPNDD_SUCCESS;
-    size_t bucket_cnt = (node->edges && node->edges->buckets) ? g_mtpndd_pal_config.edge_bucket_count : 0;
+    size_t bucket_cnt = (node->edges && node->edges->buckets) ? (node->edges->bucket_count ? node->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count) : 0;
     for (size_t bucket = 0; bucket < bucket_cnt; ++bucket) {
         edge_bucket_entry_t *head = node->edges->buckets[bucket];
         if (!head) {

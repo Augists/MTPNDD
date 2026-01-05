@@ -23,6 +23,8 @@ typedef struct mtpndd_nodetable_bucket_entry_s {
 typedef struct mtpndd_nodetable_s {
     size_t nodetable_bucket_count;
     mtpndd_nodetable_bucket_entry_t **buckets;
+    size_t entry_count; // number of nodes stored in this table
+    size_t load_threshold; // trigger rehash when entry_count >= load_threshold
 } mtpndd_nodetable_t;
 
 static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count);
@@ -46,7 +48,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
 
     // Full comparison only if hash and count match
     // For each edge in 'a', find matching edge in 'b'
-    size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    size_t edge_bucket_cnt = a->bucket_count ? a->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
     for (size_t i = 0; i < edge_bucket_cnt; i++) {
         edge_bucket_entry_t *entry_a = a->buckets ? a->buckets[i] : NULL;
         while (entry_a) {

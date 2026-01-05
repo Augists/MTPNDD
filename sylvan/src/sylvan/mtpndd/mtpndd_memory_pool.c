@@ -131,8 +131,26 @@ void mtpndd_memory_pools_init(void) {
 
     g_edge_bucket_count = g_mtpndd_pal_config.edge_bucket_count;
     if (g_edge_bucket_count == 0) {
+        g_edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT; // default 8
+    }
+    if (g_edge_bucket_count < MTPNDD_DEFAULT_EDGE_BUCKET_COUNT) {
         g_edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
     }
+    // round up to power of two (keep default at 8)
+    size_t _tmp = g_edge_bucket_count;
+    _tmp--;
+    _tmp |= _tmp >> 1;
+    _tmp |= _tmp >> 2;
+    _tmp |= _tmp >> 4;
+    _tmp |= _tmp >> 8;
+    _tmp |= _tmp >> 16;
+    if (sizeof(size_t) == 8) {
+        _tmp |= _tmp >> 32;
+    }
+    _tmp++;
+    g_edge_bucket_count = _tmp;
+    g_mtpndd_pal_config.edge_bucket_count = g_edge_bucket_count;
+
     size_t offset = sizeof(mtpndd_edge_t);
     offset = mtpndd_align_size(offset, _Alignof(edge_bucket_entry_t *));
     g_edge_bucket_array_offset = offset;
@@ -296,6 +314,9 @@ mtpndd_edge_t *mtpndd_memory_acquire_edge_map(void) {
     }
     char *base = (char *)edges;
     edges->buckets = (edge_bucket_entry_t **)(base + g_edge_bucket_array_offset);
+    edges->bucket_count = g_edge_bucket_count;
+    edges->load_threshold = g_edge_bucket_count - (g_edge_bucket_count >> 2);
+    edges->buckets_malloced = false;
 #ifdef ENABLE_RECORDING
     MTPNDD_STAT_ADD(edge_map_pool_acquire_total, 1);
     if (grew) {
@@ -308,6 +329,10 @@ mtpndd_edge_t *mtpndd_memory_acquire_edge_map(void) {
 void mtpndd_memory_release_edge_map(mtpndd_edge_t *edges) {
     if (!edges) {
         return;
+    }
+    if (edges->buckets_malloced && edges->buckets) {
+        free(edges->buckets);
+        edges->buckets = NULL;
     }
     mtpndd_slab_pool_release(&g_edge_map_pool, edges);
 #ifdef ENABLE_RECORDING

@@ -7,6 +7,7 @@
 
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include "mtpndd_common.h"
 
 /********************************
@@ -35,6 +36,9 @@ struct mtpndd_edge_s {
     size_t edge_count;
     uint64_t cached_hash;  // Cached hash value for fast lookup (like Java HashMap)
     edge_bucket_entry_t **buckets;
+    size_t bucket_count;
+    size_t load_threshold;
+    bool buckets_malloced;
 };
 
 // Compute hash value for edge map content (matches Java Map.hashCode() semantics)
@@ -44,7 +48,7 @@ static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) 
     // Use XOR-based accumulation like Java's HashMap.hashCode()
     // This is order-independent, matching Java's Map.hashCode() behavior
     uint64_t hash = 0;
-    size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    size_t edge_bucket_cnt = edges->bucket_count ? edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
     for (size_t i = 0; i < edge_bucket_cnt; i++) {
         edge_bucket_entry_t *entry = edges->buckets[i];
         while (entry) {
@@ -61,7 +65,7 @@ static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) 
 
 static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd_node_t *child) {
     size_t hash = mtpndd_hash_node_identity(child);
-    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    size_t bucket_cnt = (emap && emap->bucket_count) ? emap->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
     return bucket_cnt ? (hash % bucket_cnt) : 0;
 }
 
@@ -74,7 +78,7 @@ static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd
         (entry); \
         (entry) = (entry)->next)
 #define FOR_EACH_ENTRY_IN_ALL_BUCKETS(emap, entry) \
-    for (size_t _bkt = 0, _edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count; _bkt < _edge_bucket_cnt; _bkt++) \
+    for (size_t _bkt = 0, _edge_bucket_cnt = (emap)->bucket_count ? (emap)->bucket_count : g_mtpndd_pal_config.edge_bucket_count; _bkt < _edge_bucket_cnt; _bkt++) \
         for ((entry) = (emap)->buckets[_bkt]; \
             (entry); \
             (entry) = (entry)->next)
