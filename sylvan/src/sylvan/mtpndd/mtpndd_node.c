@@ -545,15 +545,55 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
         }
     }
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_MK);
+#ifdef ENABLE_RECORDING
+    struct timespec mk_total_start = {0};
+    struct timespec mk_total_end = {0};
+    struct timespec mk_phase_start = {0};
+    uint64_t mk_call_ns = 0;
+    uint64_t mk_gc_ns = 0;
+    uint64_t mk_cache_ns = 0;
+    clock_gettime(CLOCK_MONOTONIC, &mk_total_start);
+    clock_gettime(CLOCK_MONOTONIC, &mk_phase_start);
+#endif
     mtpndd_mk(a->field_id, res_edges, &res_node);
+#ifdef ENABLE_RECORDING
+    struct timespec mk_phase_end = {0};
+    clock_gettime(CLOCK_MONOTONIC, &mk_phase_end);
+    mk_call_ns = mtpndd_timespec_diff_ns(&mk_phase_start, &mk_phase_end);
+    mtpndd_stat_add(&g_mtpndd_stats.and_mk_call_ns, mk_call_ns);
+#endif
     if (!res_node) {
         mtpndd_edge_map_free(res_edges);
+#ifdef ENABLE_RECORDING
+        clock_gettime(CLOCK_MONOTONIC, &mk_total_end);
+        uint64_t mk_total_ns = mtpndd_timespec_diff_ns(&mk_total_start, &mk_total_end);
+        uint64_t mk_other_ns = mk_total_ns - mk_call_ns - mk_gc_ns - mk_cache_ns;
+        mtpndd_stat_add(&g_mtpndd_stats.and_mk_other_ns, mk_other_ns);
+#endif
         MTPNDD_AND_RETURN(mtpndd_get_last_error().code);
     }
 
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &mk_phase_start);
+#endif
     mtpndd_gc_protect_add(res_node);
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &mk_phase_end);
+    mk_gc_ns = mtpndd_timespec_diff_ns(&mk_phase_start, &mk_phase_end);
+    mtpndd_stat_add(&g_mtpndd_stats.and_mk_gc_protect_ns, mk_gc_ns);
+    clock_gettime(CLOCK_MONOTONIC, &mk_phase_start);
+#endif
 
     mtpndd_op_cache_store_binary(and_cache, cache_a, cache_b, res_node);
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &mk_phase_end);
+    mk_cache_ns = mtpndd_timespec_diff_ns(&mk_phase_start, &mk_phase_end);
+    mtpndd_stat_add(&g_mtpndd_stats.and_mk_cache_store_ns, mk_cache_ns);
+    clock_gettime(CLOCK_MONOTONIC, &mk_total_end);
+    uint64_t mk_total_ns = mtpndd_timespec_diff_ns(&mk_total_start, &mk_total_end);
+    uint64_t mk_other_ns = mk_total_ns - mk_call_ns - mk_gc_ns - mk_cache_ns;
+    mtpndd_stat_add(&g_mtpndd_stats.and_mk_other_ns, mk_other_ns);
+#endif
 
     *result = res_node;
     MTPNDD_AND_RETURN(MTPNDD_SUCCESS);

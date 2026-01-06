@@ -178,6 +178,32 @@ typedef struct mtpndd_stats_s {
     uint64_t and_same_add_edge_ns;
     uint64_t and_diff_field_ns;
     uint64_t and_mk_ns;
+    uint64_t and_mk_call_ns;
+    uint64_t and_mk_gc_protect_ns;
+    uint64_t and_mk_cache_store_ns;
+    uint64_t and_mk_other_ns;
+    uint64_t gc_protect_hash_ns;
+    uint64_t gc_protect_lookup_ns;
+    uint64_t gc_protect_alloc_ns;
+    uint64_t gc_protect_record_ns;
+    uint64_t gc_protect_link_ns;
+    uint64_t gc_protect_lookup_steps_total;
+    uint64_t gc_protect_lookup_max_steps;
+    uint64_t gc_protect_lookup_hits;
+    uint64_t gc_protect_lookup_misses;
+    uint64_t mk_hash_ns;
+    uint64_t mk_lookup_ns;
+    uint64_t mk_fast_return_ns;
+    uint64_t mk_reuse_cleanup_ns;
+    uint64_t mk_ref_children_ns;
+    uint64_t mk_gc_or_grow_ns;
+    uint64_t mk_alloc_node_ns;
+    uint64_t mk_alloc_entry_ns;
+    uint64_t mk_bucket_scan_ns;
+    uint64_t mk_link_ns;
+    uint64_t mk_collision_cleanup_ns;
+    uint64_t mk_other_ns;
+    uint64_t mk_total_ns;
 #endif
 } mtpndd_stats_t;
 
@@ -329,9 +355,29 @@ static inline gc_protect_entry_t *gc_protect_bucket_find(mtpndd_gc_protect_t *gc
         return NULL;
     }
     gc_protect_entry_t *entry = gcp->buckets[bucket_idx];
+#ifdef ENABLE_RECORDING
+    uint64_t steps = 0;
+#endif
     while (entry && !GC_PROTECT_ENTRY_EQUAL(entry, key)) {
+#ifdef ENABLE_RECORDING
+        steps++;
+#endif
         entry = entry->next;
     }
+#ifdef ENABLE_RECORDING
+    if (entry) {
+        steps++;
+    }
+    if (steps) {
+        MTPNDD_STAT_ADD(gc_protect_lookup_steps_total, steps);
+        MTPNDD_STAT_MAX(gc_protect_lookup_max_steps, steps);
+    }
+    if (entry) {
+        MTPNDD_STAT_ADD(gc_protect_lookup_hits, 1);
+    } else {
+        MTPNDD_STAT_ADD(gc_protect_lookup_misses, 1);
+    }
+#endif
     return entry;
 }
 

@@ -808,27 +808,64 @@ void mtpndd_gc_protect_add(mtpndd_t *node) {
     }
 
     mtpndd_gc_protect_t *gc_protect = g_mtpndd_config.gcProtect;
+#ifdef ENABLE_RECORDING
+    struct timespec phase_start = {0};
+    struct timespec phase_end = {0};
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+#endif
     size_t hash = GC_PROTECT_HASH_VAL(gc_protect, node);
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    MTPNDD_STAT_ADD(gc_protect_hash_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+#endif
 
     // Check if already protected before allocating
     gc_protect_entry_t *existing = gc_protect_bucket_find(gc_protect, hash, node);
     if (existing) {
+#ifdef ENABLE_RECORDING
+        clock_gettime(CLOCK_MONOTONIC, &phase_end);
+        MTPNDD_STAT_ADD(gc_protect_lookup_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+#endif
         return;
     }
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    MTPNDD_STAT_ADD(gc_protect_lookup_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+#endif
 
     // Only allocate after confirming not already protected
     gc_protect_entry_t *entry = mtpndd_memory_acquire_gc_protect_entry();
     if (!entry) {
+#ifdef ENABLE_RECORDING
+        clock_gettime(CLOCK_MONOTONIC, &phase_end);
+        MTPNDD_STAT_ADD(gc_protect_alloc_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+#endif
         return;
     }
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    MTPNDD_STAT_ADD(gc_protect_alloc_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+#endif
 
     if (!gc_protect->buckets[hash]) {
         // first entry in this bucket, record for fast clear
         if (!gc_protect_record_used_bucket(gc_protect, hash)) {
+#ifdef ENABLE_RECORDING
+            clock_gettime(CLOCK_MONOTONIC, &phase_end);
+            MTPNDD_STAT_ADD(gc_protect_record_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+#endif
             mtpndd_memory_release_gc_protect_entry(entry);
             return;
         }
     }
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    MTPNDD_STAT_ADD(gc_protect_record_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+#endif
 
     entry->node = node;
     entry->next = gc_protect->buckets[hash];
@@ -838,4 +875,8 @@ void mtpndd_gc_protect_add(mtpndd_t *node) {
     }
     gc_protect->buckets[hash] = entry;
     atomic_fetch_add_explicit(&gc_protect->gc_protect_count, 1, memory_order_relaxed);
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    MTPNDD_STAT_ADD(gc_protect_link_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+#endif
 }

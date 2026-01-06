@@ -3,9 +3,7 @@
 ## 1. 结论与当前目标（最新）
 - **核心结论**：Sylvan/Lace 版本差异是当前性能差距的主因。基于对比，**bundled Lace 的版本表现最好**。
 - **当前目标**：
-  1) 更新 Sylvan 到最新版并建立新基线。
-  2) 在 MTPNDD 使用的 Sylvan 中集成 bundled Lace，并完成兼容调整。
-  3) 让 MTPNDD 运行时也兼容 bundled Lace。
+  1) 移除 gc_protect 集合，改为对临时节点直接 ref/deref。
 - **约束**：目前不引入“BDD 边复用”，保持与 `reference/NDD` main 分支一致的行为。
 
 ## 2. 关键原因（版本级差异）
@@ -13,13 +11,17 @@
 2. **新版 Sylvan 使用 `RUN`**：`RUN` 在外部线程路径上会触发 `lace_run_task` 的同步开销（resume/suspend、锁、信号量），在 NQueens 高频 BDD 调用下成本显著累积。
 3. **JSylvan 新版适配移除 `LACE_ME`**：在新 Lace 语义下无法在 Java 线程创建 worker 上下文，导致所有操作走慢路径。
 
-## 3. MTPNDD 当前基线（NQueens N=10）
-- 命令：`./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_test 10`（`MTPNDD_ENABLE_RECORDING=ON`）
-- 结果：solutions=724，总耗时 5.256s（run=5.174s，init=0.048s，ctx=0.034s）
+## 3. MTPNDD 当前基线（NQueens N=12）
+- 命令：`./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12`（`MTPNDD_ENABLE_RECORDING=ON`）
+- 结果：solutions=14200，总耗时 61.848s
 - AND 时间分解：
-  - and/or/not 总时间：5.059 / 0.037 / 0.000 s
-  - and 分解：fast=0.008，cache=0.134，build_edges=0.014，diff=0.019，mk=0.537 s
-  - same-field 细分：outer=0.041，inner=0.041，label=0.024，bdd_op=3.788，add_edge=0.440 s
+  - and/or/not 总时间：61.484 / 0.009 / 0.001 s
+  - and 分解：fast=0.117，cache=2.424，build_edges=0.397，diff=0.650，mk=46.442 s
+  - same-field 细分：outer=1.051，inner=0.850，label=0.716，bdd_op=6.608，add_edge=1.927 s
+- MK 内部分解：
+  - mk call/gc/cache/other：6.304 / 36.697 / 0.569 / 0.883 s
+  - gc_protect 内部：hash=0.369，lookup=34.386，alloc=0.355，record=0.153，link=0.235 s
+  - gc_protect 链表统计：hits/misses=1,623,576/7,878,905，avg_steps=238.72，max_steps=1502
 
 > 说明：本次统计不包含 `satcount` 的转换成本。
 
@@ -33,6 +35,11 @@ kcachegrind callgrind.out.*
 ```
 
 ## 5. 附录：次要观察项与后置优化
+### 5.0 已完成的方案与基线
+- 更新 Sylvan 到最新版并建立新基线。
+- 在 MTPNDD 使用的 Sylvan 中集成 bundled Lace，并完成兼容调整。
+- 让 MTPNDD 运行时兼容 bundled Lace。
+
 ### 5.1 操作缓存
 - 命中率低但可接受（约 12.7%），当前不作为优化目标。
 
