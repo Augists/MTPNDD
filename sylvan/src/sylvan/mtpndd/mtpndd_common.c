@@ -29,7 +29,6 @@ mtpndd_config_t g_mtpndd_config = {
     .and_cache = NULL,
     .or_cache = NULL,
     .not_cache = NULL,
-    .gcProtect = NULL,
 };
 
 #define MTPNDD_GC_HOOK_CAPACITY 16
@@ -510,9 +509,6 @@ static void mtpndd_apply_pal_config_defaults(void) {
     if (g_mtpndd_pal_config.nodetable_bucket_count == 0) {
         g_mtpndd_pal_config.nodetable_bucket_count = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
-    if (g_mtpndd_pal_config.gc_bucket_count == 0) {
-        g_mtpndd_pal_config.gc_bucket_count = MTPNDD_DEFAULT_GC_BUCKET_COUNT;
-    }
     if (g_mtpndd_pal_config.node_slab_capacity == 0) {
         g_mtpndd_pal_config.node_slab_capacity = MTPNDD_DEFAULT_NODE_SLAB_CAPACITY;
     }
@@ -524,9 +520,6 @@ static void mtpndd_apply_pal_config_defaults(void) {
     }
     if (g_mtpndd_pal_config.edge_map_slab_capacity == 0) {
         g_mtpndd_pal_config.edge_map_slab_capacity = MTPNDD_DEFAULT_EDGE_MAP_SLAB_CAPACITY;
-    }
-    if (g_mtpndd_pal_config.gc_protect_entry_slab_capacity == 0) {
-        g_mtpndd_pal_config.gc_protect_entry_slab_capacity = MTPNDD_DEFAULT_GC_PROTECT_ENTRY_SLAB_CAPACITY;
     }
 }
 
@@ -553,12 +546,10 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     g_mtpndd_pal_config.quick_growth_threshold = DEFAULT_QUICK_GROWTH_THRESHOLD;
     g_mtpndd_pal_config.edge_bucket_count = config->edge_bucket_count;
     g_mtpndd_pal_config.nodetable_bucket_count = config->nodetable_bucket_count;
-    g_mtpndd_pal_config.gc_bucket_count = config->gc_bucket_count;
     g_mtpndd_pal_config.node_slab_capacity = config->node_slab_capacity;
     g_mtpndd_pal_config.edge_entry_slab_capacity = config->edge_entry_slab_capacity;
     g_mtpndd_pal_config.nodetable_entry_slab_capacity = config->nodetable_entry_slab_capacity;
     g_mtpndd_pal_config.edge_map_slab_capacity = config->edge_map_slab_capacity;
-    g_mtpndd_pal_config.gc_protect_entry_slab_capacity = config->gc_protect_entry_slab_capacity;
     mtpndd_apply_pal_config_defaults();
 
     MTPNDD_TRUE.field_id = 0;
@@ -586,47 +577,6 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     }
     g_mtpndd_config.node_tables_by_field = (mtpndd_nodetable_t **)aligned_nt;
     memset(g_mtpndd_config.node_tables_by_field, 0, sizeof(mtpndd_nodetable_t *) * DEFAULT_FIELD_CAPACITY);
-
-    g_mtpndd_config.gcProtect = (mtpndd_gc_protect_t *)malloc(sizeof(mtpndd_gc_protect_t));
-    if (!g_mtpndd_config.gcProtect) {
-        free(g_mtpndd_config.node_tables_by_field);
-        g_mtpndd_config.node_tables_by_field = NULL;
-        free(g_mtpndd_config.field_info);
-        g_mtpndd_config.field_info = NULL;
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    atomic_init(&g_mtpndd_config.gcProtect->gc_protect_count, 0);
-    g_mtpndd_config.gcProtect->bucket_count = g_mtpndd_pal_config.gc_bucket_count;
-    g_mtpndd_config.gcProtect->used_bucket_count = 0;
-    g_mtpndd_config.gcProtect->used_bucket_capacity = 16;
-    g_mtpndd_config.gcProtect->used_bucket_indices = (size_t *)malloc(
-            g_mtpndd_config.gcProtect->used_bucket_capacity * sizeof(size_t));
-    if (!g_mtpndd_config.gcProtect->used_bucket_indices) {
-        free(g_mtpndd_config.gcProtect);
-        g_mtpndd_config.gcProtect = NULL;
-        free(g_mtpndd_config.node_tables_by_field);
-        g_mtpndd_config.node_tables_by_field = NULL;
-        free(g_mtpndd_config.field_info);
-        g_mtpndd_config.field_info = NULL;
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    size_t gc_bucket_cnt = g_mtpndd_config.gcProtect->bucket_count;
-    if (gc_bucket_cnt == 0) {
-        gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT;
-        g_mtpndd_config.gcProtect->bucket_count = gc_bucket_cnt;
-    }
-    g_mtpndd_config.gcProtect->buckets = (gc_protect_entry_t **)calloc(
-            gc_bucket_cnt, sizeof(gc_protect_entry_t *));
-    if (!g_mtpndd_config.gcProtect->buckets) {
-        free(g_mtpndd_config.gcProtect->used_bucket_indices);
-        free(g_mtpndd_config.gcProtect);
-        g_mtpndd_config.gcProtect = NULL;
-        free(g_mtpndd_config.node_tables_by_field);
-        g_mtpndd_config.node_tables_by_field = NULL;
-        free(g_mtpndd_config.field_info);
-        g_mtpndd_config.field_info = NULL;
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
 
     if (!mtpndd_lace_init()) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_PARALLEL_INIT);
@@ -729,16 +679,6 @@ mtpndd_error_t mtpndd_quit() {
     g_mtpndd_config.field_count = 0;
     g_mtpndd_config.field_capacity = 0;
 
-    if (g_mtpndd_config.gcProtect) {
-        mtpndd_gc_protect_clear();
-        free(g_mtpndd_config.gcProtect->buckets);
-        g_mtpndd_config.gcProtect->buckets = NULL;
-        free(g_mtpndd_config.gcProtect->used_bucket_indices);
-        g_mtpndd_config.gcProtect->used_bucket_indices = NULL;
-        free(g_mtpndd_config.gcProtect);
-        g_mtpndd_config.gcProtect = NULL;
-    }
-
     mtpndd_op_cache_destroy();
     mtpndd_memory_pools_shutdown();
 
@@ -751,132 +691,4 @@ mtpndd_error_t mtpndd_quit() {
     mtpndd_clear_error();
 
     return MTPNDD_SUCCESS;
-}
-
-/********************************
- * GC protection hash set
- ********************************/
-static bool gc_protect_record_used_bucket(mtpndd_gc_protect_t *gc_protect, size_t bucket_idx) {
-    if (!gc_protect || !gc_protect->used_bucket_indices) {
-        return false;
-    }
-    // only record when bucket becomes non-empty
-    if (gc_protect->used_bucket_count >= gc_protect->used_bucket_capacity) {
-        size_t new_cap = gc_protect->used_bucket_capacity * 2;
-        size_t *new_arr = (size_t *)realloc(gc_protect->used_bucket_indices, new_cap * sizeof(size_t));
-        if (!new_arr) {
-            return false;
-        }
-        gc_protect->used_bucket_indices = new_arr;
-        gc_protect->used_bucket_capacity = new_cap;
-    }
-    gc_protect->used_bucket_indices[gc_protect->used_bucket_count++] = bucket_idx;
-    return true;
-}
-
-static void gc_protect_clear_all(mtpndd_gc_protect_t *gc_protect) {
-    if (!gc_protect || atomic_load_explicit(&gc_protect->gc_protect_count, memory_order_relaxed) == 0) {
-        return;
-    }
-    size_t used_cnt = gc_protect->used_bucket_count;
-    for (size_t i = 0; i < used_cnt; ++i) {
-        size_t bucket_idx = gc_protect->used_bucket_indices[i];
-        gc_protect_entry_t *entry = gc_protect->buckets ? gc_protect->buckets[bucket_idx] : NULL;
-        while (entry) {
-            gc_protect_entry_t *next_entry = entry->next;
-            mtpndd_memory_release_gc_protect_entry(entry);
-            entry = next_entry;
-        }
-        if (gc_protect->buckets) {
-            gc_protect->buckets[bucket_idx] = NULL;
-        }
-    }
-    gc_protect->used_bucket_count = 0;
-    atomic_store_explicit(&gc_protect->gc_protect_count, 0, memory_order_relaxed);
-}
-
-void mtpndd_gc_protect_clear() {
-    if (!g_mtpndd_config.gcProtect) {
-        return;
-    }
-    gc_protect_clear_all(g_mtpndd_config.gcProtect);
-}
-
-void mtpndd_gc_protect_add(mtpndd_t *node) {
-    if (!mtpndd_is_initialized() || !node || node == &MTPNDD_TRUE || node == &MTPNDD_FALSE) {
-        return;
-    }
-
-    mtpndd_gc_protect_t *gc_protect = g_mtpndd_config.gcProtect;
-#ifdef ENABLE_RECORDING
-    struct timespec phase_start = {0};
-    struct timespec phase_end = {0};
-    clock_gettime(CLOCK_MONOTONIC, &phase_start);
-#endif
-    size_t hash = GC_PROTECT_HASH_VAL(gc_protect, node);
-#ifdef ENABLE_RECORDING
-    clock_gettime(CLOCK_MONOTONIC, &phase_end);
-    MTPNDD_STAT_ADD(gc_protect_hash_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-    clock_gettime(CLOCK_MONOTONIC, &phase_start);
-#endif
-
-    // Check if already protected before allocating
-    gc_protect_entry_t *existing = gc_protect_bucket_find(gc_protect, hash, node);
-    if (existing) {
-#ifdef ENABLE_RECORDING
-        clock_gettime(CLOCK_MONOTONIC, &phase_end);
-        MTPNDD_STAT_ADD(gc_protect_lookup_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-#endif
-        return;
-    }
-#ifdef ENABLE_RECORDING
-    clock_gettime(CLOCK_MONOTONIC, &phase_end);
-    MTPNDD_STAT_ADD(gc_protect_lookup_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-    clock_gettime(CLOCK_MONOTONIC, &phase_start);
-#endif
-
-    // Only allocate after confirming not already protected
-    gc_protect_entry_t *entry = mtpndd_memory_acquire_gc_protect_entry();
-    if (!entry) {
-#ifdef ENABLE_RECORDING
-        clock_gettime(CLOCK_MONOTONIC, &phase_end);
-        MTPNDD_STAT_ADD(gc_protect_alloc_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-#endif
-        return;
-    }
-#ifdef ENABLE_RECORDING
-    clock_gettime(CLOCK_MONOTONIC, &phase_end);
-    MTPNDD_STAT_ADD(gc_protect_alloc_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-    clock_gettime(CLOCK_MONOTONIC, &phase_start);
-#endif
-
-    if (!gc_protect->buckets[hash]) {
-        // first entry in this bucket, record for fast clear
-        if (!gc_protect_record_used_bucket(gc_protect, hash)) {
-#ifdef ENABLE_RECORDING
-            clock_gettime(CLOCK_MONOTONIC, &phase_end);
-            MTPNDD_STAT_ADD(gc_protect_record_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-#endif
-            mtpndd_memory_release_gc_protect_entry(entry);
-            return;
-        }
-    }
-#ifdef ENABLE_RECORDING
-    clock_gettime(CLOCK_MONOTONIC, &phase_end);
-    MTPNDD_STAT_ADD(gc_protect_record_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-    clock_gettime(CLOCK_MONOTONIC, &phase_start);
-#endif
-
-    entry->node = node;
-    entry->next = gc_protect->buckets[hash];
-    entry->prev = NULL;
-    if (gc_protect->buckets[hash]) {
-        gc_protect->buckets[hash]->prev = entry;
-    }
-    gc_protect->buckets[hash] = entry;
-    atomic_fetch_add_explicit(&gc_protect->gc_protect_count, 1, memory_order_relaxed);
-#ifdef ENABLE_RECORDING
-    clock_gettime(CLOCK_MONOTONIC, &phase_end);
-    MTPNDD_STAT_ADD(gc_protect_link_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
-#endif
 }

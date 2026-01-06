@@ -58,15 +58,11 @@ mtpndd_pal_config_t config = {
     .edge_entry_slab_capacity = 1024,
     .nodetable_entry_slab_capacity = 1024,
     .edge_map_slab_capacity = 1024,
-    .gc_bucket_count = 64,        // 默认为 1024 或 65537
-    .gc_protect_entry_slab_capacity = 256 // 默认 256，可按需要增减
 };
 mtpndd_init(&config);
 ```
 
 未配置时会自动使用默认值，适合小规模问题。对于节点/边数量巨大的场景，可以按需增大桶数量或调节 slab 大小以降低哈希冲突和频繁分配的开销。
-
-`gc_protect_entry_slab_capacity` 可较小（例如 256/384/512/640），因为其占用和热点访问都远少于核心池。
 
 节点、边映射以及节点表 entry 均通过 slab 内存池管理，在初始化阶段会按上述容量参数批量预留对象并在回收时复用，避免频繁的 `malloc/free` 带来的锁竞争开销。
 

@@ -68,6 +68,7 @@ Java_org_ants_mtpndd_MTPNDDEngine_initNative(JNIEnv *env, jclass clazz,
                                              jlong edgeMapSlabCap)
 {
     (void)clazz;
+    (void)gcBuckets;
     mtpndd_pal_config_t config = {0};
     config.n_workers = (int32_t)nWorkers;
     config.lace_dqsize = (size_t)laceDQSize;
@@ -82,9 +83,6 @@ Java_org_ants_mtpndd_MTPNDDEngine_initNative(JNIEnv *env, jclass clazz,
     }
     if (nodeBuckets > 0) {
         config.nodetable_bucket_count = (size_t)nodeBuckets;
-    }
-    if (gcBuckets > 0) {
-        config.gc_bucket_count = (size_t)gcBuckets;
     }
     if (nodeSlabCap > 0) {
         config.node_slab_capacity = (size_t)nodeSlabCap;

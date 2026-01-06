@@ -178,12 +178,10 @@ static bool run_benchmark(size_t n) {
         .op_cache_size = bdd_cache,
         .edge_bucket_count = 0,
         .nodetable_bucket_count = 0,
-        .gc_bucket_count = 0,
         .node_slab_capacity = 0,
         .edge_entry_slab_capacity = 0,
         .nodetable_entry_slab_capacity = 0,
         .edge_map_slab_capacity = 0,
-        .gc_protect_entry_slab_capacity = 0,
     };
 
     if (mtpndd_init(&cfg) != MTPNDD_SUCCESS) {
@@ -276,24 +274,10 @@ static bool run_benchmark(size_t n) {
                stats->and_same_bdd_op_ns / 1e9,
                stats->and_same_add_edge_ns / 1e9,
                stats->and_same_field_ns / 1e9);
-        printf(".. stats: and mk call/gc/cache/other = %.3f/%.3f/%.3f/%.3f s\n",
+        printf(".. stats: and mk call/cache/other = %.3f/%.3f/%.3f s\n",
                stats->and_mk_call_ns / 1e9,
-               stats->and_mk_gc_protect_ns / 1e9,
                stats->and_mk_cache_store_ns / 1e9,
                stats->and_mk_other_ns / 1e9);
-        printf(".. stats: gc protect hash/lookup/alloc/record/link = %.3f/%.3f/%.3f/%.3f/%.3f s\n",
-               stats->gc_protect_hash_ns / 1e9,
-               stats->gc_protect_lookup_ns / 1e9,
-               stats->gc_protect_alloc_ns / 1e9,
-               stats->gc_protect_record_ns / 1e9,
-               stats->gc_protect_link_ns / 1e9);
-        uint64_t lookup_total = stats->gc_protect_lookup_hits + stats->gc_protect_lookup_misses;
-        double avg_steps = lookup_total ? (double)stats->gc_protect_lookup_steps_total / (double)lookup_total : 0.0;
-        printf(".. stats: gc protect lookup hits/misses=%" PRIu64 "/%" PRIu64 " avg_steps=%.2f max_steps=%" PRIu64 "\n",
-               stats->gc_protect_lookup_hits,
-               stats->gc_protect_lookup_misses,
-               avg_steps,
-               stats->gc_protect_lookup_max_steps);
         printf(".. stats: mk hash/lookup/fast/reuse/ref/gc/alloc_node/alloc_entry = %.3f/%.3f/%.3f/%.3f/%.3f/%.3f/%.3f/%.3f s\n",
                stats->mk_hash_ns / 1e9,
                stats->mk_lookup_ns / 1e9,

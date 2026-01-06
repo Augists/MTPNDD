@@ -17,11 +17,10 @@ digraph MTPNDD {
         style="rounded";
         color="#c0c0c0";
         common [label="mtpndd_common.c\n• runtime init/quit\n• field & config registry\n• error/status tracking", fillcolor="#ffe5cc"];
-        config [label="Global State\n(g_mtpndd_config, g_mtpndd_pal_config)\n• holds per-field metadata\n• owns nodetables & caches\n• tracks GC protection", fillcolor="#fff4d9"];
+        config [label="Global State\n(g_mtpndd_config, g_mtpndd_pal_config)\n• holds per-field metadata\n• owns nodetables & caches", fillcolor="#fff4d9"];
         node_ops [label="mtpndd_node.c\n• node/edge structures\n• boolean & quantifier tasks\n• MTBDD conversion bridge", fillcolor="#e4f7d7"];
         nodetable [label="mtpndd_nodetable.c\n• unique-table lookup\n• refcount updates\n• triggers GC/grow", fillcolor="#e4f7d7"];
         cache [label="mtpndd_operation_cache.c\n• AND/OR/NOT caches\n• lock-striped entries\n• hash by node identity", fillcolor="#e4f7d7"];
-        gc [label="GC Protect Set\n(mtpndd_gc_protect_t)\n• roots live nodes\n• RW-locked hash buckets", fillcolor="#e4f7d7"];
     }
 
     subgraph cluster_runtime {
@@ -46,11 +45,7 @@ digraph MTPNDD {
     node_ops -> config [label="field layout"];
 
     nodetable -> config [label="updates stats"];
-    nodetable -> gc [label="protect checks"];
-
     cache -> config [label="registered caches"];
-
-    gc -> config [label="protect registry"];
 
     config -> sylvan [label="size parameters"];
     config -> cache [label="capacity" dir="both" style="dashed"];

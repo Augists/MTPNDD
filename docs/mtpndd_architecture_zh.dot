@@ -17,11 +17,10 @@ digraph MTPNDD_ZH {
         style="rounded";
         color="#c0c0c0";
         common [label="mtpndd_common.c\n• 运行时初始化/退出\n• 字段与配置注册表\n• 错误与状态追踪", fillcolor="#ffe5cc"];
-        config [label="全局状态\n(g_mtpndd_config, g_mtpndd_pal_config)\n• 维护字段元数据\n• 持有唯一表与算子缓存\n• 管理 GC 保护集", fillcolor="#fff4d9"];
+        config [label="全局状态\n(g_mtpndd_config, g_mtpndd_pal_config)\n• 维护字段元数据\n• 持有唯一表与算子缓存", fillcolor="#fff4d9"];
         node_ops [label="mtpndd_node.c\n• 节点/边结构体\n• 布尔与量词算子\n• 与 Sylvan MTBDD 互转", fillcolor="#e4f7d7"];
         nodetable [label="mtpndd_nodetable.c\n• 唯一表查找与复用\n• 引用计数维护\n• 触发垃圾回收或扩容", fillcolor="#e4f7d7"];
         cache [label="mtpndd_operation_cache.c\n• AND/OR/NOT 算子缓存\n• 读写锁分片\n• 基于节点身份哈希", fillcolor="#e4f7d7"];
-        gc [label="GC 保护集\n(mtpndd_gc_protect_t)\n• 根集合登记\n• 读写锁哈希桶", fillcolor="#e4f7d7"];
     }
 
     subgraph cluster_runtime {
@@ -46,11 +45,7 @@ digraph MTPNDD_ZH {
     node_ops -> config [label="字段布局"];
 
     nodetable -> config [label="回写统计"];
-    nodetable -> gc [label="保护校验"];
-
     cache -> config [label="注册缓存"];
-
-    gc -> config [label="挂载保护集"];
 
     config -> sylvan [label="尺寸配置"];
     config -> cache [label="容量" dir="both" style="dashed"];

@@ -237,7 +237,6 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t ndd_size = 1 << 18;
     size_t cache_size = 1 << 19; // smaller op cache to reduce overhead
     size_t edge_bucket_count = 16;
-    size_t gc_bucket_count = 128;
     size_t node_slab_capacity = 1024;
     size_t edge_entry_slab_capacity = 2048;
     size_t nodetable_entry_slab_capacity = 1024;
@@ -248,7 +247,6 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         ndd_size = 1 << 19;
         cache_size = 1 << 19;
         edge_bucket_count = 16;
-        gc_bucket_count = 256;
         node_slab_capacity = 1536;
         edge_entry_slab_capacity = 3072;
         nodetable_entry_slab_capacity = 1536;
@@ -258,7 +256,6 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         ndd_size = 1 << 19; // reduce nodetable buckets to be closer to node count
         cache_size = 1 << 20;
         edge_bucket_count = 16;
-        gc_bucket_count = 512;
         node_slab_capacity = 2048;
         edge_entry_slab_capacity = 4096;
         nodetable_entry_slab_capacity = 2048;
@@ -268,7 +265,6 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         ndd_size = 1 << 19; // significantly smaller nodetable to approach rehash threshold
         cache_size = 1 << 20;
         edge_bucket_count = 16;
-        gc_bucket_count = 1024;
         node_slab_capacity = 3072;
         edge_entry_slab_capacity = 6144;
         nodetable_entry_slab_capacity = 3072;
@@ -286,7 +282,6 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .quick_growth_threshold = 0.1,
         .edge_bucket_count = edge_bucket_count,
         .nodetable_bucket_count = nodetable_bucket_count,
-        .gc_bucket_count = gc_bucket_count,
         .node_slab_capacity = node_slab_capacity,
         .edge_entry_slab_capacity = edge_entry_slab_capacity,
         .nodetable_entry_slab_capacity = nodetable_entry_slab_capacity,

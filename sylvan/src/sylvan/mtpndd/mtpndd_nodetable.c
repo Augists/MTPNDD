@@ -450,42 +450,7 @@ static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
         return 0;
     }
     *roots_out = NULL;
-
-    mtpndd_gc_protect_t *gc_protect = g_mtpndd_config.gcProtect;
-    if (!gc_protect || !gc_protect->buckets || gc_protect->bucket_count == 0) {
-        return 0;
-    }
-
-    mtpndd_node_t **buffer = NULL;
-    size_t count = 0;
-    size_t capacity = 0;
-    size_t bucket_count = gc_protect->bucket_count;
-
-    for (size_t i = 0; i < bucket_count; ++i) {
-        gc_protect_entry_t *entry = gc_protect->buckets[i];
-        while (entry) {
-            mtpndd_node_t *node = entry->node;
-            if (node) {
-                mtpndd_ref(node);
-                if (count == capacity) {
-                    size_t new_capacity = capacity ? capacity * 2 : 64;
-                    mtpndd_node_t **new_buffer = (mtpndd_node_t **)realloc(buffer, new_capacity * sizeof(mtpndd_node_t *));
-                    if (!new_buffer) {
-                        mtpndd_gc_release_roots(buffer, count);
-                        *roots_out = NULL;
-                        return 0;
-                    }
-                    buffer = new_buffer;
-                    capacity = new_capacity;
-                }
-                buffer[count++] = node;
-            }
-            entry = entry->next;
-        }
-    }
-
-    *roots_out = buffer;
-    return count;
+    return 0;
 }
 
 static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count) {
