@@ -304,6 +304,20 @@ static bool run_benchmark(size_t n) {
                stats->edge_insert_total, stats->edge_collision_total,
                stats->edge_insert_total > 0 ? 100.0 * stats->edge_collision_total / stats->edge_insert_total : 0.0,
                stats->nodetable_collision_total);
+        printf(".. stats: nodetable hash/bucket/compare = %.3f/%.3f/%.3f s\n",
+               stats->nodetable_hash_ns / 1e9,
+               stats->nodetable_bucket_scan_ns / 1e9,
+               stats->nodetable_edge_compare_ns / 1e9);
+        uint64_t nodetable_lookup_total = stats->nodetable_lookup_hits + stats->nodetable_lookup_misses;
+        double nodetable_avg_steps = nodetable_lookup_total
+            ? (double)stats->nodetable_edge_compare_steps_total / (double)nodetable_lookup_total
+            : 0.0;
+        printf(".. stats: nodetable lookup hits/misses=%" PRIu64 "/%" PRIu64 " edge_entries=%" PRIu64 " avg_steps=%.2f max_steps=%" PRIu64 "\n",
+               stats->nodetable_lookup_hits,
+               stats->nodetable_lookup_misses,
+               stats->nodetable_edge_compare_entries,
+               nodetable_avg_steps,
+               stats->nodetable_edge_compare_max_steps);
     }
 #endif
 

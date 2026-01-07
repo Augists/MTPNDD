@@ -42,6 +42,12 @@ struct mtpndd_edge_s {
 };
 
 // Compute hash value for edge map content (matches Java Map.hashCode() semantics)
+static inline uint64_t mtpndd_edge_entry_hash(const mtpndd_node_t *child, mtpndd_bdd_t label) {
+    uint64_t entry_hash = mtpndd_hash_u64((uintptr_t)child);
+    entry_hash ^= mtpndd_hash_u64((uint64_t)label);
+    return entry_hash;
+}
+
 static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) {
     if (!edges || !edges->buckets) return 0;
 
@@ -53,9 +59,8 @@ static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) 
         edge_bucket_entry_t *entry = edges->buckets[i];
         while (entry) {
             // Hash each (child, label) pair and XOR into result
-            uint64_t entry_hash = mtpndd_hash_u64((uintptr_t)entry->child);
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
-            entry_hash ^= mtpndd_hash_u64((uint64_t)label);
+            uint64_t entry_hash = mtpndd_edge_entry_hash(entry->child, label);
             hash ^= entry_hash;
             entry = entry->next;
         }
@@ -63,13 +68,10 @@ static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) 
     return hash;
 }
 
-static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd_node_t *child) {
-    size_t hash = mtpndd_hash_node_identity(child);
-    size_t bucket_cnt = (emap && emap->bucket_count) ? emap->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
-    return bucket_cnt ? (hash % bucket_cnt) : 0;
-}
-
-#define EDGE_MAP_HASH_VAL(map, key) edge_map_hash_child((map), (key))
+#define EDGE_MAP_BUCKET_COUNT(map) \
+    (((map) && (map)->bucket_count) ? (map)->bucket_count : g_mtpndd_pal_config.edge_bucket_count)
+#define EDGE_MAP_BUCKET_INDEX(map, key) \
+    (EDGE_MAP_BUCKET_COUNT(map) ? (mtpndd_hash_node_identity((key)) & (EDGE_MAP_BUCKET_COUNT(map) - 1)) : 0)
 
 #define EDGE_BUCKET_ENTRY_EQUAL(entry, key) ((entry->child) == (key))
 

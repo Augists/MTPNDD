@@ -520,6 +520,26 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->and_same_bdd_op_ns / 1e9,
            stats->and_same_add_edge_ns / 1e9,
            stats->and_same_field_ns / 1e9);
+    printf(".. stats: and mk call/cache/other = %.3f/%.3f/%.3f s\n",
+           stats->and_mk_call_ns / 1e9,
+           stats->and_mk_cache_store_ns / 1e9,
+           stats->and_mk_other_ns / 1e9);
+    printf(".. stats: mk hash/lookup/fast/reuse/ref/gc/alloc_node/alloc_entry = %.3f/%.3f/%.3f/%.3f/%.3f/%.3f/%.3f/%.3f s\n",
+           stats->mk_hash_ns / 1e9,
+           stats->mk_lookup_ns / 1e9,
+           stats->mk_fast_return_ns / 1e9,
+           stats->mk_reuse_cleanup_ns / 1e9,
+           stats->mk_ref_children_ns / 1e9,
+           stats->mk_gc_or_grow_ns / 1e9,
+           stats->mk_alloc_node_ns / 1e9,
+           stats->mk_alloc_entry_ns / 1e9);
+    printf(".. stats: mk scan/link/collision = %.3f/%.3f/%.3f s\n",
+           stats->mk_bucket_scan_ns / 1e9,
+           stats->mk_link_ns / 1e9,
+           stats->mk_collision_cleanup_ns / 1e9);
+    printf(".. stats: mk other/total = %.3f/%.3f s\n",
+           stats->mk_other_ns / 1e9,
+           stats->mk_total_ns / 1e9);
     printf(".. stats: edge_map rehash=%" PRIu64 " max_buckets=%" PRIu64 " | nodetable rehash=%" PRIu64 " max_buckets=%" PRIu64 "\n",
            stats->edge_map_rehash_total, stats->edge_map_max_buckets,
            stats->nodetable_rehash_total, stats->nodetable_max_buckets);
@@ -530,6 +550,20 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->edge_insert_total, stats->edge_collision_total,
            stats->edge_insert_total > 0 ? 100.0 * stats->edge_collision_total / stats->edge_insert_total : 0.0,
            stats->nodetable_collision_total);
+    printf(".. stats: nodetable hash/bucket/compare = %.3f/%.3f/%.3f s\n",
+           stats->nodetable_hash_ns / 1e9,
+           stats->nodetable_bucket_scan_ns / 1e9,
+           stats->nodetable_edge_compare_ns / 1e9);
+    uint64_t nodetable_lookup_total = stats->nodetable_lookup_hits + stats->nodetable_lookup_misses;
+    double avg_steps = nodetable_lookup_total > 0
+        ? (double)stats->nodetable_edge_compare_steps_total / (double)nodetable_lookup_total
+        : 0.0;
+    printf(".. stats: nodetable lookup hits/misses=%" PRIu64 "/%" PRIu64 " edge_entries=%" PRIu64 " avg_steps=%.2f max_steps=%" PRIu64 "\n",
+           stats->nodetable_lookup_hits,
+           stats->nodetable_lookup_misses,
+           stats->nodetable_edge_compare_entries,
+           avg_steps,
+           stats->nodetable_edge_compare_max_steps);
 }
 
 #endif  // ENABLE_RECORDING

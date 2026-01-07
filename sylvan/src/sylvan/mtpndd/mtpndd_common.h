@@ -134,6 +134,14 @@ typedef struct mtpndd_stats_s {
     uint64_t edge_insert_total;
     uint64_t edge_collision_total;
     uint64_t nodetable_collision_total;
+    uint64_t nodetable_lookup_hits;
+    uint64_t nodetable_lookup_misses;
+    uint64_t nodetable_hash_ns;
+    uint64_t nodetable_bucket_scan_ns;
+    uint64_t nodetable_edge_compare_ns;
+    uint64_t nodetable_edge_compare_entries;
+    uint64_t nodetable_edge_compare_steps_total;
+    uint64_t nodetable_edge_compare_max_steps;
     uint64_t edge_lock_spin_total;
     uint64_t edge_lock_wait_time_ns;
     uint64_t gc_pause_time_ns;

@@ -50,23 +50,6 @@ static void mtpndd_op_cache_release(mtpndd_op_cache_t *cache) {
     free(cache);
 }
 
-static inline size_t mtpndd_op_cache_hash_binary_index(const mtpndd_op_cache_t *cache, const mtpndd_node_t *lhs, const mtpndd_node_t *rhs) {
-    uint64_t h1 = mtpndd_hash_node_identity(lhs);
-    uint64_t h2 = mtpndd_hash_node_identity(rhs);
-    uint64_t hash = h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
-    return (size_t)(hash & cache->mask);
-}
-
-static inline size_t mtpndd_op_cache_hash_unary_index(const mtpndd_op_cache_t *cache, const mtpndd_node_t *operand) {
-    uint64_t hash = mtpndd_hash_node_identity(operand);
-    hash ^= hash >> 33;
-    hash *= 0xff51afd7ed558ccdULL;
-    hash ^= hash >> 33;
-    hash *= 0xc4ceb9fe1a85ec53ULL;
-    hash ^= hash >> 33;
-    return (size_t)(hash & cache->mask);
-}
-
 bool mtpndd_op_cache_initialize(
         size_t size,
         mtpndd_op_cache_t **and_cache,
@@ -117,7 +100,10 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
     if (!cache || cache->arity != 2 || cache->capacity == 0) {
         return NULL;
     }
-    size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
+    uint64_t h1 = mtpndd_hash_node_identity(lhs);
+    uint64_t h2 = mtpndd_hash_node_identity(rhs);
+    uint64_t hash = h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+    size_t idx = (size_t)(hash & cache->mask);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     mtpndd_node_t *result = NULL;
     bool hit = (entry->operands[0] == lhs && entry->operands[1] == rhs && entry->result);
@@ -143,7 +129,10 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, 
     if (!result) {
         return;
     }
-    size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
+    uint64_t h1 = mtpndd_hash_node_identity(lhs);
+    uint64_t h2 = mtpndd_hash_node_identity(rhs);
+    uint64_t hash = h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+    size_t idx = (size_t)(hash & cache->mask);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
 #ifdef ENABLE_RECORDING
     __atomic_add_fetch(&g_mtpndd_stats.cache_store_total, 1, __ATOMIC_RELAXED);
@@ -162,7 +151,13 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
     if (!cache || cache->arity != 1 || cache->capacity == 0) {
         return NULL;
     }
-    size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
+    uint64_t hash = mtpndd_hash_node_identity(operand);
+    hash ^= hash >> 33;
+    hash *= 0xff51afd7ed558ccdULL;
+    hash ^= hash >> 33;
+    hash *= 0xc4ceb9fe1a85ec53ULL;
+    hash ^= hash >> 33;
+    size_t idx = (size_t)(hash & cache->mask);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     mtpndd_node_t *result = NULL;
     bool hit = (entry->operands[0] == operand && entry->result);
@@ -188,7 +183,13 @@ void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operan
     if (!result) {
         return;
     }
-    size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
+    uint64_t hash = mtpndd_hash_node_identity(operand);
+    hash ^= hash >> 33;
+    hash *= 0xff51afd7ed558ccdULL;
+    hash ^= hash >> 33;
+    hash *= 0xc4ceb9fe1a85ec53ULL;
+    hash ^= hash >> 33;
+    size_t idx = (size_t)(hash & cache->mask);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
     entry->operands[0] = operand;
     entry->result = result;

@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
+#ifdef ENABLE_RECORDING
+#include <time.h>
+#endif
 
 /********************************
  * MTPNDD nodetable
@@ -27,9 +30,10 @@ typedef struct mtpndd_nodetable_s {
     size_t load_threshold; // trigger rehash when entry_count >= load_threshold
 } mtpndd_nodetable_t;
 
-static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count);
-static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable);
-#define NODETABLE_HASH_VAL(key, nodetable) nodetable_hash_edges((key), (nodetable))
+#define NODETABLE_HASH_VAL(key, nodetable) \
+    (((nodetable) && (nodetable)->nodetable_bucket_count) \
+        ? (size_t)(((key) ? (key)->cached_hash : 0) & ((nodetable)->nodetable_bucket_count - 1)) \
+        : 0)
 
 // Compare edge map CONTENT, not pointer
 // Returns true if both edge maps have identical (child, label) pairs
@@ -38,13 +42,34 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
     if (a == b) return true;
     if (!a || !b) return false;
 
+#ifdef ENABLE_RECORDING
+    struct timespec compare_start = {0};
+    struct timespec compare_end = {0};
+    size_t compare_entries = 0;
+    size_t compare_steps_total = 0;
+    size_t compare_max_steps = 0;
+    clock_gettime(CLOCK_MONOTONIC, &compare_start);
+#endif
+#ifdef ENABLE_RECORDING
+    bool result = true;
+#define NODETABLE_RETURN(val) do { result = (val); goto record_compare; } while (0)
+#else
+#define NODETABLE_RETURN(val) return (val)
+#endif
+
     // Fast path: compare cached hash values first (like Java HashMap)
     // Different hash means definitely not equal
-    if (a->cached_hash != b->cached_hash) return false;
+    if (a->cached_hash != b->cached_hash) {
+        NODETABLE_RETURN(false);
+    }
 
     // Hash match, now check edge count
-    if (a->edge_count != b->edge_count) return false;
-    if (a->edge_count == 0) return true;
+    if (a->edge_count != b->edge_count) {
+        NODETABLE_RETURN(false);
+    }
+    if (a->edge_count == 0) {
+        NODETABLE_RETURN(true);
+    }
 
     // Full comparison only if hash and count match
     // For each edge in 'a', find matching edge in 'b'
@@ -52,6 +77,10 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
     for (size_t i = 0; i < edge_bucket_cnt; i++) {
         edge_bucket_entry_t *entry_a = a->buckets ? a->buckets[i] : NULL;
         while (entry_a) {
+#ifdef ENABLE_RECORDING
+            size_t steps = 0;
+            compare_entries++;
+#endif
             // Find this (child, label) pair in b
             mtpndd_node_t *child_a = entry_a->child;
             mtpndd_bdd_t label_a = atomic_load_explicit(&entry_a->label, memory_order_relaxed);
@@ -59,9 +88,12 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
             // Lookup in b's edge map
             bool found = false;
             if (b->buckets) {
-                size_t b_bucket = edge_map_hash_child(b, child_a);
+                size_t b_bucket = EDGE_MAP_BUCKET_INDEX(b, child_a);
                 edge_bucket_entry_t *entry_b = b->buckets[b_bucket];
                 while (entry_b) {
+#ifdef ENABLE_RECORDING
+                    steps++;
+#endif
                     if (entry_b->child == child_a) {
                         mtpndd_bdd_t label_b = atomic_load_explicit(&entry_b->label, memory_order_relaxed);
                         if (label_a == label_b) {
@@ -72,11 +104,29 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
                     entry_b = entry_b->next;
                 }
             }
-            if (!found) return false;
+#ifdef ENABLE_RECORDING
+            compare_steps_total += steps;
+            if (steps > compare_max_steps) {
+                compare_max_steps = steps;
+            }
+#endif
+            if (!found) {
+                NODETABLE_RETURN(false);
+            }
 
             entry_a = entry_a->next;
         }
     }
+#ifdef ENABLE_RECORDING
+record_compare:
+    clock_gettime(CLOCK_MONOTONIC, &compare_end);
+    MTPNDD_STAT_ADD(nodetable_edge_compare_ns, mtpndd_timespec_diff_ns(&compare_start, &compare_end));
+    MTPNDD_STAT_ADD(nodetable_edge_compare_entries, compare_entries);
+    MTPNDD_STAT_ADD(nodetable_edge_compare_steps_total, compare_steps_total);
+    MTPNDD_STAT_MAX(nodetable_edge_compare_max_steps, compare_max_steps);
+    return result;
+#endif
+#undef NODETABLE_RETURN
     return true;
 }
 
@@ -103,26 +153,5 @@ mtpndd_error_t mtpndd_protect(mtpndd_t *node);
 mtpndd_error_t mtpndd_unprotect(mtpndd_t *node);
 // create or reuse node
 void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result);
-
-/********************************
- * Implementation of nodetable hash
- ********************************/
-static inline size_t nodetable_hash_edges(const mtpndd_edge_t *key, const mtpndd_nodetable_t *nodetable)
-{
-    if (!nodetable) return 0;
-    return nodetable_hash_edges_with_bucket_count(key, nodetable->nodetable_bucket_count);
-}
-
-static inline size_t nodetable_hash_edges_with_bucket_count(const mtpndd_edge_t *key, size_t bucket_count) {
-    if (!key || bucket_count == 0) {
-        return 0;
-    }
-
-    // Use cached hash value directly - it was computed when edges were finalized
-    // This is O(1) instead of O(n) for each lookup
-    uint64_t hash = key->cached_hash;
-
-    return (size_t)(hash % bucket_count);
-}
 
 #endif // MTPNDD_NODETABLE_H

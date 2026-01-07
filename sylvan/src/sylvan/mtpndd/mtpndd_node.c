@@ -266,7 +266,7 @@ edge_bucket_entry_t *find_edge_entry(mtpndd_edge_t *edge, mtpndd_node_t *key) {
         return NULL;
     }
     
-    size_t hash = EDGE_MAP_HASH_VAL(edge, key);
+    size_t hash = EDGE_MAP_BUCKET_INDEX(edge, key);
     
     edge_bucket_entry_t *entry = NULL;
     FOR_EACH_ENTRY_IN_BUCKET(edge, hash, entry) {
@@ -285,7 +285,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     }
 
     mtpndd_bdd_t old_label = sylvan_false;
-    size_t hash = EDGE_MAP_HASH_VAL(edges, descendant);
+    size_t hash = EDGE_MAP_BUCKET_INDEX(edges, descendant);
 
     mtpndd_error_t status = MTPNDD_SUCCESS;
     edge_bucket_entry_t *entry = NULL;

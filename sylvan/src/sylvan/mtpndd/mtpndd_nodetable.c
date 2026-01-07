@@ -62,17 +62,51 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
 }
 
 mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge_t *edges) {
-    size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
+    size_t hash = 0;
+#ifdef ENABLE_RECORDING
+    struct timespec phase_start = {0};
+    struct timespec phase_end = {0};
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+#endif
+    hash = NODETABLE_HASH_VAL(edges, nodetable);
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    MTPNDD_STAT_ADD(nodetable_hash_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+    clock_gettime(CLOCK_MONOTONIC, &phase_start);
+#endif
     mtpndd_node_t *found = NULL;
 
     for (mtpndd_nodetable_bucket_entry_t *entry = nodetable->buckets[hash];
          entry; entry = entry->next) {
-        if (NODETABLE_BUCKET_ENTRY_EQUAL(entry, edges)) {
+        mtpndd_edge_t *entry_edges = entry->edges;
+        if (entry_edges == edges) {
+            found = entry->node;
+            break;
+        }
+        if (!entry_edges) {
+            continue;
+        }
+        if (entry_edges->cached_hash != edges->cached_hash) {
+            continue;
+        }
+        if (entry_edges->edge_count != edges->edge_count) {
+            continue;
+        }
+        if (nodetable_edges_equal(entry_edges, edges)) {
             found = entry->node;
             break;
         }
     }
 
+#ifdef ENABLE_RECORDING
+    clock_gettime(CLOCK_MONOTONIC, &phase_end);
+    MTPNDD_STAT_ADD(nodetable_bucket_scan_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
+    if (found) {
+        MTPNDD_STAT_ADD(nodetable_lookup_hits, 1);
+    } else {
+        MTPNDD_STAT_ADD(nodetable_lookup_misses, 1);
+    }
+#endif
     return found;
 }
 
@@ -551,7 +585,7 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
         mtpndd_nodetable_bucket_entry_t *entry = table->buckets[i];
         while (entry) {
             mtpndd_nodetable_bucket_entry_t *next_entry = entry->next;
-            size_t hash = nodetable_hash_edges_with_bucket_count(entry->edges, new_bucket_count);
+            size_t hash = new_bucket_count ? (size_t)((entry->edges ? entry->edges->cached_hash : 0) & (new_bucket_count - 1)) : 0;
             entry->prev = NULL;
             entry->next = new_buckets[hash];
             if (entry->next) {
