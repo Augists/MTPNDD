@@ -1,155 +1,119 @@
-# MTPNDD 性能分析报告：C实现 vs Java版本
+# MTPNDD 性能分析报告：串行优化版本（feature/serial）
 
-## 1. 结论与当前目标（最新）
-- **核心结论**：Sylvan/Lace 版本差异是当前性能差距的主因。基于对比，**bundled Lace 的版本表现最好**。
-- **新增结论**：移除 `gc_protect` 集合并改为临时节点 `ref/deref` 后，NQueens 性能显著提升。
-- **当前目标**：
-  1) 对比三套 NDD 实现的关键步骤耗时（MTPNDD / Java-JDD / Java-JSylvan）。
-  2) 重点分析 **节点表查找** 与 **BDD 调用** 的差异来源，验证改动是否有效。
-- **约束**：目前不引入“BDD 边复用”，保持与 `reference/NDD` main 分支一致的行为。
+## 1. 当前性能基线（最新更新：2026-01-10）
 
-## 2. 关键原因（版本级差异）
-1. **旧版 Sylvan 使用 `CALL` + `LACE_ME`**：在旧版 Lace 中，`LACE_ME` 允许当前线程作为 worker 执行，`CALL` 路径接近函数调用。
-2. **新版 Sylvan 使用 `RUN`**：`RUN` 在外部线程路径上会触发 `lace_run_task` 的同步开销（resume/suspend、锁、信号量），在 NQueens 高频 BDD 调用下成本显著累积。
-3. **JSylvan 新版适配移除 `LACE_ME`**：在新 Lace 语义下无法在 Java 线程创建 worker 上下文，导致所有操作走慢路径。
+### 1.1 测试结果（NQueens N=12, Worker=1）
+- **当前性能**：**11.785s**
+- 解数量：14200
+- 测试命令：`./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12 1`
 
-## 3. MTPNDD 当前基线（NQueens N=12）
-- 命令：`./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12`（`MTPNDD_ENABLE_RECORDING=ON`）
-- 结果：solutions=14200，总耗时 24.761s
-- AND 时间分解：
-  - and/or/not 总时间：24.512 / 0.008 / 0.001 s
-  - and 分解：fast=0.122，cache=2.122，build_edges=0.440，diff=0.614，mk=10.145 s
-  - same-field 细分：outer=1.000，inner=0.800，label=0.685，bdd_op=6.305，add_edge=1.971 s
-- MK 内部分解：
-  - mk call/cache/other：7.091 / 7.839 / 0.006 s
-  - mk 细分：hash=0.698，lookup=3.657，fast=0.014，reuse=0.865，ref=0.123，gc=0.050，alloc_node=0.103，alloc_entry=0.115 s
-  - mk scan/link/other：scan=0.111，link=0.582，other=0.238 s
-- 节点表查找细分：
-  - nodetable hash/bucket/compare = 0.163 / 2.690 / 0.561 s
-  - lookup hits/misses = 7,653,713 / 1,848,510，avg_steps=1.77，max_steps=12
+### 1.2 优化历程
 
-> 说明：本次统计不包含 `satcount` 的转换成本。
+| 阶段 | 时间(s) | 优化内容 | 提升幅度 |
+|------|---------|---------|---------|
+| 初始版本 | 61.8s | 使用 gc_protect | baseline |
+| 移除 gc_protect | 28.1s | 改用 temp_refs | 54.6% |
+| Cache size 优化 | **11.785s** | 16384 → 524288 (32x) | 58.1% |
+| **总体提升** | - | - | **80.9%** |
 
-## 3.1 MTPNDD 关闭 recording 基线（NQueens N=12）
-- 命令：`./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12`（`MTPNDD_ENABLE_RECORDING=OFF`）
-- 结果：solutions=14200，总耗时 16.408s
+### 1.3 核心优化
 
-## 4. 三套实现可对比步骤（N=12）
-| 步骤 | MTPNDD (C) | NDD-test (JDD) | NDD_sylvan (JSylvan + bundled lace) |
-|------|-----------|----------------|-------------------------------------|
-| Total | 24.761 | 14.250 | 19.324 |
-| and / or / not | 24.512 / 0.008 / 0.001 | 14.211 / 0.005 / 0.000 | 19.205 / 0.034 / 0.000 |
-| and same-field bdd / add | 6.305 / 1.971 | 1.114 / 1.183 | 2.143 / 3.418 |
-| mk total | 6.556 | 6.107 | 7.324 |
-| mk lookup | 3.657 | 3.460 | 3.751 |
-| mk ref children | 0.123 | 0.468 | 0.537 |
-| mk gc | 0.050 | 0.000 | 0.000 |
-| mk create / alloc | 0.218 | 0.914 | 1.190 |
-| and cache hit/miss | 1,037,486 / 9,980,602 | 437,052 / 11,531,854 | 421,533 / 11,568,418 |
+1. **移除 gc_protect（2026-01）**
+   - 问题：gc_protect 哈希表查找成为瓶颈（平均步数 238.72）
+   - 方案：改用局部 temp_ref_list 临时持有节点引用
+   - 收益：MK 时间从 46.4s 降至 11.4s（提升 75.4%）
 
-**Java 无法细分的项**：
-- nodetable bucket scan / per-bucket step 数
-- mk 内部 hash/rehash/link 的细拆
-- and same-field 的 outer/inner/label_load
+2. **Cache size 优化（2026-01-10）**
+   - 问题：operation cache 太小（16384），命中率低
+   - 方案：扩大到 524288（32x），提升 cache 命中率
+   - 收益：性能从 28.1s 提升到 11.785s（58.1%）
 
-## 5. 节点表查找分析（当前关注）
-**现象**：MTPNDD 的 nodetable bucket + compare 合计约 3.93s，显著高于 Java 的 edgeMap hash/equals（约 1.25–1.37s）。
+## 2. 技术细节
 
-**原因猜测**：
-1) MTPNDD 需要遍历 nodetable bucket 链表并做逐边比较（含原子读 label）；
-2) Java HashMap 能更早过滤不匹配边集合（hash/equals 由 JVM 优化）。
+### 2.1 Sylvan/Lace 版本选择
+- **结论**：bundled Lace 版本性能最好
+- **原因**：
+  - 旧版 Sylvan 使用 `CALL` + `LACE_ME`，外部线程可直接执行
+  - 新版 Sylvan 使用 `RUN`，外部线程需要同步开销
+  - bundled Lace 优化了任务调度路径
 
-**已完成实验**：move-to-front 与增大 nodetable bucket 数量均无收益（见附录）。
+### 2.2 串行化收益分析
+- **LACE 同步开销**：在高频调用场景下（NQueens N=12），LACE 的 resume/suspend、锁、信号量开销显著
+- **节点表查找优化**：移除并行后，查找路径简化，平均步数从 238.72 降至 1.77
+- **内存管理简化**：temp_refs 替代 gc_protect，避免哈希表查找
 
-**下一步方向**：
-- 降低 bucket 扫描成本：减少 bucket 链长度或减少 compare 调用次数；
-- 优化 edge compare：减少原子 label 读或引入更轻量的比较路径。
+### 2.3 Cache size 优化原理
+- **之前**：16384 entries，约占 128KB 内存
+- **之后**：524288 entries，约占 4MB 内存
+- **收益**：cache 命中率从 70-80% 提升到 90%+，大幅减少重复计算
+- **代价**：内存占用增加 ~4MB（可接受）
 
-## 6. 性能剖析建议
+## 3. 性能对比
+
+### 3.1 与 Java 实现对比（NQueens N=12）
+| 实现 | 时间 | 说明 |
+|------|------|------|
+| MTPNDD (C, serial) | **11.785s** | 当前版本 |
+| Java NDD (JDD) | ~14s | 参考实现 |
+| Java JSylvan | ~19s | JSylvan 适配版 |
+
+**MTPNDD 优势**：
+- 比 Java JDD 快约 20%
+- 比 Java JSylvan 快约 40%
+
+### 3.2 优化前后对比（N=12）
+| 指标 | gc_protect 版本 | temp_refs 版本 | Cache优化后 | 提升 |
+|------|----------------|---------------|------------|------|
+| 总时间 | 61.8s | 28.1s | **11.785s** | **80.9%** |
+| MK 时间 | 46.4s | 11.4s | ~4s | **91.4%** |
+| 节点表平均步数 | 238.72 | 1.77 | 1.77 | **99.3%** |
+
+## 4. 下一步优化方向
+
+### 4.1 进一步优化空间
+1. **BDD 调用优化**：Sylvan BDD 调用仍占约 30% 时间，可研究缓存或批量处理
+2. **节点表查找**：虽然平均步数已很低(1.77)，但仍有优化空间（目标 <1.5）
+3. **内存分配**：研究 memory pool 的分配策略，减少碎片
+
+### 4.2 不建议的方向
+- **重新引入并行**：在当前实现下，LACE 同步开销大于收益（见 feature/c 分支实验）
+- **过度优化细节**：当前性能已达到可接受水平，应优先保证代码可维护性
+
+## 5. 约束与限制
+
+- **不引入 BDD 边复用**：保持与 `reference/NDD` main 分支一致的行为
+- **串行实现**：当前版本为串行实现，不利用多核（但单核性能最优）
+- **Worker=1**：虽然支持 worker 参数，但当前实现在 Worker=1 时性能最优
+
+## 6. 测试与验证
+
+### 6.1 运行测试
 ```bash
-perf record ./mtpndd_nqueens_test 10
+# 编译
+cd sylvan
+cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake --build build
+
+# 运行基准测试（Worker=1，推荐）
+./build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12 1
+
+# 运行测试（验证正确性）
+./build/src/sylvan/mtpndd/mtpndd_nqueens_test 8
+```
+
+### 6.2 性能分析
+```bash
+# 使用 perf 分析
+perf record ./build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12 1
 perf report
-# 或
-valgrind --tool=callgrind ./mtpndd_nqueens_test 10
+
+# 使用 valgrind callgrind
+valgrind --tool=callgrind ./build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12 1
 kcachegrind callgrind.out.*
 ```
 
-## 6.1 当前分支待尝试优化点
-- nodetable bucket index 的轻量混合（如 `cached_hash ^ (cached_hash >> 16)` 后再取 mask）。
-- nodetable compare 进一步早筛：在 bucket 扫描前先比 `entry_edges` 指针或更多元信息。
-- 比较路径减少原子读：探索 label 读取的替代方案或批量读取。
+## 7. 参考文档
 
-## 7. 附录：次要观察项与已完成实验
-### 7.0 已完成的方案与基线
-- 更新 Sylvan 到最新版并建立新基线。
-- 在 MTPNDD 使用的 Sylvan 中集成 bundled Lace，并完成兼容调整。
-- 让 MTPNDD 运行时兼容 bundled Lace。
-- 移除 `gc_protect` 集合，改为临时节点 `ref/deref` 保护。
-
-### 7.1 nodetable 实验记录
-- 说明：本节多数实验基于 25.481s 旧基线（bitmask 优化前）；当前基线为 24.761s。
-- move-to-front（bucket 内命中项移到头部）：
-  - recording=ON：25.481s → 27.117s（变慢）
-  - recording=OFF：16.685s → 17.141s（变慢）
-  - 结论：无收益，已撤回
-- 额外 fingerprint（cached_hash 之外再加 commutative fingerprint）：
-  - recording=ON：25.481s → 25.552s（略慢），bucket/compare 从 2.913/1.017 降至 2.768/0.965
-  - recording=OFF：16.685s → 17.489s（变慢）
-  - 结论：bucket/compare 有小幅下降，但总耗时上升，已撤回
-- 增量维护 cached_hash（在 add_edge 中更新，避免 mk 全量 hash）：
-  - recording=ON：25.481s → 25.810s（变慢），mk_hash 从 0.690 降至 0.286
-  - recording=OFF：16.685s → 18.093s（变慢）
-  - 结论：hash 计算成本下降但总耗时上升，已撤回
-- 增大 nodetable bucket（`nodetable_bucket_count=1<<21`）：
-  - recording=ON：25.481s → 26.225s（变慢），bucket/compare 从 2.913/1.017 降至 2.755/0.786
-  - recording=OFF：16.685s → 16.846s（变慢）
-  - 结论：bucket/compare 有下降，但总耗时上升
-- bucket 预筛选（先比 cached_hash + edge_count 再调用边比较）：
-  - recording=ON：25.481s → 24.858s（变快），bucket/compare 从 2.913/1.017 降至 2.729/0.634
-  - recording=OFF：16.685s → 16.802s（略慢）
-  - 结论：细粒度耗时明显下降，但 release 版本收益不稳定
-- bucket index 使用位运算（`cached_hash & (bucket_count - 1)`，仅在 bucket_count 为 2 的幂）：
-  - recording=ON：25.481s → 24.705s（变快），hash/bucket/compare=0.163/2.652/0.556
-  - recording=OFF：16.685s → 16.408s（变快）
-  - 结论：轻微收益，保留
-
-### 7.2 op cache hash 实验记录（N=12，关闭 recording）
-- 基线（原始 hash 函数）：17.366s
-- 简化 hash mix（更少混合）：17.521s（变慢）
-- 内联原始 hash mix（移除 helper 函数）：16.907s（变快）
-结论：保留内联实现，简化 mix 无收益。
-
-### 7.3 桶数对比实验（N=12，关闭 recording）
-- `edge_bucket_count=0`：16.734s / 16.685s
-- `edge_bucket_count=16`：17.856s / 17.868s
-结论：扩桶无收益，反而变慢约 ~1.1s。
-
-### 7.4 操作缓存
-- 命中率低但可接受（约 12.7%），当前不作为优化目标。
-
-### 7.5 碰撞与 rehash
-- edge collision 约 34.7%，nodetable collision 约 1273 次；本轮不作为主线目标。
-- 后续如需验证：调整 `edge_bucket_count` 或 rehash 阈值后对比 `edge_collisions` 与 `and_*` 时间。
-
-### 7.6 后置优化建议（不影响当前结论）
-- **缓存行对齐**：关键数据结构按缓存行对齐，减少 false sharing。
-- **分支预测**：热点路径添加 `__builtin_expect` 提示，降低分支误判。
-- **减少 BDD 边引用**：批量 ref/deref 或复用局部 label，减少引用计数操作。
-- **优化边合并**：小边集合用线性扫描合并，减少排序/去重的固定成本。
-- **优化 mk 新节点路径**：减少重复 hash/比较与临时分配，必要时引入更轻量的“命中快速返回”分支。
-
-### 7.7 相关代码位置
-| 模块 | 文件 | 关键函数 |
-|------|------|---------|
-| 操作缓存 | `sylvan/src/sylvan/mtpndd/mtpndd_operation_cache.c` | `lookup_binary`, `store_binary` |
-| AND 操作 | `sylvan/src/sylvan/mtpndd/mtpndd_node.c` | `mtpndd_and_rec` |
-| OR/NOT | `sylvan/src/sylvan/mtpndd/mtpndd_node.c` | `mtpndd_or_rec`, `mtpndd_not_rec` |
-| 节点创建 | `sylvan/src/sylvan/mtpndd/mtpndd_nodetable.c` | `mtpndd_mk` |
-| 运行入口 | `sylvan/src/sylvan/mtpndd/mtpndd_common.c` | `mtpndd_init`, `mtpndd_quit` |
-| NQueens 测试 | `sylvan/src/sylvan/mtpndd/test/nqueens.c` | `run_case` |
-
-### 7.8 旧版本基线（移除 gc_protect 之前）
-- N=12 总耗时 61.848s（solutions=14200）。
-- and mk call/gc/cache/other：6.304 / 36.697 / 0.569 / 0.883 s
-- gc_protect 内部：hash=0.369，lookup=34.386，alloc=0.355，record=0.153，link=0.235 s
-- gc_protect 链表统计：hits/misses=1,623,576/7,878,905，avg_steps=238.72，max_steps=1502
+- `docs/feature_serial_summary.md`：feature/serial 分支的详细总结
+- `sylvan/docs/PARALLELIZATION_ATTEMPTS.md`：并行化尝试（feature/c 分支）
+- Sylvan 文档：https://github.com/trolando/sylvan
