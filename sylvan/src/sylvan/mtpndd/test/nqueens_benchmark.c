@@ -164,7 +164,7 @@ static bool run_benchmark(size_t n) {
     clock_gettime(CLOCK_MONOTONIC, &start_ts);
 
     size_t bdd_size = 1 + (size_t)fmax(1000.0, pow(4.4, (double)n - 6.0) * 1000.0);
-    size_t bdd_cache = 10000;
+    size_t bdd_cache = 320000;
     size_t ndd_size = 100000000;
 
     // Sylvan requires power-of-two table sizes
