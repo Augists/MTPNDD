@@ -10,16 +10,16 @@
 ### 1.2 当前性能基线（feature/c 并行版本）
 - **测试环境**：NQueens N=12，6 CPU 核心
 - **性能指标（RECORDING=ON）**：
-  - 0 workers：28.143s（含详细统计）
+  - 1 worker：24.871s（含详细统计，无锁优化后）
 - **性能指标（RECORDING=OFF）**：
+  - 1 worker：16.658s（**最佳配置**，无锁优化后）
   - 0 workers：28.002s（平均值，3 次运行）
-  - 1 worker：25.422s（**最佳配置**，提升 10.2%）
   - 2-4 workers：25.778-26.078s（性能接近）
   - 6+ workers：性能下降（8 workers 降至 36.163s）
 - **对比优化前（gc_protect 版本）**：
-  - 总时间：61.8s → 28.1s（提升 54.6%）
+  - 总时间：61.8s → 16.7s（提升 **73.0%**）
   - MK 时间：46.4s → 11.4s（提升 75.4%）
-- **最佳性能**：1 worker + RECORDING=OFF = **25.422s**
+- **最佳性能**：1 worker + RECORDING=OFF = **16.658s**
 
 ### 1.3 下一步目标
 1. **性能对比**：对比三套 NDD 实现的关键步骤耗时（MTPNDD / Java-JDD / Java-JSylvan）
@@ -181,6 +181,15 @@ kcachegrind callgrind.out.*
 - ✓ **Edge map 缓存哈希值**：类似 Java HashMap 设计
   - 提交：48939bc / ea009da
   - 收益：减少重复哈希计算，提升边比较效率
+
+- ✓ **无锁操作缓存**：使用原子操作替代 pthread_rwlock（2026-01）
+  - 提交：e9b3e69
+  - 收益：消除锁开销，RECORDING=OFF 提升 3.78%，RECORDING=ON 提升 2.33%
+  - 详情：
+    - 将缓存 entry 改用 _Atomic 指针
+    - 使用 atomic_load/store_explicit 替代锁
+    - 移除 ~100 行锁管理代码
+    - 更好的缓存局部性和可扩展性
 
 ### 5.1 操作缓存
 - 命中率低但可接受（约 12.7%），当前不作为优化目标。
