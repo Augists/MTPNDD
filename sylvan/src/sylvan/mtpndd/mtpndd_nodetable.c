@@ -159,9 +159,64 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return;
     }
+#ifdef ENABLE_RECORDING
+    typedef enum {
+        MTPNDD_MK_OTHER = 0,
+        MTPNDD_MK_HASH,
+        MTPNDD_MK_LOOKUP,
+        MTPNDD_MK_FAST_RETURN,
+        MTPNDD_MK_REUSE_CLEANUP,
+        MTPNDD_MK_REF_CHILDREN,
+        MTPNDD_MK_GC_OR_GROW,
+        MTPNDD_MK_ALLOC_NODE,
+        MTPNDD_MK_ALLOC_ENTRY,
+        MTPNDD_MK_BUCKET_SCAN,
+        MTPNDD_MK_LINK,
+        MTPNDD_MK_COLLISION_CLEANUP,
+        MTPNDD_MK_COUNT
+    } mtpndd_mk_bucket_t;
+
+    struct timespec mk_phase_start = {0};
+    struct timespec mk_phase_end = {0};
+    mtpndd_mk_bucket_t mk_bucket = MTPNDD_MK_OTHER;
+    uint64_t mk_total_accum = 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &mk_phase_start);
+
+    #define MTPNDD_MK_SWITCH(bucket) do { \
+        clock_gettime(CLOCK_MONOTONIC, &mk_phase_end); \
+        uint64_t delta = mtpndd_timespec_diff_ns(&mk_phase_start, &mk_phase_end); \
+        mk_total_accum += delta; \
+        switch (mk_bucket) { \
+            case MTPNDD_MK_HASH: MTPNDD_STAT_ADD(mk_hash_ns, delta); break; \
+            case MTPNDD_MK_LOOKUP: MTPNDD_STAT_ADD(mk_lookup_ns, delta); break; \
+            case MTPNDD_MK_FAST_RETURN: MTPNDD_STAT_ADD(mk_fast_return_ns, delta); break; \
+            case MTPNDD_MK_REUSE_CLEANUP: MTPNDD_STAT_ADD(mk_reuse_cleanup_ns, delta); break; \
+            case MTPNDD_MK_REF_CHILDREN: MTPNDD_STAT_ADD(mk_ref_children_ns, delta); break; \
+            case MTPNDD_MK_GC_OR_GROW: MTPNDD_STAT_ADD(mk_gc_or_grow_ns, delta); break; \
+            case MTPNDD_MK_ALLOC_NODE: MTPNDD_STAT_ADD(mk_alloc_node_ns, delta); break; \
+            case MTPNDD_MK_ALLOC_ENTRY: MTPNDD_STAT_ADD(mk_alloc_entry_ns, delta); break; \
+            case MTPNDD_MK_BUCKET_SCAN: MTPNDD_STAT_ADD(mk_bucket_scan_ns, delta); break; \
+            case MTPNDD_MK_LINK: MTPNDD_STAT_ADD(mk_link_ns, delta); break; \
+            case MTPNDD_MK_COLLISION_CLEANUP: MTPNDD_STAT_ADD(mk_collision_cleanup_ns, delta); break; \
+            default: MTPNDD_STAT_ADD(mk_other_ns, delta); break; \
+        } \
+        mk_bucket = (bucket); \
+        mk_phase_start = mk_phase_end; \
+    } while (0)
+
+    #define MTPNDD_MK_FINISH() do { \
+        MTPNDD_MK_SWITCH(MTPNDD_MK_OTHER); \
+        MTPNDD_STAT_ADD(mk_total_ns, mk_total_accum); \
+    } while (0)
+#endif
     *result = NULL;
     if (edges->edge_count == 0) {
         *result = &MTPNDD_FALSE;
+#ifdef ENABLE_RECORDING
+        MTPNDD_MK_SWITCH(MTPNDD_MK_FAST_RETURN);
+        MTPNDD_MK_FINISH();
+#endif
         return;
     } else if (edges->edge_count == 1) {
         edge_bucket_entry_t *only_entry = NULL;
@@ -176,38 +231,67 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         }
         if (only_entry && atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
             *result = only_entry->child;
+#ifdef ENABLE_RECORDING
+            MTPNDD_MK_SWITCH(MTPNDD_MK_FAST_RETURN);
+            MTPNDD_MK_FINISH();
+#endif
             return;
         }
     }
+    // Compute and cache hash value for edges (like Java HashMap)
+    // This must be done after all edges are added and before lookup
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_HASH);
+#endif
+    edges->cached_hash = mtpndd_edge_map_compute_hash(edges);
     mtpndd_nodetable_t *nodetable = g_mtpndd_config.node_tables_by_field[field];
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_LOOKUP);
+#endif
     mtpndd_node_t *node = find_node_in_nodetable(nodetable, edges);
     edge_bucket_entry_t *entry = NULL;
     if (node) {
+#ifdef ENABLE_RECORDING
+        MTPNDD_MK_SWITCH(MTPNDD_MK_REUSE_CLEANUP);
+#endif
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
             sylvan_deref(label);
         }
 #ifdef ENABLE_RECORDING
         MTPNDD_STAT_ADD(nodes_reused_total, 1);
+        MTPNDD_MK_FINISH();
 #endif
         *result = node;
         return;
     }
     // Create new node
     // 1. add ref count of all children
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_REF_CHILDREN);
+#endif
     FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
         if (!mtpndd_is_terminal(entry->child)) {
             mtpndd_ref(entry->child);
         }
     }
     // 2. check if there should be a gc or grow
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_GC_OR_GROW);
+#endif
     if (g_mtpndd_stats.node_count > g_mtpndd_pal_config.mtpndd_nodetable_size) {
         gcOrGrow();
     }
     // 3. create new node
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_ALLOC_NODE);
+#endif
     node = mtpndd_memory_acquire_node();
     if (!node) {
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
+#ifdef ENABLE_RECORDING
+        MTPNDD_MK_FINISH();
+#endif
         return;
     }
     node->field_id = field;
@@ -215,10 +299,16 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     atomic_init(&node->ref_count, 0);
     // 4. insert into nodetable
     size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_ALLOC_ENTRY);
+#endif
     mtpndd_nodetable_bucket_entry_t *new_entry = mtpndd_memory_acquire_nodetable_entry();
     if (!new_entry) {
         mtpndd_memory_release_node(node);
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
+#ifdef ENABLE_RECORDING
+        MTPNDD_MK_FINISH();
+#endif
         return;
     }
     new_entry->edges = edges;
@@ -242,6 +332,9 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
 #ifdef ENABLE_RECORDING
     bool bucket_had_entries = existing_entry != NULL;
 #endif
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_BUCKET_SCAN);
+#endif
     while (existing_entry) {
         if (NODETABLE_BUCKET_ENTRY_EQUAL(existing_entry, edges)) {
             break;
@@ -254,6 +347,9 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         pthread_rwlock_unlock(bucket_lock);
         mtpndd_memory_release_nodetable_entry(new_entry);
         mtpndd_memory_release_node(node);
+#ifdef ENABLE_RECORDING
+        MTPNDD_MK_SWITCH(MTPNDD_MK_COLLISION_CLEANUP);
+#endif
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
             if (!mtpndd_is_terminal(entry->child)) {
                 mtpndd_deref(entry->child);
@@ -266,11 +362,15 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
             MTPNDD_STAT_ADD(nodetable_collision_total, 1);
         }
         MTPNDD_STAT_ADD(nodes_reused_total, 1);
+        MTPNDD_MK_FINISH();
 #endif
         *result = existing_node;
         return;
     }
 
+#ifdef ENABLE_RECORDING
+    MTPNDD_MK_SWITCH(MTPNDD_MK_LINK);
+#endif
     new_entry->next = nodetable->buckets[hash];
     new_entry->prev = NULL;
     if (nodetable->buckets[hash]) {
@@ -284,8 +384,13 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     if (bucket_had_entries) {
         MTPNDD_STAT_ADD(nodetable_collision_total, 1);
     }
+    MTPNDD_MK_FINISH();
 #endif
     *result = node;
+#ifdef ENABLE_RECORDING
+    #undef MTPNDD_MK_SWITCH
+    #undef MTPNDD_MK_FINISH
+#endif
 }
 
 static void gcOrGrow(void) {

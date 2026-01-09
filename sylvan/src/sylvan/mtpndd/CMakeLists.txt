@@ -75,6 +75,11 @@ if(MTPNDD_NQUEENS_ENABLE_DOT)
     target_compile_definitions(mtpndd_nqueens_test PRIVATE MTPNDD_NQUEENS_ENABLE_DOT=1)
 endif()
 
+add_executable(mtpndd_nqueens_benchmark test/nqueens_benchmark.c)
+target_link_libraries(mtpndd_nqueens_benchmark PRIVATE mtpndd::mtpndd m)
+target_compile_features(mtpndd_nqueens_benchmark PRIVATE c_std_11)
+target_compile_options(mtpndd_nqueens_benchmark PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
+
 add_executable(mtpndd_conversion_test test/conversion.c)
 target_link_libraries(mtpndd_conversion_test PRIVATE mtpndd::mtpndd)
 target_compile_features(mtpndd_conversion_test PRIVATE c_std_11)

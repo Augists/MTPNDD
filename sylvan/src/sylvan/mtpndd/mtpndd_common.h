@@ -159,6 +159,50 @@ typedef struct mtpndd_stats_s {
     uint64_t edge_map_pool_acquire_total;
     uint64_t edge_map_pool_release_total;
     uint64_t edge_map_pool_slab_total;
+    uint64_t edge_map_rehash_total;
+    uint64_t edge_map_max_buckets;
+    uint64_t nodetable_rehash_total;
+    uint64_t nodetable_max_buckets;
+    uint64_t and_time_ns;
+    uint64_t or_time_ns;
+    uint64_t not_time_ns;
+    uint64_t and_fastpath_ns;
+    uint64_t and_cache_hit_ns;
+    uint64_t and_build_edges_ns;
+    uint64_t and_same_field_ns;
+    uint64_t and_same_outer_loop_ns;
+    uint64_t and_same_inner_loop_ns;
+    uint64_t and_same_label_load_ns;
+    uint64_t and_same_bdd_op_ns;
+    uint64_t and_same_add_edge_ns;
+    uint64_t and_diff_field_ns;
+    uint64_t and_mk_ns;
+    uint64_t and_mk_call_ns;
+    uint64_t and_mk_gc_protect_ns;
+    uint64_t and_mk_cache_store_ns;
+    uint64_t and_mk_other_ns;
+    uint64_t gc_protect_hash_ns;
+    uint64_t gc_protect_lookup_ns;
+    uint64_t gc_protect_alloc_ns;
+    uint64_t gc_protect_record_ns;
+    uint64_t gc_protect_link_ns;
+    uint64_t gc_protect_lookup_steps_total;
+    uint64_t gc_protect_lookup_max_steps;
+    uint64_t gc_protect_lookup_hits;
+    uint64_t gc_protect_lookup_misses;
+    uint64_t mk_hash_ns;
+    uint64_t mk_lookup_ns;
+    uint64_t mk_fast_return_ns;
+    uint64_t mk_reuse_cleanup_ns;
+    uint64_t mk_ref_children_ns;
+    uint64_t mk_gc_or_grow_ns;
+    uint64_t mk_alloc_node_ns;
+    uint64_t mk_alloc_entry_ns;
+    uint64_t mk_bucket_scan_ns;
+    uint64_t mk_link_ns;
+    uint64_t mk_collision_cleanup_ns;
+    uint64_t mk_other_ns;
+    uint64_t mk_total_ns;
 #endif
 } mtpndd_stats_t;
 
@@ -375,22 +419,34 @@ static inline size_t gc_protect_hash_ptr_impl(const mtpndd_gc_protect_t *gcp, co
 
 #define GC_PROTECT_ENTRY_EQUAL(entry, key) ((entry->node) == (key))
 
-#define FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(gcp, bucket_idx, entry) \
-    for (entry = gcp->buckets[bucket_idx]; \
-        entry; \
-        entry = entry->next)
-#define FOR_EACH_ENTRY_IN_ALL_GC_PROTECT_BUCKETS(gcp, entry) \
-    for (size_t _bkt = 0; _bkt < (gcp)->bucket_count; _bkt++) \
-        FOR_EACH_ENTRY_IN_GC_PROTECT_BUCKET(gcp, _bkt, entry)
-
 static inline gc_protect_entry_t *gc_protect_bucket_find(mtpndd_gc_protect_t *gcp, size_t bucket_idx, mtpndd_node_t *key) {
     if (!gcp || !gcp->buckets || bucket_idx >= gcp->bucket_count) {
         return NULL;
     }
     gc_protect_entry_t *entry = gcp->buckets[bucket_idx];
+#ifdef ENABLE_RECORDING
+    uint64_t steps = 0;
+#endif
     while (entry && !GC_PROTECT_ENTRY_EQUAL(entry, key)) {
+#ifdef ENABLE_RECORDING
+        steps++;
+#endif
         entry = entry->next;
     }
+#ifdef ENABLE_RECORDING
+    if (entry) {
+        steps++;
+    }
+    if (steps) {
+        MTPNDD_STAT_ADD(gc_protect_lookup_steps_total, steps);
+        MTPNDD_STAT_MAX(gc_protect_lookup_max_steps, steps);
+    }
+    if (entry) {
+        MTPNDD_STAT_ADD(gc_protect_lookup_hits, 1);
+    } else {
+        MTPNDD_STAT_ADD(gc_protect_lookup_misses, 1);
+    }
+#endif
     return entry;
 }
 
