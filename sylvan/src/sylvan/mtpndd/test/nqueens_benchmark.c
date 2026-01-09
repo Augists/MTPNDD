@@ -157,6 +157,8 @@ static bool declare_fields(size_t n) {
     return true;
 }
 
+static size_t g_n_workers = 0;
+
 static bool run_benchmark(size_t n) {
     struct timespec start_ts = {0}, end_ts = {0};
     clock_gettime(CLOCK_MONOTONIC, &start_ts);
@@ -171,7 +173,7 @@ static bool run_benchmark(size_t n) {
     ndd_size = next_pow2(ndd_size);
 
     mtpndd_pal_config_t cfg = {
-        .n_workers = 0,
+        .n_workers = g_n_workers,
         .lace_dqsize = 1 << 20,
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,
@@ -340,8 +342,10 @@ build_fail:
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <n>\n", argv[0]);
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr, "Usage: %s <n> [workers]\n", argv[0]);
+        fprintf(stderr, "  n: board size (e.g., 12)\n");
+        fprintf(stderr, "  workers: number of workers (default: 0)\n");
         return EXIT_FAILURE;
     }
     char *endptr = NULL;
@@ -351,6 +355,17 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     size_t n = (size_t)parsed;
+
+    // Parse optional workers parameter
+    if (argc == 3) {
+        long workers_parsed = strtol(argv[2], &endptr, 10);
+        if (*argv[2] == '\0' || (endptr && *endptr != '\0') || workers_parsed < 0) {
+            fprintf(stderr, "Invalid workers value: %s\n", argv[2]);
+            return EXIT_FAILURE;
+        }
+        g_n_workers = (size_t)workers_parsed;
+    }
+
     if (!run_benchmark(n)) {
         return EXIT_FAILURE;
     }
