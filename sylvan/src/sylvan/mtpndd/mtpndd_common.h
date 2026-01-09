@@ -10,7 +10,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdatomic.h>
-#include <pthread.h>
 
 #ifdef ENABLE_RECORDING
 #include <time.h>
@@ -20,8 +19,6 @@ struct mtpndd_node_s;
 struct mtpndd_edge_s;
 struct mtpndd_nodetable_s;
 struct mtpndd_op_cache_s;
-struct mtpndd_gc_protect_s;
-struct gc_protect_entry_s;
 
 typedef uint64_t mtpndd_bdd_t;
 typedef struct mtpndd_node_s mtpndd_node_t;
@@ -29,8 +26,6 @@ typedef mtpndd_node_t mtpndd_t;
 typedef struct mtpndd_edge_s mtpndd_edge_t;
 typedef struct mtpndd_nodetable_s mtpndd_nodetable_t;
 typedef struct mtpndd_op_cache_s mtpndd_op_cache_t;
-typedef struct mtpndd_gc_protect_s mtpndd_gc_protect_t;
-typedef struct gc_protect_entry_s gc_protect_entry_t;
 
 size_t mtpndd_hash_node_identity(const mtpndd_node_t *node);
 
@@ -93,10 +88,8 @@ void mtpndd_clear_error();
  ********************************/
 #ifdef LARGE_NODETABLE
 #define MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT 65537
-#define MTPNDD_DEFAULT_GC_BUCKET_COUNT 65537
 #else
 #define MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT 1024
-#define MTPNDD_DEFAULT_GC_BUCKET_COUNT 1024
 #endif
 
 #define MTPNDD_DEFAULT_EDGE_BUCKET_COUNT 8
@@ -104,7 +97,6 @@ void mtpndd_clear_error();
 #define MTPNDD_DEFAULT_EDGE_ENTRY_SLAB_CAPACITY 4096
 #define MTPNDD_DEFAULT_NODETABLE_ENTRY_SLAB_CAPACITY 2048
 #define MTPNDD_DEFAULT_EDGE_MAP_SLAB_CAPACITY 2048
-#define MTPNDD_DEFAULT_GC_PROTECT_ENTRY_SLAB_CAPACITY 1024
 
 /********************************
  * Global config definitions
@@ -118,12 +110,10 @@ typedef struct mtpndd_pal_config_s {
     double quick_growth_threshold;
     size_t edge_bucket_count;
     size_t nodetable_bucket_count;
-    size_t gc_bucket_count;
     size_t node_slab_capacity;
     size_t edge_entry_slab_capacity;
     size_t nodetable_entry_slab_capacity;
     size_t edge_map_slab_capacity;
-    size_t gc_protect_entry_slab_capacity;
 } mtpndd_pal_config_t;
 
 extern mtpndd_pal_config_t g_mtpndd_pal_config;
@@ -144,6 +134,14 @@ typedef struct mtpndd_stats_s {
     uint64_t edge_insert_total;
     uint64_t edge_collision_total;
     uint64_t nodetable_collision_total;
+    uint64_t nodetable_lookup_hits;
+    uint64_t nodetable_lookup_misses;
+    uint64_t nodetable_hash_ns;
+    uint64_t nodetable_bucket_scan_ns;
+    uint64_t nodetable_edge_compare_ns;
+    uint64_t nodetable_edge_compare_entries;
+    uint64_t nodetable_edge_compare_steps_total;
+    uint64_t nodetable_edge_compare_max_steps;
     uint64_t edge_lock_spin_total;
     uint64_t edge_lock_wait_time_ns;
     uint64_t gc_pause_time_ns;
@@ -180,18 +178,8 @@ typedef struct mtpndd_stats_s {
     uint64_t and_diff_field_ns;
     uint64_t and_mk_ns;
     uint64_t and_mk_call_ns;
-    uint64_t and_mk_gc_protect_ns;
     uint64_t and_mk_cache_store_ns;
     uint64_t and_mk_other_ns;
-    uint64_t gc_protect_hash_ns;
-    uint64_t gc_protect_lookup_ns;
-    uint64_t gc_protect_alloc_ns;
-    uint64_t gc_protect_record_ns;
-    uint64_t gc_protect_link_ns;
-    uint64_t gc_protect_lookup_steps_total;
-    uint64_t gc_protect_lookup_max_steps;
-    uint64_t gc_protect_lookup_hits;
-    uint64_t gc_protect_lookup_misses;
     uint64_t mk_hash_ns;
     uint64_t mk_lookup_ns;
     uint64_t mk_fast_return_ns;
@@ -274,8 +262,6 @@ typedef struct mtpndd_config_s {
     mtpndd_op_cache_t *and_cache;
     mtpndd_op_cache_t *or_cache;
     mtpndd_op_cache_t *not_cache;
-
-    mtpndd_gc_protect_t *gcProtect;
 } mtpndd_config_t;
 
 extern mtpndd_config_t g_mtpndd_config;
@@ -314,147 +300,5 @@ void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook);
 void mtpndd_gc_hook_postgc(mtpndd_gc_hook_t hook);
 void mtpndd_gc_run_prehooks(void);
 void mtpndd_gc_run_posthooks(void);
-
-/********************************
- * GC protection hash set
- ********************************/
-/**
- * Why not use a gc_protect_label and container_of for gc protection hash set in mtpndd_node_t?
- * It will save time when removing.
- * But it will waste space for gc_protect_label in every node.
- */
-struct mtpndd_gc_protect_s {
-    atomic_size_t gc_protect_count;
-    gc_protect_entry_t **buckets;
-    pthread_rwlock_t *bucket_locks;
-    void *bucket_storage;
-    size_t bucket_count;
-    size_t *used_bucket_indices;
-    size_t used_bucket_count;
-    size_t used_bucket_capacity;
-};
-
-struct gc_protect_entry_s {
-    struct gc_protect_entry_s *next;
-    struct gc_protect_entry_s *prev;
-    mtpndd_node_t *node;
-};
-
-#define GC_PROTECT_INIT(gcp) do { \
-        atomic_init(&(gcp)->gc_protect_count, 0); \
-        (gcp)->bucket_count = g_mtpndd_pal_config.gc_bucket_count; \
-        size_t _gc_bucket_cnt = (gcp)->bucket_count; \
-        if (_gc_bucket_cnt == 0) { \
-            _gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT; \
-            (gcp)->bucket_count = _gc_bucket_cnt; \
-        } \
-        size_t _buckets_bytes = sizeof(gc_protect_entry_t *) * _gc_bucket_cnt; \
-        size_t _locks_bytes = sizeof(pthread_rwlock_t) * _gc_bucket_cnt; \
-        (gcp)->bucket_storage = calloc(1, _buckets_bytes + _locks_bytes); \
-        if (!(gcp)->bucket_storage) { \
-            mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__); \
-            return MTPNDD_ERROR_OUT_OF_MEMORY; \
-        } \
-        (gcp)->buckets = (gc_protect_entry_t **)(gcp)->bucket_storage; \
-        (gcp)->bucket_locks = (pthread_rwlock_t *)((char *)(gcp)->bucket_storage + _buckets_bytes); \
-        for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
-            if (pthread_rwlock_init(&(gcp)->bucket_locks[i], NULL) != 0) { \
-                for (size_t j = 0; j < i; j++) { \
-                    pthread_rwlock_destroy(&(gcp)->bucket_locks[j]); \
-                } \
-                free((gcp)->bucket_storage); \
-                (gcp)->bucket_storage = NULL; \
-                (gcp)->bucket_locks = NULL; \
-                (gcp)->buckets = NULL; \
-                mtpndd_set_error(MTPNDD_ERROR_THREAD_SAFETY, __func__, __LINE__); \
-                return MTPNDD_ERROR_THREAD_SAFETY; \
-            } \
-        } \
-    } while(0)
-#define GC_PROTECT_CLEAR(gcp) do { \
-        size_t _gc_bucket_cnt = (gcp)->bucket_count ? (gcp)->bucket_count : g_mtpndd_pal_config.gc_bucket_count; \
-        if (_gc_bucket_cnt == 0) { \
-            _gc_bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT; \
-        } \
-        if ((gcp)->buckets && (gcp)->bucket_locks) { \
-            for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
-                pthread_rwlock_t *_lock = &((gcp)->bucket_locks[i]); \
-                if (pthread_rwlock_wrlock(_lock) != 0) { \
-                    mtpndd_set_error(MTPNDD_ERROR_THREAD_SAFETY, __func__, __LINE__); \
-                    continue; \
-                } \
-                gc_protect_entry_t *entry = (gcp)->buckets[i]; \
-                while (entry) { \
-                    gc_protect_entry_t *next_entry = entry->next; \
-                    mtpndd_memory_release_gc_protect_entry(entry); \
-                    entry = next_entry; \
-                } \
-                (gcp)->buckets[i] = NULL; \
-                pthread_rwlock_unlock(_lock); \
-            } \
-        } else if ((gcp)->buckets) { \
-            for (size_t i = 0; i < _gc_bucket_cnt; i++) { \
-                gc_protect_entry_t *entry = (gcp)->buckets[i]; \
-                while (entry) { \
-                    gc_protect_entry_t *next_entry = entry->next; \
-                    mtpndd_memory_release_gc_protect_entry(entry); \
-                    entry = next_entry; \
-                } \
-                (gcp)->buckets[i] = NULL; \
-            } \
-        } \
-        atomic_store_explicit(&(gcp)->gc_protect_count, 0, memory_order_relaxed); \
-    } while(0)
-
-#define GC_PROTECT_BUCKET_LOCK(gcp, bucket_idx) (&((gcp)->bucket_locks[bucket_idx]))
-#define GC_PROTECT_BUCKET_RDLOCK(gcp, bucket_idx) pthread_rwlock_rdlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
-#define GC_PROTECT_BUCKET_WRLOCK(gcp, bucket_idx) pthread_rwlock_wrlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
-#define GC_PROTECT_BUCKET_UNLOCK(gcp, bucket_idx) pthread_rwlock_unlock(GC_PROTECT_BUCKET_LOCK((gcp), (bucket_idx)))
-static inline size_t gc_protect_hash_ptr_impl(const mtpndd_gc_protect_t *gcp, const mtpndd_node_t *key) {
-    size_t hash = mtpndd_hash_node_identity(key);
-    size_t bucket_cnt = (gcp && gcp->bucket_count) ? gcp->bucket_count : g_mtpndd_pal_config.gc_bucket_count;
-    if (bucket_cnt == 0) {
-        bucket_cnt = MTPNDD_DEFAULT_GC_BUCKET_COUNT;
-    }
-    return bucket_cnt ? (size_t)(hash % bucket_cnt) : 0;
-}
-
-#define GC_PROTECT_HASH_VAL(gcp, key) gc_protect_hash_ptr_impl((gcp), (key))
-
-#define GC_PROTECT_ENTRY_EQUAL(entry, key) ((entry->node) == (key))
-
-static inline gc_protect_entry_t *gc_protect_bucket_find(mtpndd_gc_protect_t *gcp, size_t bucket_idx, mtpndd_node_t *key) {
-    if (!gcp || !gcp->buckets || bucket_idx >= gcp->bucket_count) {
-        return NULL;
-    }
-    gc_protect_entry_t *entry = gcp->buckets[bucket_idx];
-#ifdef ENABLE_RECORDING
-    uint64_t steps = 0;
-#endif
-    while (entry && !GC_PROTECT_ENTRY_EQUAL(entry, key)) {
-#ifdef ENABLE_RECORDING
-        steps++;
-#endif
-        entry = entry->next;
-    }
-#ifdef ENABLE_RECORDING
-    if (entry) {
-        steps++;
-    }
-    if (steps) {
-        MTPNDD_STAT_ADD(gc_protect_lookup_steps_total, steps);
-        MTPNDD_STAT_MAX(gc_protect_lookup_max_steps, steps);
-    }
-    if (entry) {
-        MTPNDD_STAT_ADD(gc_protect_lookup_hits, 1);
-    } else {
-        MTPNDD_STAT_ADD(gc_protect_lookup_misses, 1);
-    }
-#endif
-    return entry;
-}
-
-void mtpndd_gc_protect_clear();
-void mtpndd_gc_protect_add(mtpndd_t *node);
 
 #endif // MTPNDD_COMMON_H

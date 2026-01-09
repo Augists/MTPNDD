@@ -27,9 +27,6 @@ typedef struct {
     size_t edge_map_in_use;
     size_t edge_map_capacity_per_slab;
 
-    size_t gc_protect_entry_slabs;
-    size_t gc_protect_entry_in_use;
-    size_t gc_protect_entry_capacity_per_slab;
 } mtpndd_memory_pool_stats_t;
 
 void mtpndd_memory_pools_init(void);
@@ -50,8 +47,5 @@ void mtpndd_memory_release_edge_map(mtpndd_edge_t *edges);
 
 mtpndd_nodetable_bucket_entry_t *mtpndd_memory_acquire_nodetable_entry(void);
 void mtpndd_memory_release_nodetable_entry(mtpndd_nodetable_bucket_entry_t *entry);
-
-gc_protect_entry_t *mtpndd_memory_acquire_gc_protect_entry(void);
-void mtpndd_memory_release_gc_protect_entry(gc_protect_entry_t *entry);
 
 #endif // MTPNDD_MEMORY_POOL_H

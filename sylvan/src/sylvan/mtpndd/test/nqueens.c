@@ -233,34 +233,42 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     nqueens_ctx_t ctx = {0};
     mtpndd_t *formula = NULL;
 
-    size_t bdd_size = 1 << 19;
-    size_t ndd_size = 1 << 21;
-    size_t cache_size = 1 << 18;
-    size_t edge_bucket_count = 8;
-    size_t gc_bucket_count = 256;
-    size_t slab_capacity = 1024;
-    size_t gc_protect_entry_slab_capacity = 256;
+    size_t bdd_size = 1 << 18;
+    size_t ndd_size = 1 << 18;
+    size_t cache_size = 1 << 19; // smaller op cache to reduce overhead
+    size_t edge_bucket_count = 16;
+    size_t node_slab_capacity = 1024;
+    size_t edge_entry_slab_capacity = 2048;
+    size_t nodetable_entry_slab_capacity = 1024;
+    size_t edge_map_slab_capacity = 512;
 
     if (size > 6 && size <= 8) {
-        bdd_size = 1 << 20;
-        ndd_size = 1 << 22;
+        bdd_size = 1 << 19;
+        ndd_size = 1 << 19;
         cache_size = 1 << 19;
-        slab_capacity = 81920;
-        gc_protect_entry_slab_capacity = 384;
+        edge_bucket_count = 16;
+        node_slab_capacity = 1536;
+        edge_entry_slab_capacity = 3072;
+        nodetable_entry_slab_capacity = 1536;
+        edge_map_slab_capacity = 768;
     } else if (size > 8 && size <= 10) {
-        bdd_size = 1 << 21;
-        ndd_size = 1 << 23;
+        bdd_size = 1 << 20;
+        ndd_size = 1 << 19; // reduce nodetable buckets to be closer to node count
         cache_size = 1 << 20;
-        edge_bucket_count = 10;
-        slab_capacity = 819200;
-        gc_protect_entry_slab_capacity = 512;
+        edge_bucket_count = 16;
+        node_slab_capacity = 2048;
+        edge_entry_slab_capacity = 4096;
+        nodetable_entry_slab_capacity = 2048;
+        edge_map_slab_capacity = 1024;
     } else if (size > 10) {
-        bdd_size = 1 << 22;
-        ndd_size = 1 << 24;
-        cache_size = 1 << 21;
-        edge_bucket_count = 12;
-        slab_capacity = 1638400;
-        gc_protect_entry_slab_capacity = 640;
+        bdd_size = 1 << 20;
+        ndd_size = 1 << 19; // significantly smaller nodetable to approach rehash threshold
+        cache_size = 1 << 20;
+        edge_bucket_count = 16;
+        node_slab_capacity = 3072;
+        edge_entry_slab_capacity = 6144;
+        nodetable_entry_slab_capacity = 3072;
+        edge_map_slab_capacity = 1280;
     }
 
     size_t nodetable_bucket_count = ndd_size;
@@ -274,15 +282,13 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .quick_growth_threshold = 0.1,
         .edge_bucket_count = edge_bucket_count,
         .nodetable_bucket_count = nodetable_bucket_count,
-        .gc_bucket_count = gc_bucket_count,
-        .node_slab_capacity = slab_capacity,
-        .edge_entry_slab_capacity = slab_capacity,
-        .nodetable_entry_slab_capacity = slab_capacity,
-        .edge_map_slab_capacity = slab_capacity * size,
-        .gc_protect_entry_slab_capacity = gc_protect_entry_slab_capacity,
+        .node_slab_capacity = node_slab_capacity,
+        .edge_entry_slab_capacity = edge_entry_slab_capacity,
+        .nodetable_entry_slab_capacity = nodetable_entry_slab_capacity,
+        .edge_map_slab_capacity = edge_map_slab_capacity,
     };
 
-    struct timespec run_start = {0}, run_finish = {0}, init_finish = {0}, ctx_finish = {0}, op_finish = {0};
+    struct timespec run_start = {0}, run_finish = {0}, init_finish = {0}, ctx_finish = {0};
     clock_gettime(CLOCK_MONOTONIC, &run_start);
 
     if (mtpndd_init(&config) != MTPNDD_SUCCESS) {
@@ -304,7 +310,6 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         fprintf(stderr, "Failed to build formula for size %zu.\n", size);
         goto cleanup;
     }
-    clock_gettime(CLOCK_MONOTONIC, &op_finish);
 
     double satcount_value = mtpndd_satcount(formula);
 
@@ -362,10 +367,8 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     printf("init %8.3f\n", elapsed);
     elapsed = timespec_diff_seconds(&init_finish, &ctx_finish);
     printf("ctx  %8.3f\n", elapsed);
-    elapsed = timespec_diff_seconds(&ctx_finish, &op_finish);
-    printf("op  %8.3f\n", elapsed);
-    elapsed = timespec_diff_seconds(&op_finish, &run_finish);
-    printf("sat %8.3f\n", elapsed);
+    elapsed = timespec_diff_seconds(&ctx_finish, &run_finish);
+    printf("run  %8.3f\n", elapsed);
 
 cleanup:
     if (formula) {
@@ -502,6 +505,44 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->nodes_created_total, stats->nodes_reused_total, stats->nodes_collected_last);
     printf(".. stats: max_edges_per_node=%" PRIu64 ", cache hits/misses=%" PRIu64 "/%" PRIu64 "\n",
            stats->max_edges_per_node, stats->cache_lookup_hits, stats->cache_lookup_misses);
+    printf(".. stats: time and/or/not = %.3f/%.3f/%.3f s\n",
+           stats->and_time_ns / 1e9, stats->or_time_ns / 1e9, stats->not_time_ns / 1e9);
+    printf(".. stats: and fast/cache/build/diff/mk = %.3f/%.3f/%.3f/%.3f/%.3f s\n",
+           stats->and_fastpath_ns / 1e9,
+           stats->and_cache_hit_ns / 1e9,
+           stats->and_build_edges_ns / 1e9,
+           stats->and_diff_field_ns / 1e9,
+           stats->and_mk_ns / 1e9);
+    printf(".. stats: and same outer/inner/label/bdd/add = %.3f/%.3f/%.3f/%.3f/%.3f s (total=%.3f)\n",
+           stats->and_same_outer_loop_ns / 1e9,
+           stats->and_same_inner_loop_ns / 1e9,
+           stats->and_same_label_load_ns / 1e9,
+           stats->and_same_bdd_op_ns / 1e9,
+           stats->and_same_add_edge_ns / 1e9,
+           stats->and_same_field_ns / 1e9);
+    printf(".. stats: and mk call/cache/other = %.3f/%.3f/%.3f s\n",
+           stats->and_mk_call_ns / 1e9,
+           stats->and_mk_cache_store_ns / 1e9,
+           stats->and_mk_other_ns / 1e9);
+    printf(".. stats: mk hash/lookup/fast/reuse/ref/gc/alloc_node/alloc_entry = %.3f/%.3f/%.3f/%.3f/%.3f/%.3f/%.3f/%.3f s\n",
+           stats->mk_hash_ns / 1e9,
+           stats->mk_lookup_ns / 1e9,
+           stats->mk_fast_return_ns / 1e9,
+           stats->mk_reuse_cleanup_ns / 1e9,
+           stats->mk_ref_children_ns / 1e9,
+           stats->mk_gc_or_grow_ns / 1e9,
+           stats->mk_alloc_node_ns / 1e9,
+           stats->mk_alloc_entry_ns / 1e9);
+    printf(".. stats: mk scan/link/collision = %.3f/%.3f/%.3f s\n",
+           stats->mk_bucket_scan_ns / 1e9,
+           stats->mk_link_ns / 1e9,
+           stats->mk_collision_cleanup_ns / 1e9);
+    printf(".. stats: mk other/total = %.3f/%.3f s\n",
+           stats->mk_other_ns / 1e9,
+           stats->mk_total_ns / 1e9);
+    printf(".. stats: edge_map rehash=%" PRIu64 " max_buckets=%" PRIu64 " | nodetable rehash=%" PRIu64 " max_buckets=%" PRIu64 "\n",
+           stats->edge_map_rehash_total, stats->edge_map_max_buckets,
+           stats->nodetable_rehash_total, stats->nodetable_max_buckets);
     printf(".. stats: cache stores=%" PRIu64 ", overwrites=%" PRIu64 " (%.1f%%)\n",
            stats->cache_store_total, stats->cache_store_overwrites,
            stats->cache_store_total > 0 ? 100.0 * stats->cache_store_overwrites / stats->cache_store_total : 0.0);
@@ -509,6 +550,20 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->edge_insert_total, stats->edge_collision_total,
            stats->edge_insert_total > 0 ? 100.0 * stats->edge_collision_total / stats->edge_insert_total : 0.0,
            stats->nodetable_collision_total);
+    printf(".. stats: nodetable hash/bucket/compare = %.3f/%.3f/%.3f s\n",
+           stats->nodetable_hash_ns / 1e9,
+           stats->nodetable_bucket_scan_ns / 1e9,
+           stats->nodetable_edge_compare_ns / 1e9);
+    uint64_t nodetable_lookup_total = stats->nodetable_lookup_hits + stats->nodetable_lookup_misses;
+    double avg_steps = nodetable_lookup_total > 0
+        ? (double)stats->nodetable_edge_compare_steps_total / (double)nodetable_lookup_total
+        : 0.0;
+    printf(".. stats: nodetable lookup hits/misses=%" PRIu64 "/%" PRIu64 " edge_entries=%" PRIu64 " avg_steps=%.2f max_steps=%" PRIu64 "\n",
+           stats->nodetable_lookup_hits,
+           stats->nodetable_lookup_misses,
+           stats->nodetable_edge_compare_entries,
+           avg_steps,
+           stats->nodetable_edge_compare_max_steps);
 }
 
 #endif  // ENABLE_RECORDING

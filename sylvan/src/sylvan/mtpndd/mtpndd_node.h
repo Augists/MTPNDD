@@ -7,7 +7,7 @@
 
 #include <stdatomic.h>
 #include <stdio.h>
-#include <lace.h>
+#include <stdbool.h>
 #include "mtpndd_common.h"
 
 /********************************
@@ -21,46 +21,6 @@ struct mtpndd_node_s {
     uint32_t field_id;
     struct mtpndd_edge_s *edges;
 };
-
-
-#define MTPNDD_BUCKET_LOCK_WORD_BITS 64
-
-/********************************
- * Bucket lock definition (bitset)
- ********************************/
-static inline void mtpndd_bucket_lock_clear(atomic_uint_fast64_t *lock_word, size_t idx) {
-    if (!lock_word) return;
-    uint64_t mask = ~(1ull << idx);
-    atomic_fetch_and_explicit(lock_word, mask, memory_order_relaxed);
-}
-
-static inline void mtpndd_bucket_lock_release(atomic_uint_fast64_t *lock_word, size_t idx) {
-    if (!lock_word) return;
-    uint64_t mask = ~(1ull << idx);
-    atomic_fetch_and_explicit(lock_word, mask, memory_order_release);
-}
-
-static inline void mtpndd_bucket_lock_acquire(atomic_uint_fast64_t *lock_word, size_t idx) {
-    if (!lock_word) return;
-    uint64_t mask = 1ull << idx;
-    for (;;) {
-        uint64_t expected = atomic_load_explicit(lock_word, memory_order_relaxed);
-        if (!(expected & mask)) {
-            if (atomic_compare_exchange_weak_explicit(lock_word, &expected, expected | mask,
-                                                      memory_order_acquire, memory_order_relaxed)) {
-                break;
-            }
-        }
-#if defined(__GNUC__) || defined(__clang__)
-#if defined(__x86_64__) || defined(__i386__)
-        __asm__ __volatile__("pause");
-#elif defined(__aarch64__) || defined(__arm__)
-        __asm__ __volatile__("yield");
-#endif
-#endif
-    }
-}
-
 /********************************
  * MTPNDD edge definition
  ********************************/
@@ -70,30 +30,37 @@ typedef struct edge_bucket_entry_s {
     _Atomic(mtpndd_bdd_t) label;
 } edge_bucket_entry_t;
 
-// TODO: try not to malloc buckets and bucket_locks every time, use array instead. Edge map memory pool should alloc every edge map by _edge_bucket_cnt when mtpndd_init
+// TODO: try not to malloc buckets every time, use pooled array instead. Edge map memory pool should alloc every edge map by _edge_bucket_cnt when mtpndd_init
 // mtpndd_t* child -> mtpndd_bdd_t label
 struct mtpndd_edge_s {
     size_t edge_count;
     uint64_t cached_hash;  // Cached hash value for fast lookup (like Java HashMap)
-    atomic_uint_fast64_t bucket_lock_word;
     edge_bucket_entry_t **buckets;
+    size_t bucket_count;
+    size_t load_threshold;
+    bool buckets_malloced;
 };
 
 // Compute hash value for edge map content (matches Java Map.hashCode() semantics)
+static inline uint64_t mtpndd_edge_entry_hash(const mtpndd_node_t *child, mtpndd_bdd_t label) {
+    uint64_t entry_hash = mtpndd_hash_u64((uintptr_t)child);
+    entry_hash ^= mtpndd_hash_u64((uint64_t)label);
+    return entry_hash;
+}
+
 static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) {
     if (!edges || !edges->buckets) return 0;
 
     // Use XOR-based accumulation like Java's HashMap.hashCode()
     // This is order-independent, matching Java's Map.hashCode() behavior
     uint64_t hash = 0;
-    size_t edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
+    size_t edge_bucket_cnt = edges->bucket_count ? edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
     for (size_t i = 0; i < edge_bucket_cnt; i++) {
         edge_bucket_entry_t *entry = edges->buckets[i];
         while (entry) {
             // Hash each (child, label) pair and XOR into result
-            uint64_t entry_hash = mtpndd_hash_u64((uintptr_t)entry->child);
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
-            entry_hash ^= mtpndd_hash_u64((uint64_t)label);
+            uint64_t entry_hash = mtpndd_edge_entry_hash(entry->child, label);
             hash ^= entry_hash;
             entry = entry->next;
         }
@@ -101,13 +68,11 @@ static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) 
     return hash;
 }
 
-static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd_node_t *child) {
-    size_t hash = mtpndd_hash_node_identity(child);
-    size_t bucket_cnt = g_mtpndd_pal_config.edge_bucket_count;
-    return bucket_cnt ? (hash % bucket_cnt) : 0;
-}
-
-#define EDGE_MAP_HASH_VAL(map, key) edge_map_hash_child((map), (key))
+#define EDGE_MAP_BUCKET_COUNT(map) \
+    (((map) && (map)->bucket_count) ? (map)->bucket_count : g_mtpndd_pal_config.edge_bucket_count)
+#define EDGE_MAP_BUCKET_INDEX(map, key) \
+    (EDGE_MAP_BUCKET_COUNT(map) ? (mtpndd_hash_node_identity((key)) & (EDGE_MAP_BUCKET_COUNT(map) - 1)) : 0)
+#define EDGE_MAP_HASH_VAL(map, key) EDGE_MAP_BUCKET_INDEX(map, key)
 
 #define EDGE_BUCKET_ENTRY_EQUAL(entry, key) ((entry->child) == (key))
 
@@ -116,7 +81,7 @@ static inline size_t edge_map_hash_child(const mtpndd_edge_t *emap, const mtpndd
         (entry); \
         (entry) = (entry)->next)
 #define FOR_EACH_ENTRY_IN_ALL_BUCKETS(emap, entry) \
-    for (size_t _bkt = 0, _edge_bucket_cnt = g_mtpndd_pal_config.edge_bucket_count; _bkt < _edge_bucket_cnt; _bkt++) \
+    for (size_t _bkt = 0, _edge_bucket_cnt = (emap)->bucket_count ? (emap)->bucket_count : g_mtpndd_pal_config.edge_bucket_count; _bkt < _edge_bucket_cnt; _bkt++) \
         for ((entry) = (emap)->buckets[_bkt]; \
             (entry); \
             (entry) = (entry)->next)
@@ -135,20 +100,6 @@ extern mtpndd_t MTPNDD_FALSE;
 bool mtpndd_is_true(mtpndd_t *ndd);
 bool mtpndd_is_false(mtpndd_t *ndd);
 bool mtpndd_is_terminal(mtpndd_t *ndd);
-
-/********************************
- * MTPNDD operations (sub task)
- ********************************/
-VOID_TASK_DECL_3(mtpndd_and_rec_same_field_task, edge_bucket_entry_t *, edge_bucket_entry_t *, mtpndd_edge_t *);
-VOID_TASK_DECL_3(mtpndd_and_rec_diff_field_task, edge_bucket_entry_t *, mtpndd_t *, mtpndd_edge_t *);
-TASK_DECL_3(mtpndd_error_t, mtpndd_and_rec, mtpndd_t *, mtpndd_t *, mtpndd_t **);
-VOID_TASK_DECL_5(mtpndd_or_rec_same_field_task, edge_bucket_entry_t *, edge_bucket_entry_t *, mtpndd_edge_t *, mtpndd_edge_t *, mtpndd_edge_t *);
-VOID_TASK_DECL_4(mtpndd_or_rec_diff_field_task, edge_bucket_entry_t *, mtpndd_t *, mtpndd_edge_t *, _Atomic(mtpndd_bdd_t) *);
-TASK_DECL_3(mtpndd_error_t, mtpndd_or_rec, mtpndd_t *, mtpndd_t *, mtpndd_t **);
-VOID_TASK_DECL_3(mtpndd_not_rec_task, edge_bucket_entry_t *, mtpndd_edge_t *, _Atomic(mtpndd_bdd_t) *);
-TASK_DECL_2(mtpndd_error_t, mtpndd_not_rec, mtpndd_t *, mtpndd_t **);
-VOID_TASK_DECL_3(mtpndd_exist_rec_task, edge_bucket_entry_t *, mtpndd_edge_t *, uint32_t);
-TASK_DECL_3(mtpndd_error_t, mtpndd_exist_rec, mtpndd_t *, uint32_t, mtpndd_t **);
 
 /********************************
  * MTPNDD operations

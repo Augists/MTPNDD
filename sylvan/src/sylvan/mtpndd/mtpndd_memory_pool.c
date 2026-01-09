@@ -3,10 +3,8 @@
 
 #include "mtpndd_memory_pool.h"
 
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdio.h>
 
 #include "mtpndd_common.h"
@@ -23,7 +21,6 @@ typedef struct mtpndd_slab_pool_s {
     size_t objects_per_slab;
     void *free_list;
     mtpndd_slab_block_t *blocks;
-    pthread_mutex_t lock;
     size_t slab_count;
     size_t in_use;
 } mtpndd_slab_pool_t;
@@ -32,7 +29,6 @@ static mtpndd_slab_pool_t g_node_pool = {0};
 static mtpndd_slab_pool_t g_edge_entry_pool = {0};
 static mtpndd_slab_pool_t g_nodetable_entry_pool = {0};
 static mtpndd_slab_pool_t g_edge_map_pool = {0};
-static mtpndd_slab_pool_t g_gc_protect_entry_pool = {0};
 static size_t g_edge_bucket_count = 0;
 static size_t g_edge_bucket_array_offset = 0;
 
@@ -50,11 +46,9 @@ static void mtpndd_slab_pool_reset(mtpndd_slab_pool_t *pool) {
     pool->blocks = NULL;
     pool->slab_count = 0;
     pool->in_use = 0;
-    pthread_mutex_init(&pool->lock, NULL);
 }
 
 static void mtpndd_slab_pool_destroy(mtpndd_slab_pool_t *pool) {
-    pthread_mutex_lock(&pool->lock);
     mtpndd_slab_block_t *block = pool->blocks;
     while (block) {
         mtpndd_slab_block_t *next = block->next;
@@ -63,8 +57,6 @@ static void mtpndd_slab_pool_destroy(mtpndd_slab_pool_t *pool) {
     }
     pool->blocks = NULL;
     pool->free_list = NULL;
-    pthread_mutex_unlock(&pool->lock);
-    pthread_mutex_destroy(&pool->lock);
 }
 
 static mtpndd_error_t mtpndd_slab_pool_grow(mtpndd_slab_pool_t *pool) {
@@ -93,10 +85,8 @@ static mtpndd_error_t mtpndd_slab_pool_grow(mtpndd_slab_pool_t *pool) {
 
 static void *mtpndd_slab_pool_acquire(mtpndd_slab_pool_t *pool, bool *new_slab) {
     void *result = NULL;
-    pthread_mutex_lock(&pool->lock);
     if (!pool->free_list) {
         if (mtpndd_slab_pool_grow(pool) != MTPNDD_SUCCESS) {
-            pthread_mutex_unlock(&pool->lock);
             return NULL;
         }
         if (new_slab) {
@@ -106,7 +96,6 @@ static void *mtpndd_slab_pool_acquire(mtpndd_slab_pool_t *pool, bool *new_slab) 
     result = pool->free_list;
     pool->free_list = *((void **)result);
     pool->in_use++;
-    pthread_mutex_unlock(&pool->lock);
     return result;
 }
 
@@ -114,13 +103,11 @@ static void mtpndd_slab_pool_release(mtpndd_slab_pool_t *pool, void *object) {
     if (!object) {
         return;
     }
-    pthread_mutex_lock(&pool->lock);
     *((void **)object) = pool->free_list;
     pool->free_list = object;
     if (pool->in_use > 0) {
         pool->in_use--;
     }
-    pthread_mutex_unlock(&pool->lock);
 }
 
 static void mtpndd_slab_pool_setup(mtpndd_slab_pool_t *pool, size_t object_size, size_t alignment, size_t objects_per_slab) {
@@ -136,18 +123,31 @@ void mtpndd_memory_pools_init(void) {
     size_t edge_capacity = g_mtpndd_pal_config.edge_entry_slab_capacity;
     size_t nodetable_capacity = g_mtpndd_pal_config.nodetable_entry_slab_capacity;
     size_t edge_map_capacity = g_mtpndd_pal_config.edge_map_slab_capacity;
-    size_t gc_protect_entry_capacity = g_mtpndd_pal_config.gc_protect_entry_slab_capacity;
 
     mtpndd_slab_pool_setup(&g_node_pool, sizeof(mtpndd_node_t), _Alignof(mtpndd_node_t), node_capacity);
 
     g_edge_bucket_count = g_mtpndd_pal_config.edge_bucket_count;
     if (g_edge_bucket_count == 0) {
-        g_edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
-    } else if (g_edge_bucket_count > MTPNDD_BUCKET_LOCK_WORD_BITS) {
-        fprintf(stderr, "[MTPNDD WARN] edge_bucket_count (%zu) exceeds %d, clamping.\n",
-                g_edge_bucket_count, MTPNDD_BUCKET_LOCK_WORD_BITS);
-        g_edge_bucket_count = MTPNDD_BUCKET_LOCK_WORD_BITS;
+        g_edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT; // default 8
     }
+    if (g_edge_bucket_count < MTPNDD_DEFAULT_EDGE_BUCKET_COUNT) {
+        g_edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
+    }
+    // round up to power of two (keep default at 8)
+    size_t _tmp = g_edge_bucket_count;
+    _tmp--;
+    _tmp |= _tmp >> 1;
+    _tmp |= _tmp >> 2;
+    _tmp |= _tmp >> 4;
+    _tmp |= _tmp >> 8;
+    _tmp |= _tmp >> 16;
+    if (sizeof(size_t) == 8) {
+        _tmp |= _tmp >> 32;
+    }
+    _tmp++;
+    g_edge_bucket_count = _tmp;
+    g_mtpndd_pal_config.edge_bucket_count = g_edge_bucket_count;
+
     size_t offset = sizeof(mtpndd_edge_t);
     offset = mtpndd_align_size(offset, _Alignof(edge_bucket_entry_t *));
     g_edge_bucket_array_offset = offset;
@@ -155,11 +155,9 @@ void mtpndd_memory_pools_init(void) {
     mtpndd_slab_pool_setup(&g_edge_map_pool, offset, _Alignof(mtpndd_edge_t), edge_map_capacity);
     mtpndd_slab_pool_setup(&g_edge_entry_pool, sizeof(edge_bucket_entry_t), _Alignof(edge_bucket_entry_t), edge_capacity);
     mtpndd_slab_pool_setup(&g_nodetable_entry_pool, sizeof(mtpndd_nodetable_bucket_entry_t), _Alignof(mtpndd_nodetable_bucket_entry_t), nodetable_capacity);
-    mtpndd_slab_pool_setup(&g_gc_protect_entry_pool, sizeof(gc_protect_entry_t), _Alignof(gc_protect_entry_t), gc_protect_entry_capacity);
 }
 
 void mtpndd_memory_pools_shutdown(void) {
-    mtpndd_slab_pool_destroy(&g_gc_protect_entry_pool);
     mtpndd_slab_pool_destroy(&g_edge_map_pool);
     mtpndd_slab_pool_destroy(&g_nodetable_entry_pool);
     mtpndd_slab_pool_destroy(&g_edge_entry_pool);
@@ -168,35 +166,21 @@ void mtpndd_memory_pools_shutdown(void) {
 
 void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats) {
     if (!stats) return;
-    pthread_mutex_lock(&g_node_pool.lock);
     stats->node_slabs = g_node_pool.slab_count;
     stats->node_in_use = g_node_pool.in_use;
     stats->node_capacity_per_slab = g_node_pool.objects_per_slab;
-    pthread_mutex_unlock(&g_node_pool.lock);
 
-    pthread_mutex_lock(&g_edge_entry_pool.lock);
     stats->edge_entry_slabs = g_edge_entry_pool.slab_count;
     stats->edge_entry_in_use = g_edge_entry_pool.in_use;
     stats->edge_entry_capacity_per_slab = g_edge_entry_pool.objects_per_slab;
-    pthread_mutex_unlock(&g_edge_entry_pool.lock);
 
-    pthread_mutex_lock(&g_nodetable_entry_pool.lock);
     stats->nodetable_entry_slabs = g_nodetable_entry_pool.slab_count;
     stats->nodetable_entry_in_use = g_nodetable_entry_pool.in_use;
     stats->nodetable_entry_capacity_per_slab = g_nodetable_entry_pool.objects_per_slab;
-    pthread_mutex_unlock(&g_nodetable_entry_pool.lock);
 
-    pthread_mutex_lock(&g_edge_map_pool.lock);
     stats->edge_map_slabs = g_edge_map_pool.slab_count;
     stats->edge_map_in_use = g_edge_map_pool.in_use;
     stats->edge_map_capacity_per_slab = g_edge_map_pool.objects_per_slab;
-    pthread_mutex_unlock(&g_edge_map_pool.lock);
-
-    pthread_mutex_lock(&g_gc_protect_entry_pool.lock);
-    stats->gc_protect_entry_slabs = g_gc_protect_entry_pool.slab_count;
-    stats->gc_protect_entry_in_use = g_gc_protect_entry_pool.in_use;
-    stats->gc_protect_entry_capacity_per_slab = g_gc_protect_entry_pool.objects_per_slab;
-    pthread_mutex_unlock(&g_gc_protect_entry_pool.lock);
 }
 
 #ifdef ENABLE_RECORDING
@@ -204,13 +188,12 @@ void mtpndd_log_memory_pools(const char *phase) {
     mtpndd_memory_pool_stats_t stats = {0};
     mtpndd_memory_pools_snapshot(&stats);
     fprintf(stdout,
-            "[MTPNDD MEM] %s node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu | nodetable_entry slabs=%zu in_use=%zu | edge_map slabs=%zu in_use=%zu | gc_protect_entry slabs=%zu in_use=%zu\n",
+            "[MTPNDD MEM] %s node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu | nodetable_entry slabs=%zu in_use=%zu | edge_map slabs=%zu in_use=%zu\n",
             phase ? phase : "unknown",
             stats.node_slabs, stats.node_in_use, stats.node_capacity_per_slab,
             stats.edge_entry_slabs, stats.edge_entry_in_use,
             stats.nodetable_entry_slabs, stats.nodetable_entry_in_use,
-            stats.edge_map_slabs, stats.edge_map_in_use,
-            stats.gc_protect_entry_slabs, stats.gc_protect_entry_in_use);
+            stats.edge_map_slabs, stats.edge_map_in_use);
     fflush(stdout);
 }
 #endif
@@ -293,25 +276,6 @@ void mtpndd_memory_release_nodetable_entry(mtpndd_nodetable_bucket_entry_t *entr
 #endif
 }
 
-gc_protect_entry_t *mtpndd_memory_acquire_gc_protect_entry(void) {
-    bool grew = false;
-    gc_protect_entry_t *entry = (gc_protect_entry_t *)mtpndd_slab_pool_acquire(&g_gc_protect_entry_pool, &grew);
-    if (!entry) {
-        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-        return NULL;
-    }
-    memset(entry, 0, sizeof(gc_protect_entry_t));
-#ifdef ENABLE_RECORDING
-    (void)grew;
-#endif
-    return entry;
-}
-
-void mtpndd_memory_release_gc_protect_entry(gc_protect_entry_t *entry) {
-    if (!entry) return;
-    mtpndd_slab_pool_release(&g_gc_protect_entry_pool, entry);
-}
-
 mtpndd_edge_t *mtpndd_memory_acquire_edge_map(void) {
     bool grew = false;
     mtpndd_edge_t *edges = (mtpndd_edge_t *)mtpndd_slab_pool_acquire(&g_edge_map_pool, &grew);
@@ -321,6 +285,9 @@ mtpndd_edge_t *mtpndd_memory_acquire_edge_map(void) {
     }
     char *base = (char *)edges;
     edges->buckets = (edge_bucket_entry_t **)(base + g_edge_bucket_array_offset);
+    edges->bucket_count = g_edge_bucket_count;
+    edges->load_threshold = g_edge_bucket_count - (g_edge_bucket_count >> 2);
+    edges->buckets_malloced = false;
 #ifdef ENABLE_RECORDING
     MTPNDD_STAT_ADD(edge_map_pool_acquire_total, 1);
     if (grew) {
@@ -333,6 +300,10 @@ mtpndd_edge_t *mtpndd_memory_acquire_edge_map(void) {
 void mtpndd_memory_release_edge_map(mtpndd_edge_t *edges) {
     if (!edges) {
         return;
+    }
+    if (edges->buckets_malloced && edges->buckets) {
+        free(edges->buckets);
+        edges->buckets = NULL;
     }
     mtpndd_slab_pool_release(&g_edge_map_pool, edges);
 #ifdef ENABLE_RECORDING
