@@ -32,6 +32,29 @@ static void mtpndd_edge_map_maybe_rehash(mtpndd_edge_t *edges);
 static size_t mtpndd_round_up_pow2(size_t v);
 static bool mtpndd_edge_map_rehash(mtpndd_edge_t *edges, size_t new_bucket_count);
 
+// TASK declaration for parallel mtpndd_and_rec
+TASK_DECL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, mtpndd_t*);
+
+// Granularity control: decide whether to SPAWN a sub-problem
+static inline bool mtpndd_should_spawn(mtpndd_t *a, mtpndd_t *b) {
+    // Never spawn if only 1 worker
+    if (lace_workers() <= 1) return false;
+
+    // Don't spawn for terminal nodes
+    if (mtpndd_is_terminal(a) || mtpndd_is_terminal(b)) return false;
+
+    // Balanced strategy: SPAWN at high levels (small field_id) OR for large sub-problems
+    // High-level recursions (field_id <= 3): always SPAWN for good parallelism
+    if (a->field_id <= 3 && b->field_id <= 3) {
+        return true;
+    }
+
+    // Mid/Low-level: only SPAWN if edges are substantial
+    size_t edges_a = a->edges ? a->edges->edge_count : 0;
+    size_t edges_b = b->edges ? b->edges->edge_count : 0;
+    return (edges_a >= 3 && edges_b >= 3);
+}
+
 typedef struct {
     mtpndd_t **items;
     size_t count;
@@ -371,7 +394,6 @@ bool mtpndd_is_terminal(mtpndd_t *ndd) {
     return ndd->field_id == 0;
 }
 
-static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result);
 static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result);
 static mtpndd_error_t mtpndd_not_rec(mtpndd_t *a, mtpndd_t **result);
 static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **result);
@@ -465,7 +487,9 @@ static inline void mtpndd_and_prof_finish(void) {
 /********************************
  * MTPNDD operations (sub task)
  ********************************/
-static mtpndd_error_t mtpndd_and_same_field(edge_bucket_entry_t *entry_a,
+static mtpndd_error_t mtpndd_and_same_field(
+        WorkerP *__lace_worker, Task *__lace_dq_head,
+        edge_bucket_entry_t *entry_a,
         edge_bucket_entry_t *entry_b, mtpndd_edge_t *res_edges,
         mtpndd_temp_ref_list_t *temp_refs)
 {
@@ -482,11 +506,19 @@ static mtpndd_error_t mtpndd_and_same_field(edge_bucket_entry_t *entry_a,
 
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_OTHER);
     mtpndd_node_t *sub_result = NULL;
-    mtpndd_error_t status = mtpndd_and_rec(entry_a->child, entry_b->child, &sub_result);
-    if (status != MTPNDD_SUCCESS) {
+
+    // Conditionally SPAWN sub-recursion for parallelism
+    if (mtpndd_should_spawn(entry_a->child, entry_b->child)) {
+        SPAWN(mtpndd_and_rec, entry_a->child, entry_b->child);
+        sub_result = SYNC(mtpndd_and_rec);
+    } else {
+        sub_result = CALL(mtpndd_and_rec, entry_a->child, entry_b->child);
+    }
+
+    if (!sub_result) {
         sylvan_deref(combined_label);
         mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
-        return status;
+        return mtpndd_get_last_error().code;
     }
 
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_ADD_EDGE);
@@ -494,7 +526,7 @@ static mtpndd_error_t mtpndd_and_same_field(edge_bucket_entry_t *entry_a,
         sylvan_deref(combined_label);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
-    status = mtpndd_add_edge(res_edges, sub_result, combined_label);
+    mtpndd_error_t status = mtpndd_add_edge(res_edges, sub_result, combined_label);
     if (status != MTPNDD_SUCCESS) {
         sylvan_deref(combined_label);
     }
@@ -502,14 +534,24 @@ static mtpndd_error_t mtpndd_and_same_field(edge_bucket_entry_t *entry_a,
     return status;
 }
 
-static mtpndd_error_t mtpndd_and_diff_field(edge_bucket_entry_t *entry_a,
+static mtpndd_error_t mtpndd_and_diff_field(
+        WorkerP *__lace_worker, Task *__lace_dq_head,
+        edge_bucket_entry_t *entry_a,
         mtpndd_t *b, mtpndd_edge_t *res_edges,
         mtpndd_temp_ref_list_t *temp_refs)
 {
     mtpndd_node_t *sub_result = NULL;
-    mtpndd_error_t status = mtpndd_and_rec(entry_a->child, b, &sub_result);
-    if (status != MTPNDD_SUCCESS) {
-        return status;
+
+    // Conditionally SPAWN sub-recursion for parallelism
+    if (mtpndd_should_spawn(entry_a->child, b)) {
+        SPAWN(mtpndd_and_rec, entry_a->child, b);
+        sub_result = SYNC(mtpndd_and_rec);
+    } else {
+        sub_result = CALL(mtpndd_and_rec, entry_a->child, b);
+    }
+
+    if (!sub_result) {
+        return mtpndd_get_last_error().code;
     }
 
     mtpndd_bdd_t label_a = sylvan_ref(mtpndd_edge_label_load(entry_a));
@@ -517,24 +559,24 @@ static mtpndd_error_t mtpndd_and_diff_field(edge_bucket_entry_t *entry_a,
         sylvan_deref(label_a);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
-    status = mtpndd_add_edge(res_edges, sub_result, label_a);
+    mtpndd_error_t status = mtpndd_add_edge(res_edges, sub_result, label_a);
     if (status != MTPNDD_SUCCESS) {
         sylvan_deref(label_a);
     }
     return status;
 }
 
-static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result) {
+TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
     mtpndd_and_prof_start();
     mtpndd_error_t status = MTPNDD_SUCCESS;
     if (mtpndd_is_false(a) || mtpndd_is_true(b)) {
         mtpndd_and_prof_switch(MTPNDD_AND_PROF_FASTPATH);
-        *result = a;
-        MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
+        mtpndd_and_prof_finish();
+        return a;
     } else if (mtpndd_is_false(b) || mtpndd_is_true(a) || a == b) {
         mtpndd_and_prof_switch(MTPNDD_AND_PROF_FASTPATH);
-        *result = b;
-        MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
+        mtpndd_and_prof_finish();
+        return b;
     }
 
     mtpndd_node_t *cache_a = a;
@@ -548,15 +590,16 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_CACHE_HIT);
     mtpndd_node_t *cached = mtpndd_op_cache_lookup_binary(and_cache, cache_a, cache_b);
     if (cached) {
-        *result = cached;
-        MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
+        mtpndd_and_prof_finish();
+        return cached;
     }
 
     mtpndd_t *res_node = NULL;
     mtpndd_edge_t *res_edges = mtpndd_memory_acquire_edge_map();
     if (!res_edges) {
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-        MTPNDD_AND_RETURN(MTPNDD_ERROR_OUT_OF_MEMORY);
+        mtpndd_and_prof_finish();
+        return NULL;
     }
     mtpndd_edge_map_init(res_edges);
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_BUILD_EDGES);
@@ -570,11 +613,12 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
             mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
             FOR_EACH_ENTRY_IN_ALL_BUCKETS(b->edges, entry_b) {
-                status = mtpndd_and_same_field(entry_a, entry_b, res_edges, &temp_refs);
+                status = mtpndd_and_same_field(__lace_worker, __lace_dq_head, entry_a, entry_b, res_edges, &temp_refs);
                 if (status != MTPNDD_SUCCESS) {
                     mtpndd_temp_refs_release(&temp_refs);
                     mtpndd_edge_map_free(res_edges);
-                    MTPNDD_AND_RETURN(status);
+                    mtpndd_and_prof_finish();
+                    return NULL;
                 }
             }
             mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_OUTER_LOOP);
@@ -590,11 +634,12 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
         mtpndd_and_prof_switch(MTPNDD_AND_PROF_DIFF_FIELD);
         edge_bucket_entry_t *entry_a;
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            status = mtpndd_and_diff_field(entry_a, b, res_edges, &temp_refs);
+            status = mtpndd_and_diff_field(__lace_worker, __lace_dq_head, entry_a, b, res_edges, &temp_refs);
             if (status != MTPNDD_SUCCESS) {
                 mtpndd_temp_refs_release(&temp_refs);
                 mtpndd_edge_map_free(res_edges);
-                MTPNDD_AND_RETURN(status);
+                mtpndd_and_prof_finish();
+                return NULL;
             }
         }
     }
@@ -629,7 +674,8 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
         }
         mtpndd_stat_add(&g_mtpndd_stats.and_mk_other_ns, mk_other_ns);
 #endif
-        MTPNDD_AND_RETURN(mtpndd_get_last_error().code);
+        mtpndd_and_prof_finish();
+        return NULL;
     }
 
     mtpndd_temp_refs_release(&temp_refs);
@@ -648,8 +694,8 @@ static mtpndd_error_t mtpndd_and_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result
     mtpndd_stat_add(&g_mtpndd_stats.and_mk_other_ns, mk_other_ns);
 #endif
 
-    *result = res_node;
-    MTPNDD_AND_RETURN(MTPNDD_SUCCESS);
+    mtpndd_and_prof_finish();
+    return res_node;
 }
 
 static inline void mtpndd_residual_apply_mask(edge_bucket_entry_t *entry, mtpndd_bdd_t mask) {
@@ -1114,11 +1160,7 @@ static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **r
  * MTPNDD operations (wrappers)
  ********************************/
 mtpndd_t *mtpndd_and(mtpndd_t *a, mtpndd_t *b) {
-    mtpndd_t *result = NULL;
-    if (mtpndd_and_rec(a, b, &result) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return result;
+    return RUN(mtpndd_and_rec, a, b);
 }
 
 mtpndd_t *mtpndd_or(mtpndd_t *a, mtpndd_t *b) {
@@ -1142,15 +1184,11 @@ mtpndd_t *mtpndd_not(mtpndd_t *a) {
 }
 
 mtpndd_t *mtpndd_diff(mtpndd_t *a, mtpndd_t *b) {
-    mtpndd_t *result = NULL;
     mtpndd_t *not_b = NULL;
     if (mtpndd_not_rec(b, &not_b) != MTPNDD_SUCCESS) {
         return NULL;
     }
-    if (mtpndd_and_rec(a, not_b, &result) != MTPNDD_SUCCESS) {
-        return NULL;
-    }
-    return result;
+    return mtpndd_and(a, not_b);
 }
 
 mtpndd_t *mtpndd_exist(mtpndd_t *a, uint32_t field) {
