@@ -597,8 +597,8 @@ static void print_row(const char *name, const exp_timing_t *t) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <n>\n", argv[0]);
+    if (argc < 2 || argc > 3) {
+        fprintf(stderr, "Usage: %s <n> [workers]\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -610,9 +610,21 @@ int main(int argc, char **argv) {
     }
     size_t n = (size_t)parsed;
 
+    // Parse optional workers parameter
+    size_t n_workers = 1;  // default: 1 worker (best performance)
+    if (argc == 3) {
+        long workers_parsed = strtol(argv[2], &endptr, 10);
+        if (*argv[2] == '\0' || (endptr && *endptr != '\0') || workers_parsed < 0) {
+            fprintf(stderr, "Invalid workers value: %s\n", argv[2]);
+            return EXIT_FAILURE;
+        }
+        n_workers = (size_t)workers_parsed;
+    }
+
     // Baseline configuration (mirrors mtpndd_nqueens_test).
     mtpndd_pal_config_t baseline = {0};
     fill_baseline_config(n, &baseline);
+    baseline.n_workers = n_workers;  // Apply user-specified worker count
 
     // Derive "baseline max" from baseline itself (fixed-size mode uses min==max).
     size_t baseline_node_max = baseline.mtpndd_nodetable_size;
