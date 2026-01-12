@@ -20,11 +20,11 @@
 
 ## Architecture
 
-![architecture](docs/mtpndd_architecture.png)
+![architecture](docs/dot/mtpndd_architecture.png)
 
 ## Core Memory Design（feature/index）
 
-![memory-design](docs/mtpndd_memory_design_zh.png)
+![memory-design](docs/dot/mtpndd_memory_design_zh.png)
 
 ## Build and Run
 
@@ -92,6 +92,44 @@ mtpndd_init(&config);
 - `mtpndd_gc_collect()` 会清理算子缓存并回收 `ref_count==0` 的节点；当 `edge_array_pool` 碎片比例高时，会在 GC 中进行 compact（整块重建以释放碎片，思路类似 Sylvan 的 stop-the-world GC）。
 - nodetable 的 `hash[]` slot 采用 Sylvan-style packed：`[hash:24 | idx:40]`（hash 不同可直接跳过边集比较）。
 - `edge_bucket_count/node_slab_capacity/nodetable_entry_slab_capacity/edge_map_slab_capacity/gc_protect_entry_slab_capacity` 等字段在 `feature/index` 中属于历史遗留/暂未使用（后续会逐步清理或重新命名）。
+
+## Documentation and Tools
+
+### 📚 Documentation
+
+项目文档位于 `docs/` 目录：
+
+**架构与设计**:
+- `mtpndd_architecture_zh.png` - 模块架构图
+- `mtpndd_memory_design_zh.png` - 核心内存布局（feature/index）
+- `mtpndd_mk_flow_zh.png` - 节点唯一化流程
+
+**性能优化**:
+- `memory_optimization_analysis.md` - 详细的内存优化分析和实施策略
+- `memory_analysis_summary.md` - 内存使用测量结果和优化建议摘要
+- `temp_refs_results.md` - temp_refs 优化的性能提升记录（16.3%）
+- `optimization_analysis.md` - 性能优化总览
+
+### 🛠️ Tools
+
+内存分析工具位于 `tools/` 目录：
+
+**measure_memory.sh** - 内存使用测量工具
+```bash
+# 快速测量（/proc 监控）
+./tools/measure_memory.sh proc ./build/src/sylvan/mtpndd/mtpndd_nqueens_exp 12 1
+
+# 详细分析（Valgrind Massif）
+./tools/measure_memory.sh massif ./build/src/sylvan/mtpndd/mtpndd_nqueens_exp 10 1
+```
+
+**memory_compare.sh** - 批量对比测试
+```bash
+# 测试 N=10,11,12 并生成对比报告
+./tools/memory_compare.sh
+```
+
+详细使用方法参见 `tools/README.md`
 
 ## Visualization
 
