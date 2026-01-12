@@ -36,7 +36,10 @@
 #endif
 
 #ifdef __cplusplus
+#include <atomic>
 extern "C" {
+#else
+#include <stdatomic.h>
 #endif /* __cplusplus */
 
 #ifdef __cplusplus
@@ -339,7 +342,11 @@ void lace_yield(WorkerP *__lace_worker, Task *__lace_dq_head);
 #endif
 
 #ifndef mfence
-#define mfence() { asm volatile("mfence" ::: "memory"); }
+#ifdef __cplusplus
+#define mfence() std::atomic_thread_fence(std::memory_order_seq_cst)
+#else
+#define mfence() atomic_thread_fence(__ATOMIC_SEQ_CST)
+#endif
 #endif
 
 /* Compiler specific branch prediction optimization */
