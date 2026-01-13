@@ -13,7 +13,6 @@
 #include <lace.h>
 #include "sylvan.h"
 #include "sylvan_table.h"
-#include <stdatomic.h>
 
 /********************************
  * Global singletons and defaults
@@ -34,8 +33,8 @@ mtpndd_config_t g_mtpndd_config = {
 #define MTPNDD_GC_HOOK_CAPACITY 16
 static mtpndd_gc_hook_t g_mtpndd_gc_prehooks[MTPNDD_GC_HOOK_CAPACITY] = {0};
 static mtpndd_gc_hook_t g_mtpndd_gc_posthooks[MTPNDD_GC_HOOK_CAPACITY] = {0};
-static _Atomic size_t g_mtpndd_gc_prehook_count = 0;
-static _Atomic size_t g_mtpndd_gc_posthook_count = 0;
+static size_t g_mtpndd_gc_prehook_count = 0;
+static size_t g_mtpndd_gc_posthook_count = 0;
 
 #define DEFAULT_QUICK_GROWTH_THRESHOLD 0.1
 #define DEFAULT_FIELD_CAPACITY 8
@@ -155,24 +154,24 @@ void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook) {
     if (!hook) {
         return;
     }
-    size_t idx = __atomic_load_n(&g_mtpndd_gc_prehook_count, __ATOMIC_RELAXED);
+    size_t idx = g_mtpndd_gc_prehook_count;
     if (idx >= MTPNDD_GC_HOOK_CAPACITY) {
         return;
     }
     g_mtpndd_gc_prehooks[idx] = hook;
-    __atomic_store_n(&g_mtpndd_gc_prehook_count, idx + 1, __ATOMIC_RELAXED);
+    g_mtpndd_gc_prehook_count = idx + 1;
 }
 
 void mtpndd_gc_hook_postgc(mtpndd_gc_hook_t hook) {
     if (!hook) {
         return;
     }
-    size_t idx = __atomic_load_n(&g_mtpndd_gc_posthook_count, __ATOMIC_RELAXED);
+    size_t idx = g_mtpndd_gc_posthook_count;
     if (idx >= MTPNDD_GC_HOOK_CAPACITY) {
         return;
     }
     g_mtpndd_gc_posthooks[idx] = hook;
-    __atomic_store_n(&g_mtpndd_gc_posthook_count, idx + 1, __ATOMIC_RELAXED);
+    g_mtpndd_gc_posthook_count = idx + 1;
 }
 
 static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count) {
@@ -188,12 +187,12 @@ static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count) {
 }
 
 void mtpndd_gc_run_prehooks(void) {
-    size_t count = __atomic_load_n(&g_mtpndd_gc_prehook_count, __ATOMIC_RELAXED);
+    size_t count = g_mtpndd_gc_prehook_count;
     mtpndd_gc_run_hooks(g_mtpndd_gc_prehooks, count);
 }
 
 void mtpndd_gc_run_posthooks(void) {
-    size_t count = __atomic_load_n(&g_mtpndd_gc_posthook_count, __ATOMIC_RELAXED);
+    size_t count = g_mtpndd_gc_posthook_count;
     mtpndd_gc_run_hooks(g_mtpndd_gc_posthooks, count);
 }
 
@@ -637,16 +636,16 @@ static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task) {
 }
 
 static void mtpndd_gc_hook_mtpndd_pre(void) {
-    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    size_t nodes = g_mtpndd_stats.node_count;
     size_t capacity = g_mtpndd_pal_config.mtpndd_nodetable_size;
     fprintf(stdout, "[MTPNDD GC] start nodes=%zu capacity=%zu\n", nodes, capacity);
     fflush(stdout);
 }
 
 static void mtpndd_gc_hook_mtpndd_post(void) {
-    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    size_t nodes = g_mtpndd_stats.node_count;
 #ifdef ENABLE_RECORDING
-    unsigned long long reclaimed = __atomic_load_n(&g_mtpndd_stats.nodes_collected_last, __ATOMIC_RELAXED);
+    unsigned long long reclaimed = g_mtpndd_stats.nodes_collected_last;
 #else
     unsigned long long reclaimed = 0;
 #endif

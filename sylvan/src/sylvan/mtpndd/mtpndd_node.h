@@ -5,7 +5,6 @@
 #ifndef MTPNDD_NODE_H
 #define MTPNDD_NODE_H
 
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include "mtpndd_common.h"
@@ -17,7 +16,7 @@
 // TODO: cache line friendly
 // TODO: like JDD, use a t_list data structure for both node memory pool and node table
 struct mtpndd_node_s {
-    atomic_uint_fast64_t ref_count;
+    uint64_t ref_count;
     uint32_t field_id;
     struct mtpndd_edge_s *edges;
 };
@@ -27,7 +26,7 @@ struct mtpndd_node_s {
 typedef struct edge_bucket_entry_s {
     struct edge_bucket_entry_s *next;
     mtpndd_node_t *child;
-    _Atomic(mtpndd_bdd_t) label;
+    mtpndd_bdd_t label;
 } edge_bucket_entry_t;
 
 // TODO: try not to malloc buckets every time, use pooled array instead. Edge map memory pool should alloc every edge map by _edge_bucket_cnt when mtpndd_init
@@ -59,7 +58,7 @@ static inline uint64_t mtpndd_edge_map_compute_hash(const mtpndd_edge_t *edges) 
         edge_bucket_entry_t *entry = edges->buckets[i];
         while (entry) {
             // Hash each (child, label) pair and XOR into result
-            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            mtpndd_bdd_t label = entry->label;
             uint64_t entry_hash = mtpndd_edge_entry_hash(entry->child, label);
             hash ^= entry_hash;
             entry = entry->next;

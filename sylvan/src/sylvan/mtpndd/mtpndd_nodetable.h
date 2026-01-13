@@ -83,7 +83,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
 #endif
             // Find this (child, label) pair in b
             mtpndd_node_t *child_a = entry_a->child;
-            mtpndd_bdd_t label_a = atomic_load_explicit(&entry_a->label, memory_order_relaxed);
+            mtpndd_bdd_t label_a = entry_a->label;
 
             // Lookup in b's edge map
             bool found = false;
@@ -95,7 +95,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
                     steps++;
 #endif
                     if (entry_b->child == child_a) {
-                        mtpndd_bdd_t label_b = atomic_load_explicit(&entry_b->label, memory_order_relaxed);
+                        mtpndd_bdd_t label_b = entry_b->label;
                         if (label_a == label_b) {
                             found = true;
                         }

@@ -9,7 +9,6 @@
 #include "mtpndd_memory_pool.h"
 #include "sylvan.h"
 #include "sylvan_mtbdd.h"
-#include <stdatomic.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -146,8 +145,8 @@ static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mt
             if (new_entry->child && !mtpndd_is_terminal(new_entry->child)) {
                 mtpndd_ref(new_entry->child);
             }
-            mtpndd_bdd_t label = atomic_load_explicit(&src_entry->label, memory_order_relaxed);
-            atomic_store_explicit(&new_entry->label, sylvan_ref(label), memory_order_relaxed);
+            mtpndd_bdd_t label = src_entry->label;
+            new_entry->label = sylvan_ref(label);
 
             new_entry->next = NULL;
             if (dst_tail) {
@@ -177,7 +176,7 @@ static void mtpndd_edge_map_reset(mtpndd_edge_t *edges) {
             edge_bucket_entry_t *entry = edges->buckets[i];
             while (entry) {
                 edge_bucket_entry_t *next = entry->next;
-                mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+                mtpndd_bdd_t label = entry->label;
                 sylvan_deref(label);
                 mtpndd_memory_release_edge_entry(entry);
                 entry = next;
@@ -299,7 +298,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     edge_bucket_entry_t *cursor = bucket_head;
     while (cursor) {
         if (EDGE_BUCKET_ENTRY_EQUAL(cursor, descendant)) {
-            old_label = atomic_load_explicit(&cursor->label, memory_order_acquire);
+            old_label = cursor->label;
             if (prev) {
                 prev->next = cursor->next;
             } else {
@@ -331,7 +330,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
 
     // Update label
     mtpndd_bdd_t new_label = sylvan_ref(sylvan_or(old_label, label_bdd));
-    atomic_store_explicit(&entry->label, new_label, memory_order_release);
+    entry->label = new_label;
     sylvan_deref(old_label);
     sylvan_deref(label_bdd);
 
@@ -657,25 +656,20 @@ static inline void mtpndd_residual_apply_mask(edge_bucket_entry_t *entry, mtpndd
         return;
     }
 
-    mtpndd_bdd_t expected = atomic_load_explicit(&entry->label, memory_order_acquire);
-
-    while (expected != sylvan_false) {
-        mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, mask));
-        if (atomic_compare_exchange_weak_explicit(
-                &entry->label, &expected, updated,
-                memory_order_acq_rel, memory_order_acquire)) {
-            sylvan_deref(expected);
-            return;
-        }
-        sylvan_deref(updated);
+    mtpndd_bdd_t expected = entry->label;
+    if (expected == sylvan_false) {
+        return;
     }
+    mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, mask));
+    entry->label = updated;
+    sylvan_deref(expected);
 }
 
 static inline mtpndd_bdd_t mtpndd_edge_label_load(edge_bucket_entry_t *entry) {
     if (!entry) {
         return sylvan_false;
     }
-    return atomic_load_explicit(&entry->label, memory_order_acquire);
+    return entry->label;
 }
 
 static mtpndd_error_t mtpndd_or_same_field(edge_bucket_entry_t *entry_a,
@@ -721,22 +715,15 @@ static mtpndd_error_t mtpndd_or_same_field(edge_bucket_entry_t *entry_a,
 static mtpndd_error_t mtpndd_or_diff_field(edge_bucket_entry_t *entry_a,
         mtpndd_t *b,
         mtpndd_edge_t *res_edges,
-        _Atomic(mtpndd_bdd_t) *residualB,
+        mtpndd_bdd_t *residualB,
         mtpndd_temp_ref_list_t *temp_refs)
 {
     mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
     mtpndd_bdd_t notIntersect = sylvan_ref(sylvan_not(label_a));
-    mtpndd_bdd_t expected = atomic_load_explicit(residualB, memory_order_relaxed);
-    for (;;) {
-        mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, notIntersect));
-        if (atomic_compare_exchange_weak_explicit(
-                residualB, &expected, updated,
-                memory_order_acq_rel, memory_order_acquire)) {
-            sylvan_deref(expected);
-            break;
-        }
-        sylvan_deref(updated);
-    }
+    mtpndd_bdd_t expected = *residualB;
+    mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, notIntersect));
+    *residualB = updated;
+    sylvan_deref(expected);
     sylvan_deref(notIntersect);
 
     mtpndd_node_t *subResult = NULL;
@@ -896,7 +883,7 @@ static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result)
         b = temp;
     }
 
-        _Atomic(mtpndd_bdd_t) residualB = sylvan_true;
+        mtpndd_bdd_t residualB = sylvan_true;
         edge_bucket_entry_t *entry_a;
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
             mtpndd_error_t status = mtpndd_or_diff_field(entry_a, b, res_edges, &residualB, &temp_refs);
@@ -906,7 +893,7 @@ static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result)
                 return status;
             }
         }
-        mtpndd_bdd_t residualB_val = atomic_load_explicit(&residualB, memory_order_relaxed);
+        mtpndd_bdd_t residualB_val = residualB;
         if (residualB_val != sylvan_false) {
             if (!mtpndd_temp_refs_push(&temp_refs, b)) {
                 sylvan_deref(residualB_val);
@@ -940,22 +927,15 @@ static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result)
 
 static mtpndd_error_t mtpndd_not_expand(edge_bucket_entry_t *entry_a,
         mtpndd_edge_t *res_edges,
-        _Atomic(mtpndd_bdd_t) *residual,
+        mtpndd_bdd_t *residual,
         mtpndd_temp_ref_list_t *temp_refs)
 {
     mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
     mtpndd_bdd_t notIntersect = sylvan_ref(sylvan_not(label_a));
-    mtpndd_bdd_t expected = atomic_load_explicit(residual, memory_order_relaxed);
-    for (;;) {
-        mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, notIntersect));
-        if (atomic_compare_exchange_weak_explicit(
-                residual, &expected, updated,
-                memory_order_acq_rel, memory_order_acquire)) {
-            sylvan_deref(expected);
-            break;
-        }
-        sylvan_deref(updated);
-    }
+    mtpndd_bdd_t expected = *residual;
+    mtpndd_bdd_t updated = sylvan_ref(sylvan_and(expected, notIntersect));
+    *residual = updated;
+    sylvan_deref(expected);
     sylvan_deref(notIntersect);
 
     mtpndd_node_t *subResult = NULL;
@@ -1000,7 +980,7 @@ static mtpndd_error_t mtpndd_not_rec(mtpndd_t *a, mtpndd_t **result) {
     mtpndd_temp_ref_list_t temp_refs;
     mtpndd_temp_refs_init(&temp_refs);
 
-    _Atomic(mtpndd_bdd_t) residual = sylvan_true;
+    mtpndd_bdd_t residual = sylvan_true;
     mtpndd_t *res_node = NULL;
     edge_bucket_entry_t *entry_a;
     FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
@@ -1011,7 +991,7 @@ static mtpndd_error_t mtpndd_not_rec(mtpndd_t *a, mtpndd_t **result) {
             return status;
         }
     }
-    mtpndd_bdd_t residual_val = atomic_load_explicit(&residual, memory_order_relaxed);
+    mtpndd_bdd_t residual_val = residual;
     if (residual_val != sylvan_false) {
         if (!mtpndd_temp_refs_push(&temp_refs, &MTPNDD_TRUE)) {
             sylvan_deref(residual_val);
@@ -1478,7 +1458,7 @@ mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result) {
 #ifdef ENABLE_RECORDING
     if (status == MTPNDD_SUCCESS) {
         uint64_t nodecount = sylvan_nodecount(tmp);
-        __atomic_store_n(&g_mtpndd_stats.bdd_nodes_converted, nodecount, __ATOMIC_RELAXED);
+        MTPNDD_STAT_SET(bdd_nodes_converted, nodecount);
         MTPNDD_STAT_ADD(bdd_nodes_processed_total, nodecount);
     }
 #endif
@@ -1602,7 +1582,7 @@ mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result) {
 
 #ifdef ENABLE_RECORDING
     uint64_t bdd_nodecount = sylvan_nodecount(bdd);
-    __atomic_store_n(&g_mtpndd_stats.bdd_nodes_converted, bdd_nodecount, __ATOMIC_RELAXED);
+    MTPNDD_STAT_SET(bdd_nodes_converted, bdd_nodecount);
     MTPNDD_STAT_ADD(bdd_nodes_processed_total, bdd_nodecount);
 #endif
 
@@ -1803,7 +1783,7 @@ static void mtpndd_fprint_dot_rec(FILE *out, mtpndd_t *node, mtpndd_dot_ctx_t *c
         }
 
         char label_buffer[32] = {0};
-        mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+        mtpndd_bdd_t label = entry->label;
         mtpndd_dot_format_edge_label(label, label_buffer, sizeof(label_buffer));
 
         (void)fprintf(out,

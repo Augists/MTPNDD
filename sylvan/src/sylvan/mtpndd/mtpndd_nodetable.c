@@ -2,7 +2,6 @@
 // Copyright (C) Augists
 // Copyright (C) XJTU ANTS Netverify Lab
 
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
@@ -122,7 +121,7 @@ mtpndd_error_t mtpndd_ref(mtpndd_t *node) {
         // Terminal nodes
         return MTPNDD_SUCCESS;
     }
-    atomic_fetch_add(&node->ref_count, 1);
+    node->ref_count++;
     return MTPNDD_SUCCESS;
 }
 
@@ -135,7 +134,7 @@ mtpndd_error_t mtpndd_deref(mtpndd_t *node) {
         // Terminal nodes
         return MTPNDD_SUCCESS;
     }
-    atomic_fetch_sub(&node->ref_count, 1);
+    node->ref_count--;
     /**
      * lazy free when gc
      */
@@ -161,7 +160,7 @@ mtpndd_error_t mtpndd_protect(mtpndd_t *node) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return MTPNDD_ERROR_NULL_POINTER;
     }
-    atomic_init(&node->ref_count, UINT64_MAX);
+    node->ref_count = UINT64_MAX;
     return MTPNDD_SUCCESS;
 }
 
@@ -170,7 +169,7 @@ mtpndd_error_t mtpndd_unprotect(mtpndd_t *node) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return MTPNDD_ERROR_NULL_POINTER;
     }
-    atomic_init(&node->ref_count, 0);
+    node->ref_count = 0;
     return MTPNDD_SUCCESS;
 }
 
@@ -247,7 +246,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
                 only_entry = head;
             }
         }
-        if (only_entry && atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
+        if (only_entry && only_entry->label == sylvan_true) {
             *result = only_entry->child;
 #ifdef ENABLE_RECORDING
             MTPNDD_MK_SWITCH(MTPNDD_MK_FAST_RETURN);
@@ -275,7 +274,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         MTPNDD_MK_SWITCH(MTPNDD_MK_REUSE_CLEANUP);
 #endif
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
-            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            mtpndd_bdd_t label = entry->label;
             sylvan_deref(label);
         }
 #ifdef ENABLE_RECORDING
@@ -316,7 +315,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     }
     node->field_id = field;
     node->edges = edges;
-    atomic_init(&node->ref_count, 0);
+    node->ref_count = 0;
     // 4. insert into nodetable
     size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
 #ifdef ENABLE_RECORDING
@@ -358,7 +357,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
             if (!mtpndd_is_terminal(entry->child)) {
                 mtpndd_deref(entry->child);
             }
-            mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+            mtpndd_bdd_t label = entry->label;
             sylvan_deref(label);
         }
 #ifdef ENABLE_RECORDING
@@ -383,7 +382,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     nodetable->buckets[hash] = new_entry;
     nodetable->entry_count++;
     mtpndd_nodetable_maybe_rehash(nodetable);
-    __atomic_add_fetch(&g_mtpndd_stats.node_count, 1, __ATOMIC_RELAXED);
+    g_mtpndd_stats.node_count++;
 #ifdef ENABLE_RECORDING
     MTPNDD_STAT_ADD(nodes_created_total, 1);
     if (bucket_had_entries) {
@@ -461,7 +460,7 @@ static void gcOrGrow(void) {
 
 static void gc_internal(void) {
 #ifdef ENABLE_RECORDING
-    __atomic_add_fetch(&g_mtpndd_stats.gc_runs, 1, __ATOMIC_RELAXED);
+    MTPNDD_STAT_ADD(gc_runs, 1);
 #endif
     mtpndd_gc_run_prehooks();
 
@@ -471,7 +470,7 @@ static void gc_internal(void) {
     mtpndd_gc_release_roots(gc_roots, gc_root_count);
 
     if (reclaimed > 0) {
-        __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
+        g_mtpndd_stats.node_count -= reclaimed;
         
 #ifdef ENABLE_RECORDING
         MTPNDD_STAT_SET(nodes_collected_last, reclaimed);
@@ -553,7 +552,7 @@ static size_t mtpndd_gc_sweep(void) {
             while (entry) {
                 mtpndd_nodetable_bucket_entry_t *next_entry = entry->next;
                 mtpndd_node_t *node = entry->node;
-                uint64_t refc = atomic_load_explicit(&node->ref_count, memory_order_relaxed);
+                uint64_t refc = node->ref_count;
                 if (refc == 0) {
                     mtpndd_release_node(nodetable, i, entry, node);
                     reclaimed++;

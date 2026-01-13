@@ -3,7 +3,6 @@
 #include "mtpndd_node.h"
 #include "mtpndd_memory_pool.h"
 
-#include <stdatomic.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -492,7 +491,7 @@ static double timespec_diff_seconds(const struct timespec *start, const struct t
 
 #ifdef ENABLE_RECORDING
 static void log_formula_progress(const char *phase, size_t current, size_t total) {
-    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    size_t nodes = g_mtpndd_stats.node_count;
     printf("[nqueens] %s %zu/%zu nodes=%zu\n",
            phase ? phase : "phase",
            current, total ? total : 0, nodes);

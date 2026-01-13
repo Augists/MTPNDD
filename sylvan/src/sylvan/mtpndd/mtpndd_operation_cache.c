@@ -110,9 +110,9 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
 #ifdef ENABLE_RECORDING
     if (hit) {
         result = entry->result;
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
+        MTPNDD_STAT_ADD(cache_lookup_hits, 1);
     } else {
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+        MTPNDD_STAT_ADD(cache_lookup_misses, 1);
     }
 #else
     if (hit) {
@@ -135,11 +135,11 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, 
     size_t idx = (size_t)(hash & cache->mask);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
 #ifdef ENABLE_RECORDING
-    __atomic_add_fetch(&g_mtpndd_stats.cache_store_total, 1, __ATOMIC_RELAXED);
+    MTPNDD_STAT_ADD(cache_store_total, 1);
     // Check if we're overwriting a valid entry with different operands
     if (entry->result != NULL &&
         (entry->operands[0] != lhs || entry->operands[1] != rhs)) {
-        __atomic_add_fetch(&g_mtpndd_stats.cache_store_overwrites, 1, __ATOMIC_RELAXED);
+        MTPNDD_STAT_ADD(cache_store_overwrites, 1);
     }
 #endif
     entry->operands[0] = lhs;
@@ -164,9 +164,9 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
 #ifdef ENABLE_RECORDING
     if (hit) {
         result = entry->result;
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
+        MTPNDD_STAT_ADD(cache_lookup_hits, 1);
     } else {
-        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+        MTPNDD_STAT_ADD(cache_lookup_misses, 1);
     }
 #else
     if (hit) {

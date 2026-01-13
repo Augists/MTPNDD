@@ -9,7 +9,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
-#include <stdatomic.h>
 
 #ifdef ENABLE_RECORDING
 #include <time.h>
@@ -200,17 +199,16 @@ extern mtpndd_stats_t g_mtpndd_stats;
 
 #ifdef ENABLE_RECORDING
 static inline void mtpndd_stat_add(uint64_t *field, uint64_t value) {
-    __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
+    *field += value;
 }
 
 static inline void mtpndd_stat_set(uint64_t *field, uint64_t value) {
-    __atomic_store_n(field, value, __ATOMIC_RELAXED);
+    *field = value;
 }
 
 static inline void mtpndd_stat_max(uint64_t *field, uint64_t value) {
-    uint64_t current = __atomic_load_n(field, __ATOMIC_RELAXED);
-    while (value > current && !__atomic_compare_exchange_n(field, &current, value, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
-        /* retry with updated current */
+    if (value > *field) {
+        *field = value;
     }
 }
 
