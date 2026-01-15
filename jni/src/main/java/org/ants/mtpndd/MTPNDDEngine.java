@@ -1,6 +1,10 @@
 package org.ants.mtpndd;
 
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Runtime façade responsible for loading the native library and managing the global MTPNDD state.
@@ -37,6 +41,7 @@ public final class MTPNDDEngine {
         double quickGrowth = config.quickGrowthThreshold();
         initNative(config.workers(),
                 config.laceDequeSize(),
+                config.laceStackSize(),
                 config.bddNodeTableSize(),
                 config.mtpnddNodeTableSize(),
                 config.operationCacheSize(),
@@ -60,6 +65,10 @@ public final class MTPNDDEngine {
 
     public static synchronized int declareField(int bitWidth) {
         return declareFieldNative(bitWidth);
+    }
+
+    public static synchronized void generateFields() {
+        generateFieldsNative();
     }
 
     public static synchronized MTPNDDFieldInfo getFieldInfo(int fieldId) {
@@ -180,16 +189,133 @@ public final class MTPNDDEngine {
         return isTerminalNative(node.nativePtr);
     }
 
+    static synchronized int getField(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return getFieldNative(node.nativePtr);
+    }
+
+    static synchronized MTPNDDEdges getEdges(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return getEdgesNative(node.nativePtr);
+    }
+
+    public static synchronized int bddVar(long handle) {
+        return bddVarNative(handle);
+    }
+
+    public static synchronized long bddLow(long handle) {
+        return bddLowNative(handle);
+    }
+
+    public static synchronized long bddHigh(long handle) {
+        return bddHighNative(handle);
+    }
+
+    public static synchronized boolean bddIsTrue(long handle) {
+        return bddIsTrueNative(handle);
+    }
+
+    public static synchronized boolean bddIsFalse(long handle) {
+        return bddIsFalseNative(handle);
+    }
+
     public static synchronized MTPNDDStats stats() {
         return getStatsNative();
     }
 
-    private static MTPNDD wrap(long nativePtr) {
+    static MTPNDD wrap(long nativePtr) {
         return new MTPNDD(nativePtr);
+    }
+
+    static int minZeros(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        MTPNDD negated = node.not().ref();
+        try {
+            Map<MTPNDD, Integer> distances = new HashMap<>();
+            Set<MTPNDD> visited = new HashSet<>();
+            Map<Long, Integer> predicateCache = new HashMap<>();
+            distances.put(negated, 0);
+            return minZerosRec(negated, visited, distances, 0, predicateCache);
+        } finally {
+            negated.deref();
+        }
+    }
+
+    private static int minZerosRec(MTPNDD current,
+                                   Set<MTPNDD> visited,
+                                   Map<MTPNDD, Integer> distances,
+                                   int currentDistance,
+                                   Map<Long, Integer> predicateCache) {
+        if (current.isTrue()) {
+            return currentDistance;
+        }
+        if (current.isFalse()) {
+            return bddCostInfinity();
+        }
+        visited.add(current);
+        MTPNDDEdges edges = getEdges(current);
+        for (int i = 0; i < edges.size(); i++) {
+            MTPNDD next = edges.childAt(i);
+            long predicate = edges.predicateAt(i);
+            int edgeCost = bddMinZerosToTrue(predicate, predicateCache);
+            int nextDistance = safeAdd(currentDistance, edgeCost);
+            Integer existing = distances.get(next);
+            if (existing == null || existing > nextDistance) {
+                distances.put(next, nextDistance);
+            }
+        }
+
+        MTPNDD nextNode = null;
+        int nextDistance = bddCostInfinity();
+        for (Map.Entry<MTPNDD, Integer> entry : distances.entrySet()) {
+            if (!visited.contains(entry.getKey()) && entry.getValue() < nextDistance) {
+                nextDistance = entry.getValue();
+                nextNode = entry.getKey();
+            }
+        }
+
+        if (nextNode == null) {
+            return bddCostInfinity();
+        }
+        return minZerosRec(nextNode, visited, distances, nextDistance, predicateCache);
+    }
+
+    private static int bddMinZerosToTrue(long bddHandle, Map<Long, Integer> cache) {
+        if (bddIsTrue(bddHandle)) {
+            return 0;
+        }
+        if (bddIsFalse(bddHandle)) {
+            return bddCostInfinity();
+        }
+        Integer cached = cache.get(bddHandle);
+        if (cached != null) {
+            return cached;
+        }
+        int lowCost = bddMinZerosToTrue(bddLow(bddHandle), cache);
+        int highCost = bddMinZerosToTrue(bddHigh(bddHandle), cache);
+        int result = Math.min(safeAdd(lowCost, 1), highCost);
+        cache.put(bddHandle, result);
+        return result;
+    }
+
+    private static int bddCostInfinity() {
+        return Integer.MAX_VALUE / 4;
+    }
+
+    private static int safeAdd(int base, int delta) {
+        int infinity = bddCostInfinity();
+        if (base >= infinity || delta >= infinity) {
+            return infinity;
+        }
+        if (base > infinity - delta) {
+            return infinity;
+        }
+        return base + delta;
     }
 
     private static native void initNative(int workers,
                                           long laceDequeSize,
+                                          long laceStackSize,
                                           long bddNodeTableSize,
                                           long mtpnddNodeTableSize,
                                           long operationCacheSize,
@@ -207,6 +333,8 @@ public final class MTPNDDEngine {
     private static native boolean isInitializedNative();
 
     private static native int declareFieldNative(int bitWidth);
+
+    private static native void generateFieldsNative();
 
     private static native MTPNDDFieldInfo getFieldInfoNative(int fieldId);
 
@@ -240,6 +368,10 @@ public final class MTPNDDEngine {
 
     private static native boolean isTerminalNative(long handle);
 
+    private static native int getFieldNative(long handle);
+
+    private static native MTPNDDEdges getEdgesNative(long handle);
+
     private static native long getBddVarNative(int fieldId, int index);
     private static native long getBddNotVarNative(int fieldId, int index);
     private static native long bddTrueNative();
@@ -249,6 +381,11 @@ public final class MTPNDDEngine {
     private static native long bddAndNative(long left, long right);
     private static native long bddOrNative(long left, long right);
     private static native long bddNotNative(long value);
+    private static native int bddVarNative(long handle);
+    private static native long bddLowNative(long handle);
+    private static native long bddHighNative(long handle);
+    private static native boolean bddIsTrueNative(long handle);
+    private static native boolean bddIsFalseNative(long handle);
     private static native long fromMtbddNative(long handle);
 
     private static native MTPNDDStats getStatsNative();

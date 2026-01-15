@@ -32,6 +32,7 @@ target/
 **/*.class
 **/*.jar
 !lib/*.jar
+**/.m2-local/
 
 # Temporary and backup files
 **/*.tmp

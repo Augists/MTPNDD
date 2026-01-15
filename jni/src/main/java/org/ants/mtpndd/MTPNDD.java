@@ -83,6 +83,27 @@ public final class MTPNDD {
     }
 
     /**
+     * Return the field id for this node (0 for terminal nodes).
+     */
+    public int getField() {
+        return MTPNDDEngine.getField(this);
+    }
+
+    /**
+     * Return all outgoing edges of this node.
+     */
+    public MTPNDDEdges getEdges() {
+        return MTPNDDEngine.getEdges(this);
+    }
+
+    /**
+     * Compute the minimum number of zeros needed to reach TRUE in this node.
+     */
+    public int minZeros() {
+        return MTPNDDEngine.minZeros(this);
+    }
+
+    /**
      * Increment the native reference count for this node.
      */
     public MTPNDD ref() {

@@ -402,12 +402,11 @@ static void gcOrGrow(void) {
     struct timespec gc_timer_start = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_start);
 
-    fprintf(stdout,
+    mtpndd_log_debug(
             "[MTPNDD DEBUG] gcOrGrow start node_count=%zu capacity=%zu threshold=%.2f\n",
             (size_t)g_mtpndd_stats.node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size,
             g_mtpndd_pal_config.quick_growth_threshold);
-    fflush(stdout);
     mtpndd_gc_run_prehooks();
     mtpndd_log_memory_pools("pre-gc");
 #endif
@@ -423,10 +422,9 @@ static void gcOrGrow(void) {
     if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
             < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
 #ifdef ENABLE_RECORDING
-        fprintf(stdout, "[MTPNDD DEBUG] triggering grow (node_count=%zu capacity=%zu)\n",
-                (size_t)g_mtpndd_stats.node_count,
-                (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
-        fflush(stdout);
+        mtpndd_log_debug("[MTPNDD DEBUG] triggering grow (node_count=%zu capacity=%zu)\n",
+                         (size_t)g_mtpndd_stats.node_count,
+                         (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
 #endif
 
         grow_internal();
@@ -446,11 +444,10 @@ static void gcOrGrow(void) {
 #ifdef ENABLE_RECORDING
     mtpndd_gc_run_posthooks();
     mtpndd_log_memory_pools("post-gc");
-    fprintf(stdout,
+    mtpndd_log_debug(
             "[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
             (size_t)g_mtpndd_stats.node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
-    fflush(stdout);
 
     struct timespec gc_timer_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_end);
@@ -642,14 +639,13 @@ static void grow_internal(void) {
         size_t new_bucket_count = table->nodetable_bucket_count ? table->nodetable_bucket_count * 2
                                                                 : MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
         if (!mtpndd_nodetable_rehash(table, new_bucket_count)) {
-            fprintf(stderr, "[MTPNDD ERROR] nodetable rehash failed for field=%u (bucket target=%zu)\n",
+            mtpndd_log_error(
+                    "[MTPNDD ERROR] nodetable rehash failed for field=%u (bucket target=%zu)\n",
                     field, new_bucket_count);
-            fflush(stderr);
             return;
         }
-        fprintf(stdout, "[MTPNDD DEBUG] field=%u rehashed to buckets=%zu\n",
-                field, new_bucket_count);
-        fflush(stdout);
+        mtpndd_log_debug("[MTPNDD DEBUG] field=%u rehashed to buckets=%zu\n",
+                         field, new_bucket_count);
     }
     g_mtpndd_pal_config.mtpndd_nodetable_size = new_capacity;
     size_t config_bucket = g_mtpndd_pal_config.nodetable_bucket_count;
@@ -657,7 +653,7 @@ static void grow_internal(void) {
         config_bucket = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
     g_mtpndd_pal_config.nodetable_bucket_count = config_bucket * 2;
-    fprintf(stdout, "[MTPNDD DEBUG] nodetable capacity doubled to %zu (config buckets=%zu)\n",
+    mtpndd_log_debug(
+            "[MTPNDD DEBUG] nodetable capacity doubled to %zu (config buckets=%zu)\n",
             new_capacity, g_mtpndd_pal_config.nodetable_bucket_count);
-    fflush(stdout);
 }

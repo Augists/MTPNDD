@@ -143,6 +143,9 @@ static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
         }
         ctx->field_ids[row] = (uint32_t)(row + 1);
     }
+    if (mtpndd_generate_fields() != MTPNDD_SUCCESS) {
+        return false;
+    }
     return true;
 }
 
@@ -261,7 +264,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         edge_map_slab_capacity = 1024;
     } else if (size > 10) {
         bdd_size = 1 << 20;
-        ndd_size = 1 << 19; // significantly smaller nodetable to approach rehash threshold
+        ndd_size = 1 << 21;
         cache_size = 1 << 20;
         edge_bucket_count = 16;
         node_slab_capacity = 3072;

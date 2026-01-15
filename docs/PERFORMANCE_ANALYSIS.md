@@ -87,7 +87,14 @@
 
 ## 6. 测试与验证
 
-### 6.1 运行测试
+### 6.1 宏与开关
+- `MTPNDD_ENABLE_RECORDING`：CMake 选项，打开 `ENABLE_RECORDING` 统计/采样，用于性能剖析。
+- `MTPNDD_NQUEENS_ENABLE_DOT`：CMake 选项，仅影响 `mtpndd_nqueens_test` 的 DOT 输出。
+- `LARGE_NODETABLE`：编译宏，默认节点表桶数量从 1024 改为 65537。
+- `MTPNDD_LOG_LEVEL=DEBUG|LOG`：日志分级开关，默认 `LOG`。
+- `MTPNDD_BENCH_BDD_SIZE`、`MTPNDD_BENCH_BDD_CACHE`、`MTPNDD_BENCH_NDD_SIZE`：覆盖 benchmark 参数。
+
+### 6.2 运行测试
 ```bash
 # 编译
 cd sylvan
@@ -101,7 +108,7 @@ cmake --build build
 ./build/src/sylvan/mtpndd/mtpndd_nqueens_test 8
 ```
 
-### 6.2 性能分析
+### 6.3 性能分析
 ```bash
 # 使用 perf 分析
 perf record ./build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12 1

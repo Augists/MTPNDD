@@ -8,6 +8,7 @@ import java.util.Objects;
 public final class MTPNDDConfig {
     private final int workers;
     private final long laceDequeSize;
+    private final long laceStackSize;
     private final long bddNodeTableSize;
     private final long mtpnddNodeTableSize;
     private final long operationCacheSize;
@@ -23,6 +24,7 @@ public final class MTPNDDConfig {
     private MTPNDDConfig(Builder builder) {
         this.workers = builder.workers;
         this.laceDequeSize = builder.laceDequeSize;
+        this.laceStackSize = builder.laceStackSize;
         this.bddNodeTableSize = builder.bddNodeTableSize;
         this.mtpnddNodeTableSize = builder.mtpnddNodeTableSize;
         this.operationCacheSize = builder.operationCacheSize;
@@ -42,6 +44,10 @@ public final class MTPNDDConfig {
 
     public long laceDequeSize() {
         return laceDequeSize;
+    }
+
+    public long laceStackSize() {
+        return laceStackSize;
     }
 
     public long bddNodeTableSize() {
@@ -98,6 +104,7 @@ public final class MTPNDDConfig {
     public static final class Builder {
         private int workers = Runtime.getRuntime().availableProcessors();
         private long laceDequeSize = 4096L;
+        private long laceStackSize = 8L * 1024L * 1024L;
         private long bddNodeTableSize = 1L << 24;
         private long mtpnddNodeTableSize = 1L << 22;
         private long operationCacheSize = 1L << 20;
@@ -122,6 +129,11 @@ public final class MTPNDDConfig {
 
         public Builder laceDequeSize(long laceDequeSize) {
             this.laceDequeSize = validatePositive(laceDequeSize, "laceDequeSize");
+            return this;
+        }
+
+        public Builder laceStackSize(long laceStackSize) {
+            this.laceStackSize = validateNonNegative(laceStackSize, "laceStackSize");
             return this;
         }
 

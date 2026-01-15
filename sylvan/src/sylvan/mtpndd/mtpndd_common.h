@@ -103,6 +103,7 @@ void mtpndd_clear_error();
 typedef struct mtpndd_pal_config_s {
     int32_t n_workers;
     size_t lace_dqsize;
+    size_t lace_stack_size;
     size_t bdd_nodetable_size;
     size_t mtpndd_nodetable_size;
     size_t op_cache_size;
@@ -197,6 +198,15 @@ typedef struct mtpndd_stats_s {
 
 extern mtpndd_stats_t g_mtpndd_stats;
 
+typedef enum {
+    MTPNDD_LOG_LEVEL_LOG = 0,
+    MTPNDD_LOG_LEVEL_DEBUG = 1
+} mtpndd_log_level_t;
+
+void mtpndd_log_debug(const char *fmt, ...);
+void mtpndd_log_log(const char *fmt, ...);
+void mtpndd_log_error(const char *fmt, ...);
+
 #ifdef ENABLE_RECORDING
 static inline void mtpndd_stat_add(uint64_t *field, uint64_t value) {
     *field += value;
@@ -260,6 +270,14 @@ typedef struct mtpndd_config_s {
     mtpndd_op_cache_t *and_cache;
     mtpndd_op_cache_t *or_cache;
     mtpndd_op_cache_t *not_cache;
+
+    uint32_t pending_field_count;
+    uint32_t pending_field_capacity;
+    uint32_t *pending_field_bit_widths;
+    uint32_t max_bit_width;
+    bool fields_generated;
+    mtpndd_bdd_t *shared_bdd_vars;
+    mtpndd_bdd_t *shared_bdd_not_vars;
 } mtpndd_config_t;
 
 extern mtpndd_config_t g_mtpndd_config;
@@ -269,6 +287,7 @@ extern mtpndd_config_t g_mtpndd_config;
  ********************************/
 // only append field
 mtpndd_error_t mtpndd_declare_field(uint32_t bit_width);
+mtpndd_error_t mtpndd_generate_fields(void);
 mtpndd_field_info_t* mtpndd_get_field_info(uint32_t field_id);
 
 /********************************

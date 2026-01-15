@@ -66,6 +66,19 @@ mtpndd_init(&config);
 
 节点、边映射以及节点表 entry 均通过 slab 内存池管理，在初始化阶段会按上述容量参数批量预留对象并在回收时复用，避免频繁的 `malloc/free` 带来的锁竞争开销。
 
+## Build Macros and Runtime Switches
+
+编译期开关（CMake 或编译宏）：
+
+- `MTPNDD_ENABLE_RECORDING`：CMake 选项，打开后定义 `ENABLE_RECORDING`，启用统计计数与耗时采样（`MTPNDD_STAT_*`、`MTPNDD_RECORD_TIME_*`）。
+- `MTPNDD_NQUEENS_ENABLE_DOT`：CMake 选项，仅影响 `mtpndd_nqueens_test`，控制是否输出 DOT。
+- `LARGE_NODETABLE`：编译宏，启用更大的默认节点表桶数量（65537，默认 1024）。
+
+运行期开关（环境变量）：
+
+- `MTPNDD_LOG_LEVEL=DEBUG|LOG`：控制日志分级，默认 `LOG`，GC 信息归类为 `LOG`。
+- `MTPNDD_BENCH_BDD_SIZE`、`MTPNDD_BENCH_BDD_CACHE`、`MTPNDD_BENCH_NDD_SIZE`：覆盖 `nqueens_benchmark` 的默认参数。
+
 ## Visualization
 
 调用 `mtpndd_print_dot(root)` 或 `mtpndd_fprint_dot(file, root)` 可以把当前节点为根的 NDD 导出为 DOT 描述。例如：

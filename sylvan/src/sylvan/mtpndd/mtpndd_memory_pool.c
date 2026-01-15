@@ -187,14 +187,13 @@ void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats) {
 void mtpndd_log_memory_pools(const char *phase) {
     mtpndd_memory_pool_stats_t stats = {0};
     mtpndd_memory_pools_snapshot(&stats);
-    fprintf(stdout,
+    mtpndd_log_debug(
             "[MTPNDD MEM] %s node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu | nodetable_entry slabs=%zu in_use=%zu | edge_map slabs=%zu in_use=%zu\n",
             phase ? phase : "unknown",
             stats.node_slabs, stats.node_in_use, stats.node_capacity_per_slab,
             stats.edge_entry_slabs, stats.edge_entry_in_use,
             stats.nodetable_entry_slabs, stats.nodetable_entry_in_use,
             stats.edge_map_slabs, stats.edge_map_in_use);
-    fflush(stdout);
 }
 #endif
 

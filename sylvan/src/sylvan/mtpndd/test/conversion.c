@@ -142,6 +142,7 @@ int main(void) {
         assert_success(mtpndd_declare_field(8));
         ip_field_ids[i] = (uint32_t)(i + 1);
     }
+    assert_success(mtpndd_generate_fields());
 
     srand(42);
     const size_t ip_set_size = 32;

@@ -8,6 +8,9 @@
 #include "mtpndd_node.h"
 #include "mtpndd_nodetable.h"
 #include "sylvan.h"
+#include "sylvan_mtbdd.h"
+#include <limits.h>
+#include "sylvan.h"
 #include "sylvan_bdd.h"
 #include "sylvan_mtbdd.h"
 
@@ -51,10 +54,13 @@ static mtpndd_t *mtpndd_node_from_jlong(jlong value) {
     return (mtpndd_t *)mtpndd_jlong_to_ptr(value);
 }
 
+static bool mtpndd_convert_field_id(JNIEnv *env, jint fieldId, uint32_t *out_id);
+
 JNIEXPORT void JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_initNative(JNIEnv *env, jclass clazz,
                                              jint nWorkers,
                                              jlong laceDQSize,
+                                             jlong laceStackSize,
                                              jlong bddSize,
                                              jlong mtpnddSize,
                                              jlong opCacheSize,
@@ -72,6 +78,7 @@ Java_org_ants_mtpndd_MTPNDDEngine_initNative(JNIEnv *env, jclass clazz,
     mtpndd_pal_config_t config = {0};
     config.n_workers = (int32_t)nWorkers;
     config.lace_dqsize = (size_t)laceDQSize;
+    config.lace_stack_size = (size_t)laceStackSize;
     config.bdd_nodetable_size = (size_t)bddSize;
     config.mtpndd_nodetable_size = (size_t)mtpnddSize;
     config.op_cache_size = (size_t)opCacheSize;
@@ -129,16 +136,36 @@ Java_org_ants_mtpndd_MTPNDDEngine_declareFieldNative(JNIEnv *env, jclass clazz, 
     mtpndd_error_t err = mtpndd_declare_field((uint32_t)bitWidth);
     if (err != MTPNDD_SUCCESS) {
         mtpndd_throw_error(env, err);
-        return 0;
+        return -1;
     }
-    return (jint)g_mtpndd_config.field_count;
+    uint32_t native_field_id = g_mtpndd_config.pending_field_count;
+    if (native_field_id == 0) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException",
+                "Declared field but field id is zero");
+        return -1;
+    }
+    return (jint)native_field_id - 1;
+}
+
+JNIEXPORT void JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_generateFieldsNative(JNIEnv *env, jclass clazz)
+{
+    (void)clazz;
+    mtpndd_error_t err = mtpndd_generate_fields();
+    if (err != MTPNDD_SUCCESS) {
+        mtpndd_throw_error(env, err);
+    }
 }
 
 JNIEXPORT jobject JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getFieldInfoNative(JNIEnv *env, jclass clazz, jint fieldId)
 {
     (void)clazz;
-    mtpndd_field_info_t *info = mtpndd_get_field_info((uint32_t)fieldId);
+    uint32_t native_field_id = 0;
+    if (!mtpndd_convert_field_id(env, fieldId, &native_field_id)) {
+        return NULL;
+    }
+    mtpndd_field_info_t *info = mtpndd_get_field_info(native_field_id);
     if (!info) {
         mtpndd_throw_last_error(env);
         return NULL;
@@ -152,7 +179,7 @@ Java_org_ants_mtpndd_MTPNDDEngine_getFieldInfoNative(JNIEnv *env, jclass clazz, 
         return NULL;
     }
     return (*env)->NewObject(env, infoClass, ctor,
-            (jint)info->field_id,
+            (jint)(info->field_id - 1),
             (jint)info->bit_width,
             (jint)info->start_var);
 }
@@ -165,12 +192,26 @@ static jlong mtpndd_wrap_node(JNIEnv *env, mtpndd_t *node) {
     return mtpndd_ptr_to_jlong(node);
 }
 
+static bool mtpndd_convert_field_id(JNIEnv *env, jint fieldId, uint32_t *out_id) {
+    if (fieldId < 0) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException",
+                "Field id must be non-negative");
+        return false;
+    }
+    *out_id = (uint32_t)fieldId + 1;
+    return true;
+}
+
 JNIEXPORT jlong JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getVarNative(JNIEnv *env, jclass clazz, jint fieldId, jint index)
 {
     (void)clazz;
     mtpndd_clear_error();
-    mtpndd_t *node = mtpndd_get_var((uint32_t)fieldId, (uint32_t)index);
+    uint32_t native_field_id = 0;
+    if (!mtpndd_convert_field_id(env, fieldId, &native_field_id)) {
+        return 0;
+    }
+    mtpndd_t *node = mtpndd_get_var(native_field_id, (uint32_t)index);
     return mtpndd_wrap_node(env, node);
 }
 
@@ -179,7 +220,11 @@ Java_org_ants_mtpndd_MTPNDDEngine_getNotVarNative(JNIEnv *env, jclass clazz, jin
 {
     (void)clazz;
     mtpndd_clear_error();
-    mtpndd_t *node = mtpndd_get_not_var((uint32_t)fieldId, (uint32_t)index);
+    uint32_t native_field_id = 0;
+    if (!mtpndd_convert_field_id(env, fieldId, &native_field_id)) {
+        return 0;
+    }
+    mtpndd_t *node = mtpndd_get_not_var(native_field_id, (uint32_t)index);
     return mtpndd_wrap_node(env, node);
 }
 
@@ -252,7 +297,11 @@ Java_org_ants_mtpndd_MTPNDDEngine_existNative(JNIEnv *env, jclass clazz, jlong h
 {
     (void)clazz;
     mtpndd_clear_error();
-    mtpndd_t *node = mtpndd_exist(mtpndd_node_from_jlong(handle), (uint32_t)fieldId);
+    uint32_t native_field_id = 0;
+    if (!mtpndd_convert_field_id(env, fieldId, &native_field_id)) {
+        return 0;
+    }
+    mtpndd_t *node = mtpndd_exist(mtpndd_node_from_jlong(handle), native_field_id);
     return mtpndd_wrap_node(env, node);
 }
 
@@ -275,7 +324,11 @@ Java_org_ants_mtpndd_MTPNDDEngine_getBddVarNative(JNIEnv *env, jclass clazz, jin
 {
     (void)clazz;
     mtpndd_clear_error();
-    mtpndd_bdd_t value = mtpndd_get_bdd_var((uint32_t)fieldId, (uint32_t)index);
+    uint32_t native_field_id = 0;
+    if (!mtpndd_convert_field_id(env, fieldId, &native_field_id)) {
+        return 0;
+    }
+    mtpndd_bdd_t value = mtpndd_get_bdd_var(native_field_id, (uint32_t)index);
     mtpndd_error_info_t info = mtpndd_get_last_error();
     if (info.code != MTPNDD_SUCCESS) {
         mtpndd_throw_last_error(env);
@@ -290,7 +343,11 @@ Java_org_ants_mtpndd_MTPNDDEngine_getBddNotVarNative(JNIEnv *env, jclass clazz, 
 {
     (void)clazz;
     mtpndd_clear_error();
-    mtpndd_bdd_t value = mtpndd_get_bdd_not_var((uint32_t)fieldId, (uint32_t)index);
+    uint32_t native_field_id = 0;
+    if (!mtpndd_convert_field_id(env, fieldId, &native_field_id)) {
+        return 0;
+    }
+    mtpndd_bdd_t value = mtpndd_get_bdd_not_var(native_field_id, (uint32_t)index);
     mtpndd_error_info_t info = mtpndd_get_last_error();
     if (info.code != MTPNDD_SUCCESS) {
         mtpndd_throw_last_error(env);
@@ -406,6 +463,131 @@ Java_org_ants_mtpndd_MTPNDDEngine_isTerminalNative(JNIEnv *env, jclass clazz, jl
     (void)env;
     (void)clazz;
     return mtpndd_is_terminal(mtpndd_node_from_jlong(handle)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getFieldNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    mtpndd_t *node = mtpndd_node_from_jlong(handle);
+    if (!node) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "Cannot access field of null handle");
+        return 0;
+    }
+    if (node->field_id == 0) {
+        return -1;
+    }
+    return (jint)node->field_id - 1;
+}
+
+JNIEXPORT jobject JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getEdgesNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    mtpndd_t *node = mtpndd_node_from_jlong(handle);
+    if (!node) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "Cannot access edges of null handle");
+        return NULL;
+    }
+
+    mtpndd_edge_t *edges = node->edges;
+    size_t edge_count = edges ? edges->edge_count : 0;
+    jlongArray children = (*env)->NewLongArray(env, (jsize)edge_count);
+    if (children == NULL) {
+        return NULL;
+    }
+    jlongArray predicates = (*env)->NewLongArray(env, (jsize)edge_count);
+    if (predicates == NULL) {
+        return NULL;
+    }
+
+    if (edge_count > 0 && edges && edges->buckets) {
+        jlong *child_buf = (*env)->GetLongArrayElements(env, children, NULL);
+        jlong *pred_buf = (*env)->GetLongArrayElements(env, predicates, NULL);
+        if (child_buf == NULL || pred_buf == NULL) {
+            if (child_buf) {
+                (*env)->ReleaseLongArrayElements(env, children, child_buf, 0);
+            }
+            if (pred_buf) {
+                (*env)->ReleaseLongArrayElements(env, predicates, pred_buf, 0);
+            }
+            return NULL;
+        }
+        size_t idx = 0;
+        edge_bucket_entry_t *entry = NULL;
+        FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
+            if (idx >= edge_count) {
+                break;
+            }
+            child_buf[idx] = mtpndd_ptr_to_jlong(entry->child);
+            pred_buf[idx] = (jlong)entry->label;
+            idx++;
+        }
+        (*env)->ReleaseLongArrayElements(env, children, child_buf, 0);
+        (*env)->ReleaseLongArrayElements(env, predicates, pred_buf, 0);
+    }
+
+    jclass edgesClass = (*env)->FindClass(env, "org/ants/mtpndd/MTPNDDEdges");
+    if (edgesClass == NULL) {
+        return NULL;
+    }
+    jmethodID ctor = (*env)->GetMethodID(env, edgesClass, "<init>", "([J[J)V");
+    if (ctor == NULL) {
+        return NULL;
+    }
+    return (*env)->NewObject(env, edgesClass, ctor, children, predicates);
+}
+
+JNIEXPORT jint JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddVarNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    MTBDD bdd = (MTBDD)handle;
+    if (bdd == sylvan_true || bdd == sylvan_false || mtbdd_isleaf(bdd)) {
+        return (jint)INT_MAX;
+    }
+    return (jint)sylvan_var(bdd);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddLowNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    MTBDD bdd = (MTBDD)handle;
+    if (bdd == sylvan_true || bdd == sylvan_false || mtbdd_isleaf(bdd)) {
+        return (jlong)bdd;
+    }
+    return (jlong)sylvan_low(bdd);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddHighNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    MTBDD bdd = (MTBDD)handle;
+    if (bdd == sylvan_true || bdd == sylvan_false || mtbdd_isleaf(bdd)) {
+        return (jlong)bdd;
+    }
+    return (jlong)sylvan_high(bdd);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddIsTrueNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    return ((MTBDD)handle == sylvan_true) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddIsFalseNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    return ((MTBDD)handle == sylvan_false) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jobject JNICALL

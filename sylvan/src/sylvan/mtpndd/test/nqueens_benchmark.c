@@ -30,6 +30,19 @@ static inline size_t next_pow2(size_t v) {
     return v;
 }
 
+static size_t env_size_or_zero(const char *name) {
+    const char *env = getenv(name);
+    if (!env || env[0] == '\0') {
+        return 0;
+    }
+    char *end = NULL;
+    unsigned long long value = strtoull(env, &end, 10);
+    if (end == env || (end && *end != '\0') || value == 0) {
+        return 0;
+    }
+    return (size_t)value;
+}
+
 static inline mtpndd_t *mtpndd_and_to(mtpndd_t *a, mtpndd_t *b) {
     mtpndd_t *res = mtpndd_and(a, b);
     if (!res) return NULL;
@@ -154,6 +167,9 @@ static bool declare_fields(size_t n) {
             return false;
         }
     }
+    if (mtpndd_generate_fields() != MTPNDD_SUCCESS) {
+        return false;
+    }
     return true;
 }
 
@@ -166,6 +182,25 @@ static bool run_benchmark(size_t n) {
     size_t bdd_size = 1 + (size_t)fmax(1000.0, pow(4.4, (double)n - 6.0) * 1000.0);
     size_t bdd_cache = 320000;
     size_t ndd_size = 100000000;
+
+    size_t env_bdd = env_size_or_zero("MTPNDD_BENCH_BDD_SIZE");
+    size_t env_bdd_cache = env_size_or_zero("MTPNDD_BENCH_BDD_CACHE");
+    size_t env_ndd = env_size_or_zero("MTPNDD_BENCH_NDD_SIZE");
+
+    if (n == 12 && env_bdd == 0 && env_ndd == 0) {
+        bdd_size = 1 << 20;
+        ndd_size = 1 << 21;
+    }
+
+    if (env_bdd != 0) {
+        bdd_size = env_bdd;
+    }
+    if (env_bdd_cache != 0) {
+        bdd_cache = env_bdd_cache;
+    }
+    if (env_ndd != 0) {
+        ndd_size = env_ndd;
+    }
 
     // Sylvan requires power-of-two table sizes
     bdd_size = next_pow2(bdd_size);
