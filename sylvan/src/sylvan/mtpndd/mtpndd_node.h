@@ -108,6 +108,8 @@ mtpndd_t *mtpndd_not(mtpndd_t *a);
 mtpndd_t *mtpndd_diff(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_exist(mtpndd_t *a, uint32_t field);
 double mtpndd_satcount(mtpndd_t *node);
+double mtpndd_satcount_ndd(mtpndd_t *node);
+double mtpndd_satcount_mtbdd(mtpndd_t *node);
 
 /********************************
  * MTPNDD <-> MTBDD convertion

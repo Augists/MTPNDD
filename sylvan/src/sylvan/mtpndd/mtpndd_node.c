@@ -15,6 +15,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <math.h>
 #ifdef ENABLE_RECORDING
 #include <time.h>
 #endif
@@ -1356,19 +1357,51 @@ static mtpndd_error_t mtbdd_to_mtpndd_cache_insert(mtbdd_to_mtpndd_cache_t *cach
     return MTPNDD_SUCCESS;
 }
 
-static mtpndd_field_info_t *mtpndd_find_field_by_var(uint32_t var) {
+static uint32_t mtpndd_field_expanded_start(uint32_t field_id) {
+    uint32_t start = 0;
+    for (uint32_t i = 1; i < field_id; ++i) {
+        start += g_mtpndd_config.pending_field_bit_widths[i - 1];
+    }
+    return start;
+}
+
+static mtpndd_field_info_t *mtpndd_find_field_by_expanded_var(uint32_t var) {
+    uint32_t start = 0;
     for (uint32_t i = 1; i <= g_mtpndd_config.field_count; ++i) {
-        mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
-        if (!field) {
-            continue;
-        }
-        uint32_t start = field->start_var;
-        uint32_t end = start + field->bit_width;
+        uint32_t width = g_mtpndd_config.pending_field_bit_widths[i - 1];
+        uint32_t end = start + width;
         if (var >= start && var < end) {
-            return field;
+            return g_mtpndd_config.field_info[i];
         }
+        start = end;
     }
     return NULL;
+}
+
+static mtpndd_bdd_t mtpndd_replace_shared_to_expanded(mtpndd_bdd_t bdd, uint32_t field_id) {
+    if (bdd == sylvan_false || bdd == sylvan_true) {
+        return sylvan_ref(bdd);
+    }
+
+    uint32_t bit_width = g_mtpndd_config.pending_field_bit_widths[field_id - 1];
+    uint32_t shared_offset = g_mtpndd_config.max_bit_width - bit_width;
+    uint32_t expanded_offset = mtpndd_field_expanded_start(field_id);
+
+    if (expanded_offset < g_mtpndd_config.max_bit_width) {
+        return sylvan_ref(bdd);
+    }
+
+    BDDMAP map = sylvan_map_empty();
+    for (uint32_t i = 0; i < bit_width; ++i) {
+        uint32_t key = shared_offset + i;
+        uint32_t expanded_var = expanded_offset + i;
+        map = sylvan_map_add(map, key, sylvan_ithvar(expanded_var));
+    }
+
+    BDDMAP map_ref = sylvan_ref(map);
+    mtpndd_bdd_t replaced = sylvan_ref(sylvan_compose(bdd, map_ref));
+    sylvan_deref(map_ref);
+    return replaced;
 }
 
 static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t *node, mtpndd_to_mtbdd_cache_t *cache, mtpndd_bdd_t *result) {
@@ -1405,7 +1438,9 @@ static mtpndd_error_t mtpndd_to_mtbdd_rec(mtpndd_t *node, mtpndd_to_mtbdd_cache_
                     if (status != MTPNDD_SUCCESS) {
                         break;
                     }
-                    mtpndd_bdd_t conjunct = sylvan_ref(sylvan_and(label, child_bdd));
+                    mtpndd_bdd_t mapped_label = mtpndd_replace_shared_to_expanded(label, node->field_id);
+                    mtpndd_bdd_t conjunct = sylvan_ref(sylvan_and(mapped_label, child_bdd));
+                    sylvan_deref(mapped_label);
                     if (conjunct != sylvan_false) {
                         mtpndd_bdd_t combined = sylvan_ref(sylvan_or(acc, conjunct));
                         sylvan_deref(acc);
@@ -1475,6 +1510,7 @@ static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cach
 static mtpndd_error_t mtbdd_to_mtpndd_collect(
         mtpndd_bdd_t current,
         const mtpndd_field_info_t *field,
+        uint32_t field_start,
         uint32_t offset,
         mtpndd_bdd_t cube,
         mtbdd_to_mtpndd_cache_t *cache,
@@ -1484,7 +1520,7 @@ static mtpndd_error_t mtbdd_to_mtpndd_collect(
         return MTPNDD_SUCCESS;
     }
 
-    uint32_t field_end = field->start_var + field->bit_width;
+    uint32_t field_end = field_start + field->bit_width;
     if (offset >= field->bit_width || mtbdd_isleaf(current) ||
         (!mtbdd_isleaf(current) && sylvan_var(current) >= field_end)) {
         mtpndd_t *child = NULL;
@@ -1500,7 +1536,7 @@ static mtpndd_error_t mtbdd_to_mtpndd_collect(
         return status;
     }
 
-    uint32_t var = field->start_var + offset;
+    uint32_t var = field_start + offset;
     mtpndd_bdd_t literal_pos = field->bdd_vars[offset];
     mtpndd_bdd_t literal_neg = field->bdd_not_vars[offset];
 
@@ -1516,14 +1552,14 @@ static mtpndd_error_t mtbdd_to_mtpndd_collect(
 
     mtpndd_error_t status;
     mtpndd_bdd_t cube_low = sylvan_ref(sylvan_and(cube, literal_neg));
-    status = mtbdd_to_mtpndd_collect(low_child, field, offset + 1, cube_low, cache, edges);
+    status = mtbdd_to_mtpndd_collect(low_child, field, field_start, offset + 1, cube_low, cache, edges);
     sylvan_deref(cube_low);
     if (status != MTPNDD_SUCCESS) {
         return status;
     }
 
     mtpndd_bdd_t cube_high = sylvan_ref(sylvan_and(cube, literal_pos));
-    status = mtbdd_to_mtpndd_collect(high_child, field, offset + 1, cube_high, cache, edges);
+    status = mtbdd_to_mtpndd_collect(high_child, field, field_start, offset + 1, cube_high, cache, edges);
     sylvan_deref(cube_high);
     return status;
 }
@@ -1545,11 +1581,12 @@ static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cach
     }
 
     uint32_t var = sylvan_var(bdd);
-    mtpndd_field_info_t *field = mtpndd_find_field_by_var(var);
+    mtpndd_field_info_t *field = mtpndd_find_field_by_expanded_var(var);
     if (!field) {
         mtpndd_set_error(MTPNDD_ERROR_INVALID_FIELD, __func__, __LINE__);
         return MTPNDD_ERROR_INVALID_FIELD;
     }
+    uint32_t field_start = mtpndd_field_expanded_start(field->field_id);
 
     mtpndd_edge_t *edges = mtpndd_memory_acquire_edge_map();
     if (!edges) {
@@ -1558,7 +1595,7 @@ static mtpndd_error_t mtbdd_to_mtpndd_rec(mtpndd_bdd_t bdd, mtbdd_to_mtpndd_cach
     }
     mtpndd_edge_map_init(edges);
 
-    mtpndd_error_t status = mtbdd_to_mtpndd_collect(bdd, field, 0, sylvan_true, cache, edges);
+    mtpndd_error_t status = mtbdd_to_mtpndd_collect(bdd, field, field_start, 0, sylvan_true, cache, edges);
     if (status != MTPNDD_SUCCESS) {
         mtpndd_edge_map_free(edges);
         return status;
@@ -1606,19 +1643,64 @@ mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result) {
 static size_t mtpndd_total_bdd_vars(void) {
     size_t total = 0;
     for (uint32_t i = 1; i <= g_mtpndd_config.field_count; ++i) {
-        mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
-        if (!field) {
-            continue;
-        }
-        size_t end = (size_t)field->start_var + field->bit_width;
-        if (end > total) {
-            total = end;
-        }
+        total += g_mtpndd_config.pending_field_bit_widths[i - 1];
     }
     return total;
 }
 
-double mtpndd_satcount(mtpndd_t *node) {
+static double mtpndd_satcount_rec(mtpndd_t *node, uint32_t field) {
+    if (mtpndd_is_false(node)) {
+        return 0.0;
+    }
+    if (mtpndd_is_true(node)) {
+        if (field > g_mtpndd_config.field_count) {
+            return 1.0;
+        }
+        double result = 1.0;
+        for (uint32_t f = field; f <= g_mtpndd_config.field_count; ++f) {
+            uint32_t bits = g_mtpndd_config.pending_field_bit_widths[f - 1];
+            result *= pow(2.0, (double)bits);
+        }
+        return result;
+    }
+
+    if (field == node->field_id) {
+        uint32_t field_bits = g_mtpndd_config.pending_field_bit_widths[field - 1];
+        double divisor = pow(2.0, (double)(g_mtpndd_config.max_bit_width - field_bits));
+        double result = 0.0;
+        size_t bucket_cnt = (node->edges && node->edges->buckets)
+                ? (node->edges->bucket_count ? node->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count)
+                : 0;
+        for (size_t bucket = 0; bucket < bucket_cnt; ++bucket) {
+            edge_bucket_entry_t *entry = node->edges->buckets[bucket];
+            while (entry) {
+                if (entry->child) {
+                    mtpndd_bdd_t label = mtpndd_edge_label_load(entry);
+                    if (label != sylvan_false) {
+                        double bdd_sat = (label == sylvan_true)
+                                ? pow(2.0, (double)g_mtpndd_config.max_bit_width)
+                                : mtbdd_satcount(label, g_mtpndd_config.max_bit_width);
+                        double ndd_sat = mtpndd_satcount_rec(entry->child, field + 1);
+                        result += (bdd_sat / divisor) * ndd_sat;
+                    }
+                }
+                entry = entry->next;
+            }
+        }
+        return result;
+    }
+
+    uint32_t bits = g_mtpndd_config.pending_field_bit_widths[field - 1];
+    return pow(2.0, (double)bits) * mtpndd_satcount_rec(node, field + 1);
+}
+
+double mtpndd_satcount_ndd(mtpndd_t *node) {
+    MTPNDD_CHECK_INIT();
+    MTPNDD_CHECK_NULL(node, MTPNDD_ERROR_NULL_POINTER);
+    return mtpndd_satcount_rec(node, 1);
+}
+
+double mtpndd_satcount_mtbdd(mtpndd_t *node) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_NULL(node, MTPNDD_ERROR_NULL_POINTER);
 
@@ -1633,6 +1715,10 @@ double mtpndd_satcount(mtpndd_t *node) {
     sylvan_deref(bdd);
 
     return count;
+}
+
+double mtpndd_satcount(mtpndd_t *node) {
+    return mtpndd_satcount_ndd(node);
 }
 
 /********************************
