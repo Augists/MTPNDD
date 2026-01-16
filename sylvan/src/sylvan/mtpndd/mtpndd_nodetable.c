@@ -29,6 +29,22 @@ static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count);
 static size_t mtpndd_gc_sweep(void);
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node);
 
+static bool g_mtpndd_gc_running = false;
+
+void mtpndd_gc_before_sylvan(void) {
+    if (!mtpndd_is_initialized() || g_mtpndd_gc_running) {
+        return;
+    }
+    g_mtpndd_gc_running = true;
+    gc_internal();
+
+    mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.not_cache);
+
+    g_mtpndd_gc_running = false;
+}
+
 
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
@@ -407,7 +423,6 @@ static void gcOrGrow(void) {
             (size_t)g_mtpndd_stats.node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size,
             g_mtpndd_pal_config.quick_growth_threshold);
-    mtpndd_gc_run_prehooks();
     mtpndd_log_memory_pools("pre-gc");
 #endif
 
@@ -417,6 +432,7 @@ static void gcOrGrow(void) {
         suspended_workers = true;
     }
 
+    g_mtpndd_gc_running = true;
     gc_internal();
 
     if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
@@ -440,9 +456,9 @@ static void gcOrGrow(void) {
     }
 
     sylvan_gc();
+    g_mtpndd_gc_running = false;
 
 #ifdef ENABLE_RECORDING
-    mtpndd_gc_run_posthooks();
     mtpndd_log_memory_pools("post-gc");
     mtpndd_log_debug(
             "[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
@@ -473,6 +489,7 @@ static void gc_internal(void) {
         MTPNDD_STAT_SET(nodes_collected_last, reclaimed);
 #endif
     }
+    mtpndd_gc_run_posthooks();
 }
 
 static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {

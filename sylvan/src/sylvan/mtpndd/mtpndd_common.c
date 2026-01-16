@@ -750,6 +750,7 @@ static bool mtpndd_lace_init(void) {
 static void mtpndd_gc_hook_sylvan_pre(WorkerP *worker, Task *task) {
     (void)worker;
     (void)task;
+    mtpndd_gc_before_sylvan();
     size_t refs = sylvan_count_refs();
     mtpndd_log_log("[Sylvan GC] start refs=%zu capacity=%zu\n",
                    refs, g_mtpndd_pal_config.bdd_nodetable_size);
