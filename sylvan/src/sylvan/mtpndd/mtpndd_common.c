@@ -50,7 +50,7 @@ static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task);
 static void mtpndd_gc_hook_mtpndd_pre(void);
 static void mtpndd_gc_hook_mtpndd_post(void);
 
-static void mtpndd_field_info_teardown(mtpndd_field_info_t *field) {
+static void mtpndd_field_info_free(mtpndd_field_info_t *field) {
     if (!field) {
         return;
     }
@@ -85,17 +85,12 @@ static void mtpndd_field_info_teardown(mtpndd_field_info_t *field) {
         free(field->mtpndd_not_vars);
         field->mtpndd_not_vars = NULL;
     }
+    // bdd_vars and bdd_not_vars are references to shared_bdd_vars, don't unprotect them here
     if (field->bdd_vars) {
-        for (uint32_t i = 0; i < width; ++i) {
-            sylvan_unprotect(field->bdd_vars + i);
-        }
         free(field->bdd_vars);
         field->bdd_vars = NULL;
     }
     if (field->bdd_not_vars) {
-        for (uint32_t i = 0; i < width; ++i) {
-            sylvan_unprotect(field->bdd_not_vars + i);
-        }
         free(field->bdd_not_vars);
         field->bdd_not_vars = NULL;
     }
@@ -217,200 +212,237 @@ mtpndd_field_info_t* mtpndd_get_field_info(uint32_t field_id) {
 mtpndd_error_t mtpndd_declare_field(uint32_t bit_width) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_PARAM(bit_width > 0, MTPNDD_ERROR_INVALID_PARAM);
+    if (g_mtpndd_config.fields_generated) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INVALID_PARAM);
+    }
 
-    g_mtpndd_config.field_count++;
+    g_mtpndd_config.pending_field_count++;
 
-    // check and expand capacity
-    if (g_mtpndd_config.field_count >= g_mtpndd_config.field_capacity) {
-        uint32_t old_capacity = g_mtpndd_config.field_capacity;
+    if (g_mtpndd_config.pending_field_count >= g_mtpndd_config.pending_field_capacity) {
+        uint32_t old_capacity = g_mtpndd_config.pending_field_capacity;
         uint32_t new_capacity = old_capacity ? old_capacity * 2 : DEFAULT_FIELD_CAPACITY;
-        if (new_capacity <= g_mtpndd_config.field_count) {
-            new_capacity = g_mtpndd_config.field_count + 1;
+        if (new_capacity <= g_mtpndd_config.pending_field_count) {
+            new_capacity = g_mtpndd_config.pending_field_count + 1;
         }
+        size_t new_bytes = sizeof(uint32_t) * new_capacity;
+        uint32_t *new_pending = (uint32_t *)realloc(
+                g_mtpndd_config.pending_field_bit_widths, new_bytes);
+        if (!new_pending) {
+            MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        }
+        if (new_capacity > old_capacity) {
+            memset(new_pending + old_capacity, 0,
+                    sizeof(uint32_t) * (new_capacity - old_capacity));
+        }
+        g_mtpndd_config.pending_field_bit_widths = new_pending;
+        g_mtpndd_config.pending_field_capacity = new_capacity;
+    }
+
+    g_mtpndd_config.pending_field_bit_widths[g_mtpndd_config.pending_field_count - 1] = bit_width;
+    return MTPNDD_SUCCESS;
+}
+
+mtpndd_error_t mtpndd_generate_fields(void) {
+    MTPNDD_CHECK_INIT();
+    if (g_mtpndd_config.fields_generated) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INVALID_PARAM);
+    }
+    if (g_mtpndd_config.pending_field_count == 0) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INVALID_PARAM);
+    }
+
+    // One-time resize of field_info and node_tables_by_field based on pending_field_count
+    uint32_t required_capacity = g_mtpndd_config.pending_field_count + 1; // +1 for field_id starting from 1
+    if (required_capacity > g_mtpndd_config.field_capacity) {
+        uint32_t old_capacity = g_mtpndd_config.field_capacity;
+        uint32_t new_capacity = required_capacity;
 
         size_t fi_size = sizeof(mtpndd_field_info_t*) * new_capacity;
-        size_t nt_size = sizeof(mtpndd_nodetable_t*) * new_capacity;
-        size_t old_fi_bytes = sizeof(mtpndd_field_info_t*) * old_capacity;
-        size_t old_nt_bytes = sizeof(mtpndd_nodetable_t*) * old_capacity;
-
         mtpndd_field_info_t **new_field_info =
-                (mtpndd_field_info_t **)malloc(fi_size);
-        void *aligned_nt = NULL;
-        if (posix_memalign(&aligned_nt, 64, nt_size) != 0) {
-            free(new_field_info);
+                (mtpndd_field_info_t **)realloc(g_mtpndd_config.field_info, fi_size);
+        if (!new_field_info) {
             MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         }
-        mtpndd_nodetable_t **new_node_tables =
-                (mtpndd_nodetable_t **)aligned_nt;
-        if (!new_field_info || !new_node_tables) {
-            free(new_field_info);
-            free(new_node_tables);
-            MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-        }
-        // copy existing slots
-        if (g_mtpndd_config.field_info && old_capacity > 0) {
-            memcpy(new_field_info, g_mtpndd_config.field_info, old_fi_bytes);
-        }
-        if (g_mtpndd_config.node_tables_by_field && old_capacity > 0) {
-            memcpy(new_node_tables, g_mtpndd_config.node_tables_by_field, old_nt_bytes);
-        }
-        // zero-initialize the newly added slots only
         if (new_capacity > old_capacity) {
             size_t fi_bytes = sizeof(mtpndd_field_info_t*) * (new_capacity - old_capacity);
-            size_t nt_bytes = sizeof(mtpndd_nodetable_t*) * (new_capacity - old_capacity);
             memset(new_field_info + old_capacity, 0, fi_bytes);
+        }
+        g_mtpndd_config.field_info = new_field_info;
+
+        size_t nt_size = sizeof(mtpndd_nodetable_t*) * new_capacity;
+        void *aligned_nt = NULL;
+        if (posix_memalign(&aligned_nt, 64, nt_size) != 0) {
+            MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        }
+        mtpndd_nodetable_t **new_node_tables = (mtpndd_nodetable_t **)aligned_nt;
+        if (g_mtpndd_config.node_tables_by_field && old_capacity > 0) {
+            size_t old_nt_bytes = sizeof(mtpndd_nodetable_t*) * old_capacity;
+            memcpy(new_node_tables, g_mtpndd_config.node_tables_by_field, old_nt_bytes);
+        }
+        if (new_capacity > old_capacity) {
+            size_t nt_bytes = sizeof(mtpndd_nodetable_t*) * (new_capacity - old_capacity);
             memset(new_node_tables + old_capacity, 0, nt_bytes);
         }
-
-        free(g_mtpndd_config.field_info);
         free(g_mtpndd_config.node_tables_by_field);
-
-        g_mtpndd_config.field_info = new_field_info;
         g_mtpndd_config.node_tables_by_field = new_node_tables;
         g_mtpndd_config.field_capacity = new_capacity;
     }
 
-    mtpndd_field_info_t *new_field = (mtpndd_field_info_t *)malloc(sizeof(mtpndd_field_info_t));
-    if (!new_field) {
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+    uint32_t max_width = 0;
+    for (uint32_t i = 0; i < g_mtpndd_config.pending_field_count; ++i) {
+        uint32_t width = g_mtpndd_config.pending_field_bit_widths[i];
+        if (width > max_width) {
+            max_width = width;
+        }
     }
-    memset(new_field, 0, sizeof(mtpndd_field_info_t));
-    new_field->field_id = g_mtpndd_config.field_count;
-    new_field->bit_width = bit_width;
-    mtpndd_field_info_t *prev_field = g_mtpndd_config.field_info[g_mtpndd_config.field_count - 1];
-    new_field->start_var = g_mtpndd_config.field_count == 1 ? 0 :
-        prev_field->start_var + prev_field->bit_width;
-    
-    // node table initialize
-    mtpndd_nodetable_t *nodetable = mtpndd_nodetable_declare_field();
-    if (!nodetable) {
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    g_mtpndd_config.node_tables_by_field[g_mtpndd_config.field_count] = nodetable;
 
-#define FREE_BDD_VARS() do { \
-        if (new_field->bdd_vars) { \
-            for (uint32_t _k = 0; _k < (bit_width); ++_k) { \
-                sylvan_unprotect(new_field->bdd_vars + _k); \
+    g_mtpndd_config.max_bit_width = max_width;
+    g_mtpndd_config.shared_bdd_vars = (mtpndd_bdd_t *)malloc(sizeof(mtpndd_bdd_t) * max_width);
+    g_mtpndd_config.shared_bdd_not_vars = (mtpndd_bdd_t *)malloc(sizeof(mtpndd_bdd_t) * max_width);
+    if (!g_mtpndd_config.shared_bdd_vars || !g_mtpndd_config.shared_bdd_not_vars) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+    }
+
+    for (uint32_t i = 0; i < max_width; ++i) {
+        g_mtpndd_config.shared_bdd_vars[i] = sylvan_ithvar(i);
+        sylvan_protect(g_mtpndd_config.shared_bdd_vars + i);
+        g_mtpndd_config.shared_bdd_not_vars[i] = sylvan_not(g_mtpndd_config.shared_bdd_vars[i]);
+        sylvan_protect(g_mtpndd_config.shared_bdd_not_vars + i);
+    }
+
+    g_mtpndd_config.field_count = g_mtpndd_config.pending_field_count;
+
+    for (uint32_t f = 0; f < g_mtpndd_config.pending_field_count; ++f) {
+        uint32_t bit_width = g_mtpndd_config.pending_field_bit_widths[f];
+        uint32_t field_id = f + 1;
+        uint32_t offset = max_width - bit_width;
+
+        mtpndd_field_info_t *new_field = (mtpndd_field_info_t *)malloc(sizeof(mtpndd_field_info_t));
+        if (!new_field) {
+            MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        }
+        memset(new_field, 0, sizeof(mtpndd_field_info_t));
+        new_field->field_id = field_id;
+        new_field->bit_width = bit_width;
+        new_field->start_var = offset;
+
+        mtpndd_nodetable_t *nodetable = mtpndd_nodetable_declare_field();
+        if (!nodetable) {
+            free(new_field);
+            MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        }
+        g_mtpndd_config.node_tables_by_field[field_id] = nodetable;
+
+#define FREE_MTPNDD_VARS_WITH_NODES(i) do { \
+        if ((i) > 0) { \
+            for (uint32_t j = 0; j < (i); j++) { \
+                if (new_field->mtpndd_vars && new_field->mtpndd_vars[j]) { \
+                    mtpndd_edge_map_free(new_field->mtpndd_vars[j]->edges); \
+                    new_field->mtpndd_vars[j] = NULL; \
+                } \
+                if (new_field->mtpndd_not_vars && new_field->mtpndd_not_vars[j]) { \
+                    mtpndd_edge_map_free(new_field->mtpndd_not_vars[j]->edges); \
+                    new_field->mtpndd_not_vars[j] = NULL; \
+                } \
             } \
-            free(new_field->bdd_vars); \
-            new_field->bdd_vars = NULL; \
         } \
-        if (new_field->bdd_not_vars) { \
-            for (uint32_t _k = 0; _k < (bit_width); ++_k) { \
-                sylvan_unprotect(new_field->bdd_not_vars + _k); \
-            } \
-            free(new_field->bdd_not_vars); \
-            new_field->bdd_not_vars = NULL; \
-        } \
-        free(new_field); \
-    } while(0)
-#define FREE_MTPNDD_VARS() do { \
         free(new_field->mtpndd_vars); \
         free(new_field->mtpndd_not_vars); \
-        FREE_BDD_VARS(); \
-    } while(0)
-#define FREE_MTPNDD_VARS_WITH_NODES(i) do { \
-        for (uint32_t j = 0; j < (i); j++) { \
-            if (new_field->mtpndd_vars && new_field->mtpndd_vars[j]) { \
-                mtpndd_edge_map_free(new_field->mtpndd_vars[j]->edges); \
-                new_field->mtpndd_vars[j] = NULL; \
-            } \
-            if (new_field->mtpndd_not_vars && new_field->mtpndd_not_vars[j]) { \
-                mtpndd_edge_map_free(new_field->mtpndd_not_vars[j]->edges); \
-                new_field->mtpndd_not_vars[j] = NULL; \
-            } \
-        } \
-        FREE_MTPNDD_VARS(); \
+        free(new_field->bdd_vars); \
+        free(new_field->bdd_not_vars); \
+        free(new_field); \
     } while(0)
 
-    // Allocate BDD and NDD variables for the field
-    // BDD variables
-    new_field->bdd_vars = (mtpndd_bdd_t *)malloc(sizeof(mtpndd_bdd_t) * bit_width);
-    new_field->bdd_not_vars = (mtpndd_bdd_t *)malloc(sizeof(mtpndd_bdd_t) * bit_width);
-    if (!new_field->bdd_vars || !new_field->bdd_not_vars) {
-        FREE_BDD_VARS();
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    memset(new_field->bdd_vars, 0, sizeof(mtpndd_bdd_t) * bit_width);
-    memset(new_field->bdd_not_vars, 0, sizeof(mtpndd_bdd_t) * bit_width);
-    for (uint32_t i = 0; i < bit_width; i++) {
-        new_field->bdd_vars[i] = sylvan_ithvar(new_field->start_var + i);
-        sylvan_protect(new_field->bdd_vars + i);
-        new_field->bdd_not_vars[i] = sylvan_not(new_field->bdd_vars[i]);
-        sylvan_protect(new_field->bdd_not_vars + i);
-    }
-    // use mtpndd_mk so that these mtpndd_node_t will be added into node table
-    // NDD variables
-    new_field->mtpndd_vars = (mtpndd_node_t **)malloc(sizeof(mtpndd_node_t *) * bit_width);
-    new_field->mtpndd_not_vars = (mtpndd_node_t **)malloc(sizeof(mtpndd_node_t *) * bit_width);
-    if (!new_field->mtpndd_vars || !new_field->mtpndd_not_vars) {
-        FREE_MTPNDD_VARS();
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    memset(new_field->mtpndd_vars, 0, sizeof(mtpndd_node_t *) * bit_width);
-    memset(new_field->mtpndd_not_vars, 0, sizeof(mtpndd_node_t *) * bit_width);
-    mtpndd_error_t err = MTPNDD_SUCCESS;
-    for (uint32_t i = 0; i < bit_width; i++) {
-        // build var node
-        mtpndd_edge_t *edges_var = mtpndd_memory_acquire_edge_map();
-        if (!edges_var) {
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+        new_field->bdd_vars = (mtpndd_bdd_t *)malloc(sizeof(mtpndd_bdd_t) * bit_width);
+        new_field->bdd_not_vars = (mtpndd_bdd_t *)malloc(sizeof(mtpndd_bdd_t) * bit_width);
+        if (!new_field->bdd_vars || !new_field->bdd_not_vars) {
+            free(new_field->bdd_vars);
+            free(new_field->bdd_not_vars);
+            free(new_field);
             MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         }
-        mtpndd_edge_map_init(edges_var);
-        err = mtpndd_add_edge(edges_var, &MTPNDD_TRUE, sylvan_ref(new_field->bdd_vars[i]));
-        if (err != MTPNDD_SUCCESS) {
-            mtpndd_edge_map_free(edges_var);
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
-            MTPNDD_RETURN_ERROR(err);
+        for (uint32_t i = 0; i < bit_width; ++i) {
+            new_field->bdd_vars[i] = g_mtpndd_config.shared_bdd_vars[offset + i];
+            new_field->bdd_not_vars[i] = g_mtpndd_config.shared_bdd_not_vars[offset + i];
         }
-        mtpndd_node_t *node_var = NULL;
-        mtpndd_mk(new_field->field_id, edges_var, &node_var);
-        if (!node_var) {
-            mtpndd_edge_map_free(edges_var);
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
-            MTPNDD_RETURN_ERROR(mtpndd_get_last_error().code);
-        }
-        err = mtpndd_protect(node_var);
-        if (err != MTPNDD_SUCCESS) {
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
-            MTPNDD_RETURN_ERROR(err);
-        }
-        new_field->mtpndd_vars[i] = node_var;
 
-        // build not var node
-        mtpndd_edge_t *edges_not = mtpndd_memory_acquire_edge_map();
-        if (!edges_not) {
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+        new_field->mtpndd_vars = (mtpndd_node_t **)malloc(sizeof(mtpndd_node_t *) * bit_width);
+        new_field->mtpndd_not_vars = (mtpndd_node_t **)malloc(sizeof(mtpndd_node_t *) * bit_width);
+        if (!new_field->mtpndd_vars || !new_field->mtpndd_not_vars) {
+            free(new_field->mtpndd_vars);
+            free(new_field->mtpndd_not_vars);
+            free(new_field->bdd_vars);
+            free(new_field->bdd_not_vars);
+            free(new_field);
             MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         }
-        mtpndd_edge_map_init(edges_not);
-        err = mtpndd_add_edge(edges_not, &MTPNDD_TRUE, sylvan_ref(new_field->bdd_not_vars[i]));
-        if (err != MTPNDD_SUCCESS) {
-            mtpndd_edge_map_free(edges_not);
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
-            MTPNDD_RETURN_ERROR(err);
+        memset(new_field->mtpndd_vars, 0, sizeof(mtpndd_node_t *) * bit_width);
+        memset(new_field->mtpndd_not_vars, 0, sizeof(mtpndd_node_t *) * bit_width);
+
+        mtpndd_error_t err = MTPNDD_SUCCESS;
+        for (uint32_t i = 0; i < bit_width; i++) {
+            mtpndd_edge_t *edges_var = mtpndd_memory_acquire_edge_map();
+            if (!edges_var) {
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+            }
+            mtpndd_edge_map_init(edges_var);
+            err = mtpndd_add_edge(edges_var, &MTPNDD_TRUE,
+                    sylvan_ref(new_field->bdd_vars[i]));
+            if (err != MTPNDD_SUCCESS) {
+                mtpndd_edge_map_free(edges_var);
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(err);
+            }
+            mtpndd_node_t *node_var = NULL;
+            mtpndd_mk(field_id, edges_var, &node_var);
+            if (!node_var) {
+                mtpndd_edge_map_free(edges_var);
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(mtpndd_get_last_error().code);
+            }
+            err = mtpndd_protect(node_var);
+            if (err != MTPNDD_SUCCESS) {
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(err);
+            }
+            new_field->mtpndd_vars[i] = node_var;
+
+            mtpndd_edge_t *edges_not = mtpndd_memory_acquire_edge_map();
+            if (!edges_not) {
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+            }
+            mtpndd_edge_map_init(edges_not);
+            err = mtpndd_add_edge(edges_not, &MTPNDD_TRUE,
+                    sylvan_ref(new_field->bdd_not_vars[i]));
+            if (err != MTPNDD_SUCCESS) {
+                mtpndd_edge_map_free(edges_not);
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(err);
+            }
+            mtpndd_node_t *node_not = NULL;
+            mtpndd_mk(field_id, edges_not, &node_not);
+            if (!node_not) {
+                mtpndd_edge_map_free(edges_not);
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(mtpndd_get_last_error().code);
+            }
+            err = mtpndd_protect(node_not);
+            if (err != MTPNDD_SUCCESS) {
+                FREE_MTPNDD_VARS_WITH_NODES(bit_width);
+                MTPNDD_RETURN_ERROR(err);
+            }
+            new_field->mtpndd_not_vars[i] = node_not;
         }
-        mtpndd_node_t *node_not = NULL;
-        mtpndd_mk(new_field->field_id, edges_not, &node_not);
-        if (!node_not) {
-            mtpndd_edge_map_free(edges_not);
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
-            MTPNDD_RETURN_ERROR(mtpndd_get_last_error().code);
-        }
-        err = mtpndd_protect(node_not);
-        if (err != MTPNDD_SUCCESS) {
-            FREE_MTPNDD_VARS_WITH_NODES(bit_width);
-            MTPNDD_RETURN_ERROR(err);
-        }
-        new_field->mtpndd_not_vars[i] = node_not;
+
+        g_mtpndd_config.field_info[field_id] = new_field;
     }
 
-    g_mtpndd_config.field_info[g_mtpndd_config.field_count] = new_field;
-
+    g_mtpndd_config.fields_generated = true;
     return MTPNDD_SUCCESS;
 }
+
 
 /********************************
  * MTPNDD get node
@@ -577,6 +609,21 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     }
     g_mtpndd_config.node_tables_by_field = (mtpndd_nodetable_t **)aligned_nt;
     memset(g_mtpndd_config.node_tables_by_field, 0, sizeof(mtpndd_nodetable_t *) * DEFAULT_FIELD_CAPACITY);
+    g_mtpndd_config.pending_field_capacity = DEFAULT_FIELD_CAPACITY;
+    g_mtpndd_config.pending_field_bit_widths = (uint32_t *)calloc(
+            DEFAULT_FIELD_CAPACITY, sizeof(uint32_t));
+    if (!g_mtpndd_config.pending_field_bit_widths) {
+        free(g_mtpndd_config.field_info);
+        g_mtpndd_config.field_info = NULL;
+        free(g_mtpndd_config.node_tables_by_field);
+        g_mtpndd_config.node_tables_by_field = NULL;
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+    }
+    g_mtpndd_config.pending_field_count = 0;
+    g_mtpndd_config.fields_generated = false;
+    g_mtpndd_config.max_bit_width = 0;
+    g_mtpndd_config.shared_bdd_vars = NULL;
+    g_mtpndd_config.shared_bdd_not_vars = NULL;
 
     if (!mtpndd_lace_init()) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_PARALLEL_INIT);
@@ -623,7 +670,7 @@ static void mtpndd_gc_hook_sylvan_pre(WorkerP *worker, Task *task) {
     (void)worker;
     (void)task;
 
-    // 在 Sylvan GC 前先触发 MTPNDD GC
+    // MTPNDD GC before Sylvan GC
     mtpndd_gc_before_sylvan();
 
     size_t refs = sylvan_count_refs();
@@ -667,7 +714,7 @@ mtpndd_error_t mtpndd_quit() {
     for (uint32_t i = 1; i <= g_mtpndd_config.field_count; i++) {
         mtpndd_field_info_t *field = g_mtpndd_config.field_info[i];
         if (field) {
-            mtpndd_field_info_teardown(field);
+            mtpndd_field_info_free(field);
             free(field);
             g_mtpndd_config.field_info[i] = NULL;
         }
@@ -682,6 +729,31 @@ mtpndd_error_t mtpndd_quit() {
     g_mtpndd_config.node_tables_by_field = NULL;
     g_mtpndd_config.field_count = 0;
     g_mtpndd_config.field_capacity = 0;
+
+    // Unprotect and free shared BDD variables
+    if (g_mtpndd_config.shared_bdd_vars) {
+        for (uint32_t i = 0; i < g_mtpndd_config.max_bit_width; ++i) {
+            sylvan_unprotect(g_mtpndd_config.shared_bdd_vars + i);
+        }
+        free(g_mtpndd_config.shared_bdd_vars);
+        g_mtpndd_config.shared_bdd_vars = NULL;
+    }
+    if (g_mtpndd_config.shared_bdd_not_vars) {
+        for (uint32_t i = 0; i < g_mtpndd_config.max_bit_width; ++i) {
+            sylvan_unprotect(g_mtpndd_config.shared_bdd_not_vars + i);
+        }
+        free(g_mtpndd_config.shared_bdd_not_vars);
+        g_mtpndd_config.shared_bdd_not_vars = NULL;
+    }
+    g_mtpndd_config.max_bit_width = 0;
+
+    if (g_mtpndd_config.pending_field_bit_widths) {
+        free(g_mtpndd_config.pending_field_bit_widths);
+        g_mtpndd_config.pending_field_bit_widths = NULL;
+    }
+    g_mtpndd_config.pending_field_count = 0;
+    g_mtpndd_config.pending_field_capacity = 0;
+    g_mtpndd_config.fields_generated = false;
 
     mtpndd_op_cache_destroy();
     mtpndd_memory_pools_shutdown();

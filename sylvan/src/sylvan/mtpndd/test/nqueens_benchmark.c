@@ -154,6 +154,9 @@ static bool declare_fields(size_t n) {
             return false;
         }
     }
+    if (mtpndd_generate_fields() != MTPNDD_SUCCESS) {
+        return false;
+    }
     return true;
 }
 

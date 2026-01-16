@@ -144,6 +144,9 @@ static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
         }
         ctx->field_ids[row] = (uint32_t)(row + 1);
     }
+    if (mtpndd_generate_fields() != MTPNDD_SUCCESS) {
+        return false;
+    }
     return true;
 }
 

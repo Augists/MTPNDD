@@ -33,25 +33,18 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
 static _Atomic bool g_mtpndd_gc_running = false;
 
 void mtpndd_gc_before_sylvan(void) {
-    if (!mtpndd_is_initialized()) {
-        return;
-    }
-
-    // 原子操作检查和设置标志（防止循环调用）
     bool expected = false;
     if (!atomic_compare_exchange_strong(&g_mtpndd_gc_running, &expected, true)) {
-        // 已经在运行中，直接返回
+        // avoid gc loop
         return;
     }
 
     gc_internal();
 
-    // 清除操作缓存（GC 后节点可能被回收，缓存失效）
     mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
     mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
     mtpndd_op_cache_clear(g_mtpndd_config.not_cache);
 
-    // 原子操作清除标志
     atomic_store(&g_mtpndd_gc_running, false);
 }
 
