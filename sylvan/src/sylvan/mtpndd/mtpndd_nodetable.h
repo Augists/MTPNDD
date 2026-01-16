@@ -154,4 +154,7 @@ mtpndd_error_t mtpndd_unprotect(mtpndd_t *node);
 // create or reuse node
 void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result);
 
+// Run MTPNDD GC before Sylvan GC (called from Sylvan GC pre-hook).
+void mtpndd_gc_before_sylvan(void);
+
 #endif // MTPNDD_NODETABLE_H

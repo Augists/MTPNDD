@@ -30,6 +30,31 @@ static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count);
 static size_t mtpndd_gc_sweep(void);
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node);
 
+static _Atomic bool g_mtpndd_gc_running = false;
+
+void mtpndd_gc_before_sylvan(void) {
+    if (!mtpndd_is_initialized()) {
+        return;
+    }
+
+    // 原子操作检查和设置标志（防止循环调用）
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&g_mtpndd_gc_running, &expected, true)) {
+        // 已经在运行中，直接返回
+        return;
+    }
+
+    gc_internal();
+
+    // 清除操作缓存（GC 后节点可能被回收，缓存失效）
+    mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.not_cache);
+
+    // 原子操作清除标志
+    atomic_store(&g_mtpndd_gc_running, false);
+}
+
 
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));
@@ -365,7 +390,8 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         if (bucket_had_entries) {
             MTPNDD_STAT_ADD(nodetable_collision_total, 1);
         }
-        MTPNDD_STAT_ADD(nodes_reused_total, 1);
+        // 删除这里的 reused 统计，避免重复计数（已在 find_node_in_nodetable 中统计）
+        // MTPNDD_STAT_ADD(nodes_reused_total, 1);
         MTPNDD_MK_FINISH();
 #endif
         *result = existing_node;
@@ -409,7 +435,7 @@ static void gcOrGrow(void) {
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size,
             g_mtpndd_pal_config.quick_growth_threshold);
     fflush(stdout);
-    mtpndd_gc_run_prehooks();
+    // ← 删除这里的 prehooks 调用（移到 gc_internal() 中）
     mtpndd_log_memory_pools("pre-gc");
 #endif
 
@@ -418,6 +444,9 @@ static void gcOrGrow(void) {
         lace_suspend();
         suspended_workers = true;
     }
+
+    // 设置 GC 运行标志（原子操作）
+    atomic_store(&g_mtpndd_gc_running, true);
 
     gc_internal();
 
@@ -444,8 +473,11 @@ static void gcOrGrow(void) {
 
     sylvan_gc();
 
+    // 清除 GC 运行标志（原子操作）
+    atomic_store(&g_mtpndd_gc_running, false);
+
 #ifdef ENABLE_RECORDING
-    mtpndd_gc_run_posthooks();
+    // ← 删除这里的 posthooks 调用（移到 gc_internal() 中）
     mtpndd_log_memory_pools("post-gc");
     fprintf(stdout,
             "[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
@@ -472,11 +504,13 @@ static void gc_internal(void) {
 
     if (reclaimed > 0) {
         __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
-        
+
 #ifdef ENABLE_RECORDING
         MTPNDD_STAT_SET(nodes_collected_last, reclaimed);
 #endif
     }
+
+    mtpndd_gc_run_posthooks();
 }
 
 static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
