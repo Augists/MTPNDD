@@ -45,6 +45,7 @@ public final class NQueensMTPNDD {
             for (int i = 0; i < n; i++) {
                 fieldIds[i] = MTPNDDEngine.declareField(bitWidth);
             }
+            MTPNDDEngine.generateFields();
             timings.mark("declare");
 
             MTPNDD[][] positiveBits = new MTPNDD[n][bitWidth];
@@ -123,6 +124,7 @@ public final class NQueensMTPNDD {
             for (int i = 0; i < n; i++) {
                 fieldIds[i] = MTPNDDEngine.declareField(n);
             }
+            MTPNDDEngine.generateFields();
             timings.mark("declare");
 
             MTPNDD[][] vars = new MTPNDD[n][n];

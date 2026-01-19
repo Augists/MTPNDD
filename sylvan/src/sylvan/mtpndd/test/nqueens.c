@@ -155,12 +155,20 @@ static bool nqueens_ctx_init(nqueens_ctx_t *ctx, size_t size) {
     ctx->size = size;
     ctx->field_ids = (uint32_t *)calloc(size, sizeof(uint32_t));
     if (!ctx->field_ids) return false;
+
+    // Phase 1: Declare all fields
     for (size_t row = 0; row < size; ++row) {
         if (mtpndd_declare_field((uint32_t)size) != MTPNDD_SUCCESS) {
             return false;
         }
         ctx->field_ids[row] = (uint32_t)(row + 1);
     }
+
+    // Phase 2: Generate fields with shared BDD variables
+    if (mtpndd_generate_fields() != MTPNDD_SUCCESS) {
+        return false;
+    }
+
     return true;
 }
 

@@ -243,6 +243,16 @@ typedef struct mtpndd_config_s {
     uint32_t field_capacity;
     mtpndd_field_info_t **field_info;
 
+    // Two-phase field generation state
+    uint32_t pending_field_count;       // Number of declared but not generated fields
+    uint32_t pending_field_capacity;    // Capacity of pending array
+    uint32_t *pending_field_bit_widths; // Array storing bit widths
+    uint32_t max_bit_width;             // Maximum bit width across all fields
+    uint32_t total_bdd_vars;            // Total BDD variables allocated
+    bool fields_generated;              // Flag: have fields been generated?
+    mtpndd_bdd_t *shared_bdd_vars;      // Shared BDD variables [0..total_bdd_vars-1]
+    mtpndd_bdd_t *shared_bdd_not_vars;  // Shared negated BDD variables
+
     mtpndd_op_cache_t *and_cache;
     mtpndd_op_cache_t *or_cache;
     mtpndd_op_cache_t *not_cache;
@@ -255,8 +265,13 @@ extern mtpndd_config_t g_mtpndd_config;
 /********************************
  * MTPNDD field management
  ********************************/
-// only append field
+// Two-phase initialization:
+// 1. Declare all fields (collects bit_width info)
 mtpndd_error_t mtpndd_declare_field(uint32_t bit_width);
+
+// 2. Generate fields (creates shared BDD vars + MTPNDD nodes)
+mtpndd_error_t mtpndd_generate_fields(void);
+
 mtpndd_field_info_t* mtpndd_get_field_info(uint32_t field_id);
 
 /********************************

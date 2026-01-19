@@ -70,6 +70,8 @@ class MTPNDDTest {
     void basicApiFlow() {
         int fieldId = MTPNDDEngine.declareField(1);
         assertEquals(1, fieldId);
+        MTPNDDEngine.generateFields();
+
         MTPNDDFieldInfo info = MTPNDDEngine.getFieldInfo(fieldId);
         assertNotNull(info);
         assertEquals(1, info.bitWidth());

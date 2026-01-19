@@ -62,6 +62,10 @@ public final class MTPNDDEngine {
         return declareFieldNative(bitWidth);
     }
 
+    public static synchronized void generateFields() {
+        generateFieldsNative();
+    }
+
     public static synchronized MTPNDDFieldInfo getFieldInfo(int fieldId) {
         return getFieldInfoNative(fieldId);
     }
@@ -207,6 +211,8 @@ public final class MTPNDDEngine {
     private static native boolean isInitializedNative();
 
     private static native int declareFieldNative(int bitWidth);
+
+    private static native void generateFieldsNative();
 
     private static native MTPNDDFieldInfo getFieldInfoNative(int fieldId);
 

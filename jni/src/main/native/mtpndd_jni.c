@@ -133,7 +133,17 @@ Java_org_ants_mtpndd_MTPNDDEngine_declareFieldNative(JNIEnv *env, jclass clazz, 
         mtpndd_throw_error(env, err);
         return 0;
     }
-    return (jint)g_mtpndd_config.field_count;
+    return (jint)g_mtpndd_config.pending_field_count;
+}
+
+JNIEXPORT void JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_generateFieldsNative(JNIEnv *env, jclass clazz)
+{
+    (void)clazz;
+    mtpndd_error_t err = mtpndd_generate_fields();
+    if (err != MTPNDD_SUCCESS) {
+        mtpndd_throw_last_error(env);
+    }
 }
 
 JNIEXPORT jobject JNICALL

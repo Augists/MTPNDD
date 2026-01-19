@@ -65,6 +65,7 @@ public final class ManualNativeCheck {
 
         try {
             int fieldId = MTPNDDEngine.declareField(1);
+            MTPNDDEngine.generateFields();
             MTPNDD var = MTPNDD.getVar(fieldId, 0);
             MTPNDD notVar = MTPNDD.getNotVar(fieldId, 0);
             MTPNDD andResult = var.and(var);
