@@ -8,10 +8,34 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "sylvan.h"
+#include "mtpndd_operation_cache.h"
 
 mtpndd_nodetable_t g_mtpndd_nodetable = {0};
+
+// Atomic flag to prevent GC recursion
+static _Atomic bool g_mtpndd_gc_running = false;
+
+void mtpndd_gc_before_sylvan(WorkerP *worker, Task *task) {
+    // Unused parameters (required by Sylvan GC hook signature)
+    (void)worker;
+    (void)task;
+
+    // Use atomic CAS to prevent recursive GC calls
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&g_mtpndd_gc_running, &expected, true)) {
+        return;  // Another GC already running
+    }
+
+    // Clear MTPNDD operation caches
+    mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
+    mtpndd_op_cache_clear(g_mtpndd_config.not_cache);
+
+    atomic_store(&g_mtpndd_gc_running, false);
+}
 
 // Cache-line-aware probing (Sylvan-style): probe all slots in the current cache line first,
 // then jump to the next cache line using a key-dependent step.

@@ -12,6 +12,7 @@
 #include "mtpndd_common.h"
 #include "mtpndd_edge_array_pool.h"
 #include "mtpndd_edge_builder.h"
+#include "lace.h"
 
 typedef struct mtpndd_node_record_s {
     uint32_t field_id;
@@ -100,5 +101,11 @@ static inline bool mtpndd_node_is_valid(mtpndd_t idx) {
 static inline mtpndd_edge_record_t mtpndd_edge_at(uint32_t edge_idx) {
     return g_mtpndd_nodetable.edge_pool.data[edge_idx];
 }
+
+/**
+ * MTPNDD GC hook called by Sylvan before its GC.
+ * Clears MTPNDD operation caches to prevent stale node references.
+ */
+void mtpndd_gc_before_sylvan(WorkerP *worker, Task *task);
 
 #endif // MTPNDD_NODETABLE_H
