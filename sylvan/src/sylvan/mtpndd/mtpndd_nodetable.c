@@ -436,7 +436,6 @@ size_t mtpndd_nodetable_collect_garbage(mtpndd_nodetable_t *table) {
         const mtpndd_node_record_t *node = &table->data[(size_t)idx];
         if (node->edge_num == 0) continue; // already free
         if (node->ref_count != 0) continue;
-        if (mtpndd_gc_protect_contains(idx)) continue;
         stack_len++;
         if (stack_len > stack_cap) {
             size_t new_cap = stack_cap ? (stack_cap * 2) : 1024;
@@ -460,7 +459,6 @@ size_t mtpndd_nodetable_collect_garbage(mtpndd_nodetable_t *table) {
         if (node->edge_num == 0) continue;
         if (node->ref_count != 0) continue;
         if (node->ref_count == MTPNDD_REFCOUNT_PROTECTED) continue;
-        if (mtpndd_gc_protect_contains(idx)) continue;
 
         uint32_t base = node->edge_array_idx;
         uint32_t edge_num = node->edge_num;
@@ -475,7 +473,7 @@ size_t mtpndd_nodetable_collect_garbage(mtpndd_nodetable_t *table) {
                 mtpndd_node_record_t *child = &table->data[(size_t)e.child];
                 if (child->ref_count != MTPNDD_REFCOUNT_PROTECTED && child->ref_count > 0) {
                     child->ref_count -= 1;
-                    if (child->ref_count == 0 && child->edge_num != 0 && !mtpndd_gc_protect_contains(e.child)) {
+                    if (child->ref_count == 0 && child->edge_num != 0) {
                         stack_len++;
                         if (stack_len > stack_cap) {
                             size_t new_cap = stack_cap ? (stack_cap * 2) : 1024;

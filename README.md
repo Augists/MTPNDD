@@ -2,21 +2,16 @@
 
 使用 C 语言重构 NDD，并实现并行和多终端节点需求
 
-> 分支说明
->
->
->
-> ndd: 原始 ndd 修改 guava 依赖
->
-> feature/sylvan: java 改 单例模式 JSylvan 串行
->
-> feature/lockmap: java JSylvan parallelStream 并行（失败）
->
-> feature/c: hashmap 并行
->
-> feature/serial: hashmap 串行
->
-> feature/index: array 串行
+## 分支说明
+
+| 分支 | 实现方式 | 状态 | 说明 |
+|------|---------|------|------|
+| `ndd` | Java | 历史版本 | 原始 NDD，修改 guava 依赖 |
+| `feature/sylvan` | Java + Sylvan | 历史版本 | 单例模式 JSylvan 串行实现 |
+| `feature/lockmap` | Java | 已废弃 | JSylvan parallelStream 并行（失败） |
+| `feature/c` | C | 历史版本 | hashmap 并行实现 |
+| `feature/serial` | C | 历史版本 | hashmap 串行实现 |
+| `feature/index` | C | **当前主分支** | idx-based array 实现（性能最优） |
 
 ## Architecture
 
@@ -40,20 +35,53 @@ brew install sphinx-doc
 ```
 </details>
 
+### 编译选项
+
+MTPNDD 提供多个 CMake 编译选项来控制功能和性能：
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `MTPNDD_ENABLE_RECORDING` | `OFF` | 启用性能统计（节点数、缓存命中率、时间等） |
+| `MTPNDD_ENABLE_EDGE_STATS_FILE` | `OFF` | 启用边统计文件输出到 txt 文件（需要 RECORDING=ON）<br>**模块化设计**：禁用时零开销 |
+| `MTPNDD_NQUEENS_ENABLE_DOT` | `OFF` | N-Queens 测试生成 DOT 图形（按需启用） |
+
+**边统计模块**（`mtpndd_edge_stats.c/h`）：
+- 独立的文件 I/O 模块，记录 AND/OR/DIFF 操作的输入边数
+- 通过 `mtpndd_edge_stats_open()/close()` 控制文件输出
+- 禁用时编译为零成本 no-op 函数，不影响性能
+
+**配置示例**:
+
+```bash
+# 生产环境（最佳性能，无统计）
+cmake -B build
+
+# 开发调试（启用统计，控制台输出）
+cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+
+# 深度分析（统计 + 文件输出）
+cmake -B build -DMTPNDD_ENABLE_RECORDING=ON -DMTPNDD_ENABLE_EDGE_STATS_FILE=ON
+
+# 可视化调试（生成 DOT 图形）
+cmake -B build -DMTPNDD_NQUEENS_ENABLE_DOT=ON
+```
+
 ### MTPNDD with Sylvan and Lace
 
 ```bash
 cd sylvan
-cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake -B build
 cmake --build build     # 生成 libsylvan.a、libmtpndd.a 等
 ./build/src/sylvan/mtpndd/mtpndd_nqueens_test 8
+
+# 需要性能统计时添加 -DMTPNDD_ENABLE_RECORDING=ON
 ```
 
 ### JNI
 
 ```bash
 cd jni
-cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake -B build
 cmake --build build     # 得到 build/libmtpnddjni.so
 
 mvn -DskipTests package # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar
@@ -61,9 +89,9 @@ mvn -Dorg.ants.mtpndd.library.path="$PWD/build/libmtpnddjni.so" test
 java -Dorg.ants.mtpndd.library.path=$PWD/build/libmtpnddjni.so -cp target/mtpndd-java-0.1.0-SNAPSHOT.jar:target/test-classes org.ants.mtpndd.NQueensMTPNDD 8 onehot
 ```
 
-### Configuration（feature/index：idx-based）
+### 运行时配置参数
 
-`feature/index` 分支中，MTPNDD 节点改为 `idx` 表示（`mtpndd_t = uint64_t`），边集改为连续数组（`edge_array_pool`），不再使用“节点边集 hashmap / slab memory pool”结构。配置项更偏向于：初始容量（hint）+ 缓存大小。
+MTPNDD 采用 idx-based 设计（`mtpndd_t = uint64_t`），边集使用连续数组（`edge_array_pool`）存储。配置参数主要包括：初始容量（hint）和缓存大小。
 
 ```c
 mtpndd_pal_config_t config = {
@@ -88,10 +116,9 @@ mtpndd_pal_config_t config = {
 mtpndd_init(&config);
 ```
 
-补充：
+**补充说明**：
 - `mtpndd_gc_collect()` 会清理算子缓存并回收 `ref_count==0` 的节点；当 `edge_array_pool` 碎片比例高时，会在 GC 中进行 compact（整块重建以释放碎片，思路类似 Sylvan 的 stop-the-world GC）。
 - nodetable 的 `hash[]` slot 采用 Sylvan-style packed：`[hash:24 | idx:40]`（hash 不同可直接跳过边集比较）。
-- `edge_bucket_count/node_slab_capacity/nodetable_entry_slab_capacity/edge_map_slab_capacity/gc_protect_entry_slab_capacity` 等字段在 `feature/index` 中属于历史遗留/暂未使用（后续会逐步清理或重新命名）。
 
 ## Documentation and Tools
 
@@ -132,11 +159,6 @@ mtpndd_init(&config);
 详细使用方法参见 `tools/README.md`
 
 ## Visualization
-
-设计/内存图（见 `docs/`，可用 `dot -Tpng *.dot -o *.png` 重新生成）：
-- `docs/mtpndd_architecture_zh.png`（模块架构）
-- `docs/mtpndd_memory_design_zh.png`（核心内存布局）
-- `docs/mtpndd_mk_flow_zh.png`（`mtpndd_mk` 唯一化流程）
 
 调用 `mtpndd_print_dot(root)` 或 `mtpndd_fprint_dot(file, root)` 可以把当前节点为根的 NDD 导出为 DOT 描述。例如：
 

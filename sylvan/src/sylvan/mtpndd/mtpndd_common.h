@@ -13,11 +13,12 @@
 
 #ifdef ENABLE_RECORDING
 #include <time.h>
+#include <stdio.h>
+#include "mtpndd_edge_stats.h"
 #endif
 
 struct mtpndd_nodetable_s;
 struct mtpndd_op_cache_s;
-struct mtpndd_gc_protect_s;
 
 // MTPNDD node identifier (index into nodetable data array)
 typedef uint64_t mtpndd_t;
@@ -26,7 +27,6 @@ typedef uint64_t mtpndd_bdd_t;
 
 typedef struct mtpndd_nodetable_s mtpndd_nodetable_t;
 typedef struct mtpndd_op_cache_s mtpndd_op_cache_t;
-typedef struct mtpndd_gc_protect_s mtpndd_gc_protect_t;
 
 static const mtpndd_t MTPNDD_FALSE = 0;
 static const mtpndd_t MTPNDD_TRUE = 1;
@@ -91,18 +91,11 @@ void mtpndd_clear_error();
  ********************************/
 #ifdef LARGE_NODETABLE
 #define MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT 65537
-#define MTPNDD_DEFAULT_GC_BUCKET_COUNT 65537
 #else
 #define MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT 1024
-#define MTPNDD_DEFAULT_GC_BUCKET_COUNT 1024
 #endif
 
-#define MTPNDD_DEFAULT_EDGE_BUCKET_COUNT 8
-#define MTPNDD_DEFAULT_NODE_SLAB_CAPACITY 1024
 #define MTPNDD_DEFAULT_EDGE_ENTRY_SLAB_CAPACITY 4096
-#define MTPNDD_DEFAULT_NODETABLE_ENTRY_SLAB_CAPACITY 2048
-#define MTPNDD_DEFAULT_EDGE_MAP_SLAB_CAPACITY 2048
-#define MTPNDD_DEFAULT_GC_PROTECT_ENTRY_SLAB_CAPACITY 1024
 
 /********************************
  * Global config definitions
@@ -130,17 +123,11 @@ typedef struct mtpndd_pal_config_s {
     size_t op_cache_size;
     size_t mtpndd_op_cache_size;
     double quick_growth_threshold;
-    size_t edge_bucket_count;
     // nodetable_bucket_count: initial/min hash slot capacity (hash[])
     // nodetable_bucket_max_count: maximum hash slot capacity (hash[])
     size_t nodetable_bucket_count;
     size_t nodetable_bucket_max_count;
-    size_t gc_bucket_count;
-    size_t node_slab_capacity;
     size_t edge_entry_slab_capacity;
-    size_t nodetable_entry_slab_capacity;
-    size_t edge_map_slab_capacity;
-    size_t gc_protect_entry_slab_capacity;
 } mtpndd_pal_config_t;
 
 extern mtpndd_pal_config_t g_mtpndd_pal_config;
@@ -176,6 +163,12 @@ typedef struct mtpndd_stats_s {
     uint64_t edge_map_pool_acquire_total;
     uint64_t edge_map_pool_release_total;
     uint64_t edge_map_pool_slab_total;
+    uint64_t and_input_edges_total;      // Total edges from AND operation inputs
+    uint64_t and_call_count;             // Number of AND operations
+    uint64_t or_input_edges_total;       // Total edges from OR operation inputs
+    uint64_t or_call_count;              // Number of OR operations
+    uint64_t diff_input_edges_total;     // Total edges from DIFF operation inputs
+    uint64_t diff_call_count;            // Number of DIFF operations
 } mtpndd_stats_t;
 
 extern mtpndd_stats_t g_mtpndd_stats;
@@ -212,6 +205,7 @@ static inline uint64_t mtpndd_timespec_diff_ns(const struct timespec *start_ts, 
         clock_gettime(CLOCK_MONOTONIC, &_mtpndd_time_end); \
         MTPNDD_STAT_ADD(field, mtpndd_timespec_diff_ns(&(start_var), &_mtpndd_time_end)); \
     } while(0)
+
 #else
 #define MTPNDD_STAT_ADD(field, value) ((void)0)
 #define MTPNDD_STAT_SET(field, value) ((void)0)
@@ -256,8 +250,6 @@ typedef struct mtpndd_config_s {
     mtpndd_op_cache_t *and_cache;
     mtpndd_op_cache_t *or_cache;
     mtpndd_op_cache_t *not_cache;
-
-    mtpndd_gc_protect_t *gcProtect;
 } mtpndd_config_t;
 
 extern mtpndd_config_t g_mtpndd_config;
@@ -303,29 +295,13 @@ void mtpndd_gc_run_prehooks(void);
 void mtpndd_gc_run_posthooks(void);
 
 /********************************
- * GC protection hash set
- ********************************/
-// Serial GC-protect set for keeping intermediate nodes alive across GC.
-struct mtpndd_gc_protect_s {
-    mtpndd_t *slots;    // open addressing, 0 means empty; stores (node_idx+1)
-    size_t capacity;    // power of two
-    size_t mask;
-    size_t count;
-};
-
-void mtpndd_gc_protect_clear(void);
-void mtpndd_gc_protect_add(mtpndd_t node);
-void mtpndd_gc_protect_remove(mtpndd_t node);
-bool mtpndd_gc_protect_contains(mtpndd_t node);
-
-/********************************
  * Garbage collection
  ********************************/
 /**
  * Stop-the-world GC for the serial MTPNDD runtime.
  *
  * - Clears operation caches (to avoid stale idx after node reclamation).
- * - Reclaims nodes whose `ref_count==0` and are not protected (incl. field vars) and not in gcProtect.
+ * - Reclaims nodes whose `ref_count==0` and are not protected (incl. field vars).
  * - Optionally compacts edge_array_pool when fragmentation is high.
  *
  * Returns number of reclaimed nodes (0 on no-op / failure).

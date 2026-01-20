@@ -28,7 +28,6 @@ mtpndd_config_t g_mtpndd_config = {
     .and_cache = NULL,
     .or_cache = NULL,
     .not_cache = NULL,
-    .gcProtect = NULL,
 };
 
 static bool g_mtpndd_initialized = false;
@@ -137,29 +136,11 @@ static void mtpndd_apply_pal_config_defaults(void) {
         g_mtpndd_pal_config.sylvan_granularity = 1;
     }
 
-    if (g_mtpndd_pal_config.edge_bucket_count == 0) {
-        g_mtpndd_pal_config.edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
-    }
     if (g_mtpndd_pal_config.nodetable_bucket_count == 0) {
         g_mtpndd_pal_config.nodetable_bucket_count = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
-    if (g_mtpndd_pal_config.gc_bucket_count == 0) {
-        g_mtpndd_pal_config.gc_bucket_count = MTPNDD_DEFAULT_GC_BUCKET_COUNT;
-    }
-    if (g_mtpndd_pal_config.node_slab_capacity == 0) {
-        g_mtpndd_pal_config.node_slab_capacity = MTPNDD_DEFAULT_NODE_SLAB_CAPACITY;
-    }
     if (g_mtpndd_pal_config.edge_entry_slab_capacity == 0) {
         g_mtpndd_pal_config.edge_entry_slab_capacity = MTPNDD_DEFAULT_EDGE_ENTRY_SLAB_CAPACITY;
-    }
-    if (g_mtpndd_pal_config.nodetable_entry_slab_capacity == 0) {
-        g_mtpndd_pal_config.nodetable_entry_slab_capacity = MTPNDD_DEFAULT_NODETABLE_ENTRY_SLAB_CAPACITY;
-    }
-    if (g_mtpndd_pal_config.edge_map_slab_capacity == 0) {
-        g_mtpndd_pal_config.edge_map_slab_capacity = MTPNDD_DEFAULT_EDGE_MAP_SLAB_CAPACITY;
-    }
-    if (g_mtpndd_pal_config.gc_protect_entry_slab_capacity == 0) {
-        g_mtpndd_pal_config.gc_protect_entry_slab_capacity = MTPNDD_DEFAULT_GC_PROTECT_ENTRY_SLAB_CAPACITY;
     }
     if (g_mtpndd_pal_config.quick_growth_threshold <= 0.0) {
         g_mtpndd_pal_config.quick_growth_threshold = DEFAULT_QUICK_GROWTH_THRESHOLD;
@@ -489,131 +470,6 @@ bool mtpndd_is_initialized(void) {
 }
 
 /********************************
- * gcProtect implementation (serial)
- ********************************/
-static size_t mtpndd_gc_protect_next_pow2(size_t v) {
-    if (v == 0) return 1;
-    v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    if (sizeof(size_t) == 8) v |= v >> 32;
-    return v + 1;
-}
-
-static bool mtpndd_gc_protect_grow(mtpndd_gc_protect_t *set) {
-    size_t new_capacity = set->capacity ? set->capacity * 2 : 1024;
-    new_capacity = mtpndd_gc_protect_next_pow2(new_capacity);
-    mtpndd_t *new_slots = (mtpndd_t *)calloc(new_capacity, sizeof(mtpndd_t));
-    if (!new_slots) {
-        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-        return false;
-    }
-    size_t new_mask = new_capacity - 1;
-    for (size_t i = 0; i < set->capacity; ++i) {
-        mtpndd_t stored = set->slots[i];
-        if (stored == 0) continue;
-        size_t h = mtpndd_hash_u64(stored) & new_mask;
-        while (new_slots[h] != 0) {
-            h = (h + 1) & new_mask;
-        }
-        new_slots[h] = stored;
-    }
-    free(set->slots);
-    set->slots = new_slots;
-    set->capacity = new_capacity;
-    set->mask = new_mask;
-    return true;
-}
-
-void mtpndd_gc_protect_clear(void) {
-    if (!g_mtpndd_config.gcProtect || !g_mtpndd_config.gcProtect->slots) {
-        return;
-    }
-    memset(g_mtpndd_config.gcProtect->slots, 0, g_mtpndd_config.gcProtect->capacity * sizeof(mtpndd_t));
-    g_mtpndd_config.gcProtect->count = 0;
-}
-
-void mtpndd_gc_protect_add(mtpndd_t node) {
-    if (!mtpndd_is_initialized() || node < 2) {
-        return;
-    }
-    mtpndd_gc_protect_t *set = g_mtpndd_config.gcProtect;
-    if (!set || !set->slots || set->capacity == 0) {
-        return;
-    }
-    if ((set->count + 1) * 10 >= set->capacity * 7) {
-        (void)mtpndd_gc_protect_grow(set);
-    }
-    mtpndd_t stored = node + 1; // store+1, 0 means empty
-    size_t h = mtpndd_hash_u64(stored) & set->mask;
-    while (set->slots[h] != 0) {
-        if (set->slots[h] == stored) {
-            return;
-        }
-        h = (h + 1) & set->mask;
-    }
-    set->slots[h] = stored;
-    set->count++;
-}
-
-bool mtpndd_gc_protect_contains(mtpndd_t node) {
-    if (!mtpndd_is_initialized() || node < 2) {
-        return false;
-    }
-    mtpndd_gc_protect_t *set = g_mtpndd_config.gcProtect;
-    if (!set || !set->slots || set->capacity == 0) {
-        return false;
-    }
-    mtpndd_t stored = node + 1;
-    size_t h = mtpndd_hash_u64(stored) & set->mask;
-    while (set->slots[h] != 0) {
-        if (set->slots[h] == stored) {
-            return true;
-        }
-        h = (h + 1) & set->mask;
-    }
-    return false;
-}
-
-void mtpndd_gc_protect_remove(mtpndd_t node) {
-    if (!mtpndd_is_initialized() || node < 2) {
-        return;
-    }
-    mtpndd_gc_protect_t *set = g_mtpndd_config.gcProtect;
-    if (!set || !set->slots || set->capacity == 0) {
-        return;
-    }
-    mtpndd_t stored = node + 1;
-    size_t idx = mtpndd_hash_u64(stored) & set->mask;
-    while (set->slots[idx] != 0) {
-        if (set->slots[idx] == stored) {
-            set->slots[idx] = 0;
-            if (set->count > 0) set->count--;
-            // backshift deletion
-            size_t hole = idx;
-            size_t scan = (hole + 1) & set->mask;
-            while (set->slots[scan] != 0) {
-                mtpndd_t value = set->slots[scan];
-                size_t ideal = mtpndd_hash_u64(value) & set->mask;
-                size_t dist_ideal = (scan + set->capacity - ideal) & set->mask;
-                size_t dist_hole = (scan + set->capacity - hole) & set->mask;
-                if (dist_ideal >= dist_hole) {
-                    set->slots[hole] = value;
-                    set->slots[scan] = 0;
-                    hole = scan;
-                }
-                scan = (scan + 1) & set->mask;
-            }
-            return;
-        }
-        idx = (idx + 1) & set->mask;
-    }
-}
-
-/********************************
  * Stop-the-world GC (serial)
  ********************************/
 size_t mtpndd_gc_collect(void) {
@@ -722,25 +578,6 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
         MTPNDD_RETURN_ERROR(mtpndd_get_last_error().code ? mtpndd_get_last_error().code : MTPNDD_ERROR_OUT_OF_MEMORY);
     }
 
-    // gcProtect
-    g_mtpndd_config.gcProtect = (mtpndd_gc_protect_t *)calloc(1, sizeof(mtpndd_gc_protect_t));
-    if (!g_mtpndd_config.gcProtect) {
-        mtpndd_nodetable_destroy(&g_mtpndd_nodetable);
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    size_t gc_cap = g_mtpndd_pal_config.gc_bucket_count ? g_mtpndd_pal_config.gc_bucket_count : MTPNDD_DEFAULT_GC_BUCKET_COUNT;
-    gc_cap = mtpndd_gc_protect_next_pow2(gc_cap);
-    g_mtpndd_config.gcProtect->slots = (mtpndd_t *)calloc(gc_cap, sizeof(mtpndd_t));
-    if (!g_mtpndd_config.gcProtect->slots) {
-        free(g_mtpndd_config.gcProtect);
-        g_mtpndd_config.gcProtect = NULL;
-        mtpndd_nodetable_destroy(&g_mtpndd_nodetable);
-        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-    }
-    g_mtpndd_config.gcProtect->capacity = gc_cap;
-    g_mtpndd_config.gcProtect->mask = gc_cap - 1;
-    g_mtpndd_config.gcProtect->count = 0;
-
     g_mtpndd_initialized = true;
     return MTPNDD_SUCCESS;
 }
@@ -783,12 +620,6 @@ mtpndd_error_t mtpndd_quit(void) {
     free(g_mtpndd_config.pending_field_bit_widths);
     g_mtpndd_config.pending_field_bit_widths = NULL;
 
-    if (g_mtpndd_config.gcProtect) {
-        free(g_mtpndd_config.gcProtect->slots);
-        free(g_mtpndd_config.gcProtect);
-        g_mtpndd_config.gcProtect = NULL;
-    }
-
     mtpndd_op_cache_destroy();
     mtpndd_nodetable_destroy(&g_mtpndd_nodetable);
 
@@ -803,3 +634,4 @@ mtpndd_error_t mtpndd_quit(void) {
 
     return MTPNDD_SUCCESS;
 }
+

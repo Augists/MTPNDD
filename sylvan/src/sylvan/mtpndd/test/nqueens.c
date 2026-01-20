@@ -1,6 +1,7 @@
 #include "mtpndd.h"
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
+#include "mtpndd_edge_stats.h"
 
 #include <stdatomic.h>
 #include <sys/stat.h>
@@ -259,43 +260,23 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     size_t bdd_size = 1 << 19;
     size_t ndd_size = 1 << 21;
     size_t cache_size = 1 << 18;
-    size_t edge_bucket_count = 32;
-    size_t gc_bucket_count = 256;
-    size_t node_slab_capacity = 1024;
     size_t edge_entry_slab_capacity = 2048;
-    size_t nodetable_entry_slab_capacity = 1024;
-    size_t edge_map_slab_capacity = 512;
 
     if (size > 6 && size <= 8) {
         bdd_size = 1 << 20;
         ndd_size = 1 << 22;
         cache_size = 1 << 19;
-        edge_bucket_count = 64;
-        gc_bucket_count = 512;
-        node_slab_capacity = 1536;
         edge_entry_slab_capacity = 3072;
-        nodetable_entry_slab_capacity = 1536;
-        edge_map_slab_capacity = 768;
     } else if (size > 8 && size <= 10) {
         bdd_size = 1 << 21;
         ndd_size = 1 << 23;
         cache_size = 1 << 20;
-        edge_bucket_count = 160;
-        gc_bucket_count = 1024;
-        node_slab_capacity = 2048;
         edge_entry_slab_capacity = 4096;
-        nodetable_entry_slab_capacity = 2048;
-        edge_map_slab_capacity = 1024;
     } else if (size > 10) {
         bdd_size = 1 << 22;
         ndd_size = 1 << 24;
         cache_size = 1 << 21;
-        edge_bucket_count = 256;
-        gc_bucket_count = 2048;
-        node_slab_capacity = 3072;
         edge_entry_slab_capacity = 6144;
-        nodetable_entry_slab_capacity = 3072;
-        edge_map_slab_capacity = 1280;
     }
 
     size_t nodetable_bucket_count = ndd_size;
@@ -307,13 +288,8 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = cache_size,
         .quick_growth_threshold = 0.1,
-        .edge_bucket_count = edge_bucket_count,
         .nodetable_bucket_count = nodetable_bucket_count,
-        .gc_bucket_count = gc_bucket_count,
-        .node_slab_capacity = node_slab_capacity,
         .edge_entry_slab_capacity = edge_entry_slab_capacity,
-        .nodetable_entry_slab_capacity = nodetable_entry_slab_capacity,
-        .edge_map_slab_capacity = edge_map_slab_capacity,
     };
 
     struct timespec run_start = {0}, run_finish = {0}, init_finish = {0}, ctx_finish = {0};
@@ -324,6 +300,16 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
                 mtpndd_error_string(mtpndd_get_last_error().code));
         return false;
     }
+
+#ifdef ENABLE_RECORDING
+    // Open edge statistics files
+    char stats_dir[256];
+    snprintf(stats_dir, sizeof(stats_dir), "nqueens_edge_stats_N%zu", size);
+    mtpndd_edge_stats_open(stats_dir);
+    printf(".. edge statistics files opened in %s/\n", stats_dir);
+    fflush(stdout);
+#endif
+
     clock_gettime(CLOCK_MONOTONIC, &init_finish);
 
     if (!nqueens_ctx_init(&ctx, size)) {
@@ -413,6 +399,14 @@ cleanup:
         formula = MTPNDD_INVALID;
     }
     nqueens_ctx_destroy(&ctx);
+
+#ifdef ENABLE_RECORDING
+    // Close edge statistics files
+    mtpndd_edge_stats_close();
+    printf(".. edge statistics files closed\n");
+    fflush(stdout);
+#endif
+
     if (mtpndd_quit() != MTPNDD_SUCCESS) {
         fprintf(stderr, "mtpndd_quit reported an error for size %zu.\n", size);
         ok = false;
@@ -542,6 +536,18 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->nodes_created_total, stats->nodes_reused_total, stats->nodes_collected_last);
     printf(".. stats: max_edges_per_node=%" PRIu64 ", cache hits/misses=%" PRIu64 "/%" PRIu64 "\n",
            stats->max_edges_per_node, stats->cache_lookup_hits, stats->cache_lookup_misses);
+    printf(".. stats: AND operations=%" PRIu64 ", total input edges=%" PRIu64 " (avg=%.2f)\n",
+           stats->and_call_count,
+           stats->and_input_edges_total,
+           stats->and_call_count > 0 ? (double)stats->and_input_edges_total / stats->and_call_count : 0.0);
+    printf(".. stats: OR operations=%" PRIu64 ", total input edges=%" PRIu64 " (avg=%.2f)\n",
+           stats->or_call_count,
+           stats->or_input_edges_total,
+           stats->or_call_count > 0 ? (double)stats->or_input_edges_total / stats->or_call_count : 0.0);
+    printf(".. stats: DIFF operations=%" PRIu64 ", total input edges=%" PRIu64 " (avg=%.2f)\n",
+           stats->diff_call_count,
+           stats->diff_input_edges_total,
+           stats->diff_call_count > 0 ? (double)stats->diff_input_edges_total / stats->diff_call_count : 0.0);
 }
 
 #endif  // ENABLE_RECORDING

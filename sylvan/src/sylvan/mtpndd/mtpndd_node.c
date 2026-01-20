@@ -13,6 +13,7 @@
 #include <lace.h>
 #ifdef ENABLE_RECORDING
 #include <time.h>
+#include "mtpndd_edge_stats.h"
 #endif
 
 #include "mtpndd_edge_builder.h"
@@ -569,6 +570,15 @@ static mtpndd_t mtpndd_exist_rec(mtpndd_t a, uint32_t field, mtpndd_temp_ref_lis
  * Public wrappers
  ********************************/
 mtpndd_t mtpndd_and(mtpndd_t a, mtpndd_t b) {
+#ifdef ENABLE_RECORDING
+    // Count edges from input nodes (terminals have no edges)
+    uint64_t edges_a = (a >= 2) ? mtpndd_node_read(a).edge_num : 0;
+    uint64_t edges_b = (b >= 2) ? mtpndd_node_read(b).edge_num : 0;
+    MTPNDD_STAT_ADD(and_input_edges_total, edges_a + edges_b);
+    MTPNDD_STAT_ADD(and_call_count, 1);
+    mtpndd_edge_stats_write_and(edges_a, edges_b);
+#endif
+
     mtpndd_temp_ref_list_t temp_refs;
     mtpndd_temp_refs_init(&temp_refs);
     mtpndd_t result = mtpndd_and_rec(a, b, &temp_refs);
@@ -577,6 +587,15 @@ mtpndd_t mtpndd_and(mtpndd_t a, mtpndd_t b) {
 }
 
 mtpndd_t mtpndd_or(mtpndd_t a, mtpndd_t b) {
+#ifdef ENABLE_RECORDING
+    // Count edges from input nodes (terminals have no edges)
+    uint64_t edges_a = (a >= 2) ? mtpndd_node_read(a).edge_num : 0;
+    uint64_t edges_b = (b >= 2) ? mtpndd_node_read(b).edge_num : 0;
+    MTPNDD_STAT_ADD(or_input_edges_total, edges_a + edges_b);
+    MTPNDD_STAT_ADD(or_call_count, 1);
+    mtpndd_edge_stats_write_or(edges_a, edges_b);
+#endif
+
     mtpndd_temp_ref_list_t temp_refs;
     mtpndd_temp_refs_init(&temp_refs);
     mtpndd_t result = mtpndd_or_rec(a, b, &temp_refs);
@@ -593,6 +612,15 @@ mtpndd_t mtpndd_not(mtpndd_t a) {
 }
 
 mtpndd_t mtpndd_diff(mtpndd_t a, mtpndd_t b) {
+#ifdef ENABLE_RECORDING
+    // Count edges from input nodes (terminals have no edges)
+    uint64_t edges_a = (a >= 2) ? mtpndd_node_read(a).edge_num : 0;
+    uint64_t edges_b = (b >= 2) ? mtpndd_node_read(b).edge_num : 0;
+    MTPNDD_STAT_ADD(diff_input_edges_total, edges_a + edges_b);
+    MTPNDD_STAT_ADD(diff_call_count, 1);
+    mtpndd_edge_stats_write_diff(edges_a, edges_b);
+#endif
+
     mtpndd_temp_ref_list_t temp_refs;
     mtpndd_temp_refs_init(&temp_refs);
     mtpndd_t not_b = mtpndd_not_rec(b, &temp_refs);

@@ -395,23 +395,19 @@ static void fill_baseline_config(size_t n, mtpndd_pal_config_t *config) {
     size_t bdd_size = 1 << 19;
     size_t ndd_size = 1 << 21;
     size_t cache_size = 1 << 18;
-    size_t gc_bucket_count = 256;
 
     if (n > 6 && n <= 8) {
         bdd_size = 1 << 20;
         ndd_size = 1 << 22;
         cache_size = 1 << 19;
-        gc_bucket_count = 512;
     } else if (n > 8 && n <= 10) {
         bdd_size = 1 << 21;
         ndd_size = 1 << 23;
         cache_size = 1 << 20;
-        gc_bucket_count = 1024;
     } else if (n > 10) {
         bdd_size = 1 << 22;
         ndd_size = 1 << 24;
         cache_size = 1 << 21;
-        gc_bucket_count = 2048;
     }
 
     size_t nodetable_bucket_count = ndd_size;
@@ -424,7 +420,6 @@ static void fill_baseline_config(size_t n, mtpndd_pal_config_t *config) {
             .op_cache_size = cache_size,
             .quick_growth_threshold = 0.1,
             .nodetable_bucket_count = nodetable_bucket_count,
-            .gc_bucket_count = gc_bucket_count,
     };
 }
 
