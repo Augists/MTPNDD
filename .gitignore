@@ -51,3 +51,9 @@ reference/
 archive_unused/
 TASK*.md
 AGENT*.md
+!AGENTS.md
+task_plan.md
+findings.md
+progress.md
+perf.data
+perf.data.old

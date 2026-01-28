@@ -32,6 +32,35 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
 
 static _Atomic bool g_mtpndd_gc_running = false;
 
+static inline size_t mtpndd_nodetable_lock_index(const mtpndd_nodetable_t *table, uint64_t cached_hash) {
+    if (!table || !table->bucket_locks || table->bucket_lock_count == 0) return 0;
+    return (size_t)(cached_hash & (table->bucket_lock_count - 1));
+}
+
+static inline void mtpndd_nodetable_lock_hash(mtpndd_nodetable_t *table, uint64_t cached_hash) {
+    if (!table || !table->bucket_locks || table->bucket_lock_count == 0) return;
+    pthread_spin_lock(&table->bucket_locks[mtpndd_nodetable_lock_index(table, cached_hash)]);
+}
+
+static inline void mtpndd_nodetable_unlock_hash(mtpndd_nodetable_t *table, uint64_t cached_hash) {
+    if (!table || !table->bucket_locks || table->bucket_lock_count == 0) return;
+    pthread_spin_unlock(&table->bucket_locks[mtpndd_nodetable_lock_index(table, cached_hash)]);
+}
+
+static void mtpndd_nodetable_lock_all(mtpndd_nodetable_t *table) {
+    if (!table || !table->bucket_locks || table->bucket_lock_count == 0) return;
+    for (size_t i = 0; i < table->bucket_lock_count; ++i) {
+        pthread_spin_lock(&table->bucket_locks[i]);
+    }
+}
+
+static void mtpndd_nodetable_unlock_all(mtpndd_nodetable_t *table) {
+    if (!table || !table->bucket_locks || table->bucket_lock_count == 0) return;
+    for (size_t i = 0; i < table->bucket_lock_count; ++i) {
+        pthread_spin_unlock(&table->bucket_locks[i]);
+    }
+}
+
 void mtpndd_gc_before_sylvan(void) {
     bool expected = false;
     if (!atomic_compare_exchange_strong(&g_mtpndd_gc_running, &expected, true)) {
@@ -63,20 +92,58 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     bucket_cnt = mtpndd_round_up_pow2(bucket_cnt);
     table->nodetable_bucket_count = bucket_cnt;
 
+    // Shard bucket access: cap lock count to keep memory small but contention low.
+    size_t lock_cnt = bucket_cnt;
+    const size_t lock_cap = (size_t)1 << 12; // 4096
+    if (lock_cnt > lock_cap) lock_cnt = lock_cap;
+    if (lock_cnt < 16) lock_cnt = 16;
+    lock_cnt = mtpndd_round_up_pow2(lock_cnt);
+    table->bucket_lock_count = lock_cnt;
+    table->bucket_locks = (pthread_spinlock_t *)calloc(lock_cnt, sizeof(*table->bucket_locks));
+    if (!table->bucket_locks) {
+        free(table);
+        return NULL;
+    }
+    for (size_t i = 0; i < lock_cnt; ++i) {
+        pthread_spin_init(&table->bucket_locks[i], PTHREAD_PROCESS_PRIVATE);
+    }
+    pthread_mutex_init(&table->rehash_mutex, NULL);
+
     table->buckets =
             (mtpndd_nodetable_bucket_entry_t **)malloc(
                 bucket_cnt * sizeof(mtpndd_nodetable_bucket_entry_t *));
     if (!table->buckets) {
+        for (size_t i = 0; i < lock_cnt; ++i) pthread_spin_destroy(&table->bucket_locks[i]);
+        free((void *)table->bucket_locks);
+        pthread_mutex_destroy(&table->rehash_mutex);
         free(table);
         return NULL;
     }
     for (size_t i = 0; i < bucket_cnt; i++) {
         table->buckets[i] = NULL;
     }
-    table->entry_count = 0;
+    atomic_init(&table->entry_count, 0);
     table->load_threshold = bucket_cnt - (bucket_cnt >> 2);
 
     return table;
+}
+
+void mtpndd_nodetable_free(mtpndd_nodetable_t *table) {
+    if (!table) return;
+    if (table->buckets) {
+        free(table->buckets);
+        table->buckets = NULL;
+    }
+    if (table->bucket_locks) {
+        for (size_t i = 0; i < table->bucket_lock_count; ++i) {
+            pthread_spin_destroy(&table->bucket_locks[i]);
+        }
+        free((void *)table->bucket_locks);
+        table->bucket_locks = NULL;
+        table->bucket_lock_count = 0;
+    }
+    pthread_mutex_destroy(&table->rehash_mutex);
+    free(table);
 }
 
 mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge_t *edges) {
@@ -86,6 +153,8 @@ mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge
     struct timespec phase_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &phase_start);
 #endif
+    uint64_t cached_hash = edges ? edges->cached_hash : 0;
+    mtpndd_nodetable_lock_hash(nodetable, cached_hash);
     hash = NODETABLE_HASH_VAL(edges, nodetable);
 #ifdef ENABLE_RECORDING
     clock_gettime(CLOCK_MONOTONIC, &phase_end);
@@ -115,6 +184,7 @@ mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge
             break;
         }
     }
+    mtpndd_nodetable_unlock_hash(nodetable, cached_hash);
 
 #ifdef ENABLE_RECORDING
     clock_gettime(CLOCK_MONOTONIC, &phase_end);
@@ -336,7 +406,6 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     node->edges = edges;
     atomic_init(&node->ref_count, 0);
     // 4. insert into nodetable
-    size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
 #ifdef ENABLE_RECORDING
     MTPNDD_MK_SWITCH(MTPNDD_MK_ALLOC_ENTRY);
 #endif
@@ -351,6 +420,8 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     }
     new_entry->edges = edges;
     new_entry->node = node;
+    mtpndd_nodetable_lock_hash(nodetable, edges->cached_hash);
+    size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
     mtpndd_nodetable_bucket_entry_t *existing_entry = nodetable->buckets[hash];
 #ifdef ENABLE_RECORDING
     bool bucket_had_entries = existing_entry != NULL;
@@ -367,6 +438,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
 
     if (existing_entry) {
         mtpndd_node_t *existing_node = existing_entry->node;
+        mtpndd_nodetable_unlock_hash(nodetable, edges->cached_hash);
         mtpndd_memory_release_nodetable_entry(new_entry);
         mtpndd_memory_release_node(node);
 #ifdef ENABLE_RECORDING
@@ -400,7 +472,8 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         nodetable->buckets[hash]->prev = new_entry;
     }
     nodetable->buckets[hash] = new_entry;
-    nodetable->entry_count++;
+    atomic_fetch_add_explicit(&nodetable->entry_count, 1, memory_order_relaxed);
+    mtpndd_nodetable_unlock_hash(nodetable, edges->cached_hash);
     mtpndd_nodetable_maybe_rehash(nodetable);
     __atomic_add_fetch(&g_mtpndd_stats.node_count, 1, __ATOMIC_RELAXED);
 #ifdef ENABLE_RECORDING
@@ -559,8 +632,9 @@ static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mt
 
     mtpndd_memory_release_node(node);
     mtpndd_memory_release_nodetable_entry(entry);
-    if (table->entry_count > 0) {
-        table->entry_count--;
+    size_t prev = atomic_load_explicit(&table->entry_count, memory_order_relaxed);
+    if (prev > 0) {
+        atomic_fetch_sub_explicit(&table->entry_count, 1, memory_order_relaxed);
     }
 }
 
@@ -637,13 +711,21 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
 
 static void mtpndd_nodetable_maybe_rehash(mtpndd_nodetable_t *table) {
     if (!table) return;
-    if (table->entry_count >= table->load_threshold) {
-        size_t target = table->nodetable_bucket_count ? table->nodetable_bucket_count * 2 : 16;
-        if (mtpndd_nodetable_rehash(table, target)) {
-            if (target > g_mtpndd_pal_config.nodetable_bucket_count) {
+    size_t count = atomic_load_explicit(&table->entry_count, memory_order_relaxed);
+    if (count >= table->load_threshold) {
+        pthread_mutex_lock(&table->rehash_mutex);
+        count = atomic_load_explicit(&table->entry_count, memory_order_relaxed);
+        if (count >= table->load_threshold) {
+            // Exclusive: block lookups/inserts while swapping buckets.
+            mtpndd_nodetable_lock_all(table);
+            size_t target = table->nodetable_bucket_count ? table->nodetable_bucket_count * 2 : 16;
+            bool ok = mtpndd_nodetable_rehash(table, target);
+            mtpndd_nodetable_unlock_all(table);
+            if (ok && target > g_mtpndd_pal_config.nodetable_bucket_count) {
                 g_mtpndd_pal_config.nodetable_bucket_count = target;
             }
         }
+        pthread_mutex_unlock(&table->rehash_mutex);
     }
 }
 
@@ -669,7 +751,12 @@ static void grow_internal(void) {
         if (!table) continue;
         size_t new_bucket_count = table->nodetable_bucket_count ? table->nodetable_bucket_count * 2
                                                                 : MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
-        if (!mtpndd_nodetable_rehash(table, new_bucket_count)) {
+        pthread_mutex_lock(&table->rehash_mutex);
+        mtpndd_nodetable_lock_all(table);
+        bool ok = mtpndd_nodetable_rehash(table, new_bucket_count);
+        mtpndd_nodetable_unlock_all(table);
+        pthread_mutex_unlock(&table->rehash_mutex);
+        if (!ok) {
             fprintf(stderr, "[MTPNDD ERROR] nodetable rehash failed for field=%u (bucket target=%zu)\n",
                     field, new_bucket_count);
             fflush(stderr);

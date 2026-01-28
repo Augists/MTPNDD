@@ -36,6 +36,20 @@ static bool mtpndd_edge_map_rehash(mtpndd_edge_t *edges, size_t new_bucket_count
 // TASK declaration for parallel mtpndd_and_rec
 TASK_DECL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, mtpndd_t*);
 
+// Result item for batched edge construction tasks.
+// If `emit` is false, the (child,label) pair should be ignored and owns no resources.
+// If `emit` is true, `child` has a +1 MTPNDD ref and `label` has a +1 Sylvan ref.
+typedef struct {
+    mtpndd_error_t status;
+    uint32_t emit;
+    mtpndd_t *child;
+    mtpndd_bdd_t label;
+} mtpndd_and_item_t;
+
+// Task wrappers used to compute a (child,label) item in parallel without mutating shared state.
+TASK_DECL_2(mtpndd_and_item_t, mtpndd_and_same_field_item, edge_bucket_entry_t*, edge_bucket_entry_t*);
+TASK_DECL_2(mtpndd_and_item_t, mtpndd_and_diff_field_item, edge_bucket_entry_t*, mtpndd_t*);
+
 // Granularity control: decide whether to SPAWN a sub-problem
 static inline bool mtpndd_should_spawn(mtpndd_t *a, mtpndd_t *b) {
     // Never spawn if only 1 worker
@@ -44,16 +58,17 @@ static inline bool mtpndd_should_spawn(mtpndd_t *a, mtpndd_t *b) {
     // Don't spawn for terminal nodes
     if (mtpndd_is_terminal(a) || mtpndd_is_terminal(b)) return false;
 
-    // Balanced strategy: SPAWN at high levels (small field_id) OR for large sub-problems
-    // High-level recursions (field_id <= 3): always SPAWN for good parallelism
-    if (a->field_id <= 3 && b->field_id <= 3) {
-        return true;
-    }
-
-    // Mid/Low-level: only SPAWN if edges are substantial
+    // Coarse-grained strategy: avoid spawning too many small tasks (high overhead + contention).
+    // Prefer spawning only for the largest sub-problems.
     size_t edges_a = a->edges ? a->edges->edge_count : 0;
     size_t edges_b = b->edges ? b->edges->edge_count : 0;
-    return (edges_a >= 3 && edges_b >= 3);
+    size_t prod = edges_a * edges_b;
+
+    // Very top levels: allow some parallelism even if edge maps are not yet large.
+    if (a->field_id <= 2 && b->field_id <= 2) return true;
+
+    // Otherwise, only spawn when the pairwise work is substantial.
+    return prod >= 64;
 }
 
 typedef struct {
@@ -81,6 +96,23 @@ static bool mtpndd_temp_refs_push(mtpndd_temp_ref_list_t *list, mtpndd_t *node) 
         list->capacity = new_cap;
     }
     mtpndd_ref(node);
+    list->items[list->count++] = node;
+    return true;
+}
+
+// Push a node that is already ref'd (+1). Used for parallel tasks that return an owned ref.
+static bool mtpndd_temp_refs_push_owned(mtpndd_temp_ref_list_t *list, mtpndd_t *node) {
+    if (!list) return false;
+    if (!node) return true;
+    if (list->count == list->capacity) {
+        size_t new_cap = list->capacity ? list->capacity * 2 : 32;
+        mtpndd_t **next = (mtpndd_t **)realloc(list->items, new_cap * sizeof(mtpndd_t *));
+        if (!next) {
+            return false;
+        }
+        list->items = next;
+        list->capacity = new_cap;
+    }
     list->items[list->count++] = node;
     return true;
 }
@@ -488,83 +520,170 @@ static inline void mtpndd_and_prof_finish(void) {
 /********************************
  * MTPNDD operations (sub task)
  ********************************/
-static mtpndd_error_t mtpndd_and_same_field(
-        WorkerP *__lace_worker, Task *__lace_dq_head,
-        edge_bucket_entry_t *entry_a,
-        edge_bucket_entry_t *entry_b, mtpndd_edge_t *res_edges,
-        mtpndd_temp_ref_list_t *temp_refs)
+TASK_IMPL_2(mtpndd_and_item_t, mtpndd_and_same_field_item,
+            edge_bucket_entry_t*, entry_a,
+            edge_bucket_entry_t*, entry_b)
 {
-    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_LABEL_LOAD);
+    mtpndd_and_item_t out = {0};
+    out.status = MTPNDD_SUCCESS;
+    out.emit = 0;
+    out.child = NULL;
+    out.label = 0;
+
     mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
     mtpndd_bdd_t label_b = mtpndd_edge_label_load(entry_b);
-    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_BDD_OP);
     mtpndd_bdd_t combined_label = sylvan_ref(sylvan_and(label_a, label_b));
     if (combined_label == sylvan_false) {
         sylvan_deref(combined_label);
-        mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
-        return MTPNDD_SUCCESS;
+        return out;
     }
 
-    mtpndd_and_prof_switch(MTPNDD_AND_PROF_OTHER);
-    mtpndd_node_t *sub_result = NULL;
-
-    // Conditionally SPAWN sub-recursion for parallelism
-    if (mtpndd_should_spawn(entry_a->child, entry_b->child)) {
-        SPAWN(mtpndd_and_rec, entry_a->child, entry_b->child);
-        sub_result = SYNC(mtpndd_and_rec);
-    } else {
-        sub_result = CALL(mtpndd_and_rec, entry_a->child, entry_b->child);
-    }
-
+    mtpndd_t *sub_result = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head, entry_a->child, entry_b->child);
     if (!sub_result) {
         sylvan_deref(combined_label);
-        mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
-        return mtpndd_get_last_error().code;
+        out.status = mtpndd_get_last_error().code;
+        return out;
     }
 
-    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_ADD_EDGE);
-    if (!mtpndd_temp_refs_push(temp_refs, sub_result)) {
-        sylvan_deref(combined_label);
-        return MTPNDD_ERROR_OUT_OF_MEMORY;
-    }
-    mtpndd_error_t status = mtpndd_add_edge(res_edges, sub_result, combined_label);
-    if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(combined_label);
-    }
-    mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
-    return status;
+    // Hold a ref across batched SYNC so GC can't reclaim the node before merge.
+    mtpndd_ref(sub_result);
+
+    out.emit = 1;
+    out.child = sub_result;
+    out.label = combined_label;
+    return out;
 }
 
-static mtpndd_error_t mtpndd_and_diff_field(
-        WorkerP *__lace_worker, Task *__lace_dq_head,
-        edge_bucket_entry_t *entry_a,
-        mtpndd_t *b, mtpndd_edge_t *res_edges,
-        mtpndd_temp_ref_list_t *temp_refs)
+TASK_IMPL_2(mtpndd_and_item_t, mtpndd_and_diff_field_item,
+            edge_bucket_entry_t*, entry_a,
+            mtpndd_t*, b)
 {
-    mtpndd_node_t *sub_result = NULL;
-
-    // Conditionally SPAWN sub-recursion for parallelism
-    if (mtpndd_should_spawn(entry_a->child, b)) {
-        SPAWN(mtpndd_and_rec, entry_a->child, b);
-        sub_result = SYNC(mtpndd_and_rec);
-    } else {
-        sub_result = CALL(mtpndd_and_rec, entry_a->child, b);
-    }
-
-    if (!sub_result) {
-        return mtpndd_get_last_error().code;
-    }
+    mtpndd_and_item_t out = {0};
+    out.status = MTPNDD_SUCCESS;
+    out.emit = 0;
+    out.child = NULL;
+    out.label = 0;
 
     mtpndd_bdd_t label_a = sylvan_ref(mtpndd_edge_label_load(entry_a));
-    if (!mtpndd_temp_refs_push(temp_refs, sub_result)) {
+    mtpndd_t *sub_result = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head, entry_a->child, b);
+    if (!sub_result) {
         sylvan_deref(label_a);
+        out.status = mtpndd_get_last_error().code;
+        return out;
+    }
+
+    mtpndd_ref(sub_result);
+
+    out.emit = 1;
+    out.child = sub_result;
+    out.label = label_a;
+    return out;
+}
+
+static inline void mtpndd_and_cancel_same_field_items(WorkerP *__lace_worker, Task **dq_head, size_t *pending) {
+    if (!pending) return;
+    while (*pending > 0) {
+        (*dq_head)--;
+        Task *t = (Task *)*dq_head;
+        if (TASK_IS_STOLEN(t)) {
+            mtpndd_and_item_t item = mtpndd_and_same_field_item_SYNC(__lace_worker, *dq_head);
+            if (item.emit) {
+                sylvan_deref(item.label);
+                mtpndd_deref(item.child);
+            }
+        } else {
+            // Not stolen: dropping avoids executing the task and allocates no new resources.
+            lace_drop(__lace_worker, *dq_head);
+        }
+        (*pending)--;
+    }
+}
+
+static inline void mtpndd_and_cancel_diff_field_items(WorkerP *__lace_worker, Task **dq_head, size_t *pending) {
+    if (!pending) return;
+    while (*pending > 0) {
+        (*dq_head)--;
+        Task *t = (Task *)*dq_head;
+        if (TASK_IS_STOLEN(t)) {
+            mtpndd_and_item_t item = mtpndd_and_diff_field_item_SYNC(__lace_worker, *dq_head);
+            if (item.emit) {
+                sylvan_deref(item.label);
+                mtpndd_deref(item.child);
+            }
+        } else {
+            lace_drop(__lace_worker, *dq_head);
+        }
+        (*pending)--;
+    }
+}
+
+static mtpndd_error_t mtpndd_and_merge_item(
+        mtpndd_edge_t *res_edges,
+        mtpndd_temp_ref_list_t *temp_refs,
+        const mtpndd_and_item_t *item,
+        bool same_field)
+{
+    if (!item) return MTPNDD_ERROR_NULL_POINTER;
+    if (item->emit == 0) {
+        return item->status;
+    }
+
+    if (item->status != MTPNDD_SUCCESS || item->child == NULL) {
+        if (item->label) sylvan_deref(item->label);
+        if (item->child) mtpndd_deref(item->child);
+        return item->status != MTPNDD_SUCCESS ? item->status : MTPNDD_ERROR_UNKNOWN;
+    }
+
+    if (same_field) mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_ADD_EDGE);
+    if (!mtpndd_temp_refs_push_owned(temp_refs, item->child)) {
+        if (same_field) mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
+        sylvan_deref(item->label);
+        mtpndd_deref(item->child);
         return MTPNDD_ERROR_OUT_OF_MEMORY;
     }
-    mtpndd_error_t status = mtpndd_add_edge(res_edges, sub_result, label_a);
+    mtpndd_error_t status = mtpndd_add_edge(res_edges, item->child, item->label);
     if (status != MTPNDD_SUCCESS) {
-        sylvan_deref(label_a);
+        // mtpndd_add_edge only derefs label_bdd on success
+        sylvan_deref(item->label);
+        if (same_field) mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
+        return status;
     }
-    return status;
+    if (same_field) mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
+    return MTPNDD_SUCCESS;
+}
+
+static mtpndd_error_t mtpndd_and_drain_same_field_items(
+        WorkerP *__lace_worker, Task **dq_head,
+        size_t *pending, size_t max_drain,
+        mtpndd_edge_t *res_edges,
+        mtpndd_temp_ref_list_t *temp_refs)
+{
+    size_t n = (pending && *pending < max_drain) ? *pending : max_drain;
+    for (size_t i = 0; i < n; ++i) {
+        (*dq_head)--;
+        mtpndd_and_item_t item = mtpndd_and_same_field_item_SYNC(__lace_worker, *dq_head);
+        (*pending)--;
+        mtpndd_error_t status = mtpndd_and_merge_item(res_edges, temp_refs, &item, true);
+        if (status != MTPNDD_SUCCESS) return status;
+    }
+    return MTPNDD_SUCCESS;
+}
+
+static mtpndd_error_t mtpndd_and_drain_diff_field_items(
+        WorkerP *__lace_worker, Task **dq_head,
+        size_t *pending, size_t max_drain,
+        mtpndd_edge_t *res_edges,
+        mtpndd_temp_ref_list_t *temp_refs)
+{
+    size_t n = (pending && *pending < max_drain) ? *pending : max_drain;
+    for (size_t i = 0; i < n; ++i) {
+        (*dq_head)--;
+        mtpndd_and_item_t item = mtpndd_and_diff_field_item_SYNC(__lace_worker, *dq_head);
+        (*pending)--;
+        mtpndd_error_t status = mtpndd_and_merge_item(res_edges, temp_refs, &item, false);
+        if (status != MTPNDD_SUCCESS) return status;
+    }
+    return MTPNDD_SUCCESS;
 }
 
 TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
@@ -606,7 +725,10 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_BUILD_EDGES);
     mtpndd_temp_ref_list_t temp_refs;
     mtpndd_temp_refs_init(&temp_refs);
-    if (a->field_id == b->field_id) {
+    const bool same_field_case = (a->field_id == b->field_id);
+    size_t pending = 0;
+
+    if (same_field_case) {
         // Same field, combine edges
         edge_bucket_entry_t *entry_a;
         edge_bucket_entry_t *entry_b;
@@ -614,16 +736,39 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
             mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
             FOR_EACH_ENTRY_IN_ALL_BUCKETS(b->edges, entry_b) {
-                status = mtpndd_and_same_field(__lace_worker, __lace_dq_head, entry_a, entry_b, res_edges, &temp_refs);
-                if (status != MTPNDD_SUCCESS) {
-                    mtpndd_temp_refs_release(&temp_refs);
-                    mtpndd_edge_map_free(res_edges);
-                    mtpndd_and_prof_finish();
-                    return NULL;
+                if (mtpndd_should_spawn(entry_a->child, entry_b->child)) {
+#ifdef ENABLE_RECORDING
+                    MTPNDD_STAT_ADD(and_spawn_total, 1);
+                    MTPNDD_STAT_ADD(and_spawn_same_total, 1);
+#endif
+                    mtpndd_and_same_field_item_SPAWN(__lace_worker, __lace_dq_head, entry_a, entry_b);
+                    __lace_dq_head++;
+                    pending++;
+                } else {
+                    mtpndd_and_item_t item = mtpndd_and_same_field_item_CALL(__lace_worker, __lace_dq_head, entry_a, entry_b);
+                    status = mtpndd_and_merge_item(res_edges, &temp_refs, &item, true);
+                    if (status != MTPNDD_SUCCESS) goto fail_build_edges;
+                }
+
+                if (pending >= MTPNDD_AND_PENDING_FLUSH_THRESHOLD) {
+#ifdef ENABLE_RECORDING
+                    MTPNDD_STAT_ADD(and_pending_flush_total, 1);
+#endif
+                    size_t keep = MTPNDD_AND_PENDING_FLUSH_THRESHOLD / 2;
+                    if (keep == 0) keep = 1;
+                    size_t to_drain = pending > keep ? (pending - keep) : pending;
+                    status = mtpndd_and_drain_same_field_items(__lace_worker, &__lace_dq_head, &pending, to_drain, res_edges, &temp_refs);
+                    if (status != MTPNDD_SUCCESS) goto fail_build_edges;
                 }
             }
             mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_OUTER_LOOP);
         }
+
+        if (pending > 0) {
+            status = mtpndd_and_drain_same_field_items(__lace_worker, &__lace_dq_head, &pending, pending, res_edges, &temp_refs);
+            if (status != MTPNDD_SUCCESS) goto fail_build_edges;
+        }
+
         mtpndd_and_prof_switch(MTPNDD_AND_PROF_BUILD_EDGES);
     } else {
         // Different fields
@@ -635,15 +780,54 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
         mtpndd_and_prof_switch(MTPNDD_AND_PROF_DIFF_FIELD);
         edge_bucket_entry_t *entry_a;
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
-            status = mtpndd_and_diff_field(__lace_worker, __lace_dq_head, entry_a, b, res_edges, &temp_refs);
-            if (status != MTPNDD_SUCCESS) {
-                mtpndd_temp_refs_release(&temp_refs);
-                mtpndd_edge_map_free(res_edges);
-                mtpndd_and_prof_finish();
-                return NULL;
+            if (mtpndd_should_spawn(entry_a->child, b)) {
+#ifdef ENABLE_RECORDING
+                MTPNDD_STAT_ADD(and_spawn_total, 1);
+                MTPNDD_STAT_ADD(and_spawn_diff_total, 1);
+#endif
+                mtpndd_and_diff_field_item_SPAWN(__lace_worker, __lace_dq_head, entry_a, b);
+                __lace_dq_head++;
+                pending++;
+            } else {
+                mtpndd_and_item_t item = mtpndd_and_diff_field_item_CALL(__lace_worker, __lace_dq_head, entry_a, b);
+                status = mtpndd_and_merge_item(res_edges, &temp_refs, &item, false);
+                if (status != MTPNDD_SUCCESS) goto fail_build_edges;
+            }
+
+            if (pending >= MTPNDD_AND_PENDING_FLUSH_THRESHOLD) {
+#ifdef ENABLE_RECORDING
+                MTPNDD_STAT_ADD(and_pending_flush_total, 1);
+#endif
+                size_t keep = MTPNDD_AND_PENDING_FLUSH_THRESHOLD / 2;
+                if (keep == 0) keep = 1;
+                size_t to_drain = pending > keep ? (pending - keep) : pending;
+                status = mtpndd_and_drain_diff_field_items(__lace_worker, &__lace_dq_head, &pending, to_drain, res_edges, &temp_refs);
+                if (status != MTPNDD_SUCCESS) goto fail_build_edges;
             }
         }
+
+        if (pending > 0) {
+            status = mtpndd_and_drain_diff_field_items(__lace_worker, &__lace_dq_head, &pending, pending, res_edges, &temp_refs);
+            if (status != MTPNDD_SUCCESS) goto fail_build_edges;
+        }
     }
+
+    goto build_edges_ok;
+
+fail_build_edges:
+    if (pending > 0) {
+        if (same_field_case) {
+            mtpndd_and_cancel_same_field_items(__lace_worker, &__lace_dq_head, &pending);
+        } else {
+            mtpndd_and_cancel_diff_field_items(__lace_worker, &__lace_dq_head, &pending);
+        }
+    }
+    mtpndd_temp_refs_release(&temp_refs);
+    mtpndd_edge_map_free(res_edges);
+    mtpndd_and_prof_finish();
+    return NULL;
+
+build_edges_ok:
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_MK);
 #ifdef ENABLE_RECORDING
     struct timespec mk_total_start = {0};

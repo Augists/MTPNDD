@@ -265,7 +265,9 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         edge_map_slab_capacity = 1024;
     } else if (size > 10) {
         bdd_size = 1 << 20;
-        ndd_size = 1 << 19; // significantly smaller nodetable to approach rehash threshold
+        // For N>=12, MTPNDD can exceed ~5e5 nodes while building the formula.
+        // Keep capacity comfortably above that to avoid triggering GC/grow mid-parallel tasks.
+        ndd_size = 1 << 22;
         cache_size = 1 << 20;
         edge_bucket_count = 16;
         node_slab_capacity = 3072;
@@ -274,7 +276,11 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         edge_map_slab_capacity = 1280;
     }
 
+    // Hash-table buckets are per-field; keep this moderate even if capacity is larger.
     size_t nodetable_bucket_count = ndd_size;
+    if (size > 10) {
+        nodetable_bucket_count = 1 << 19;
+    }
 
     mtpndd_pal_config_t config = {
         .n_workers = 0,  // Use single worker for new Lace (n=0 means auto-detect)
@@ -299,6 +305,10 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
                 mtpndd_error_string(mtpndd_get_last_error().code));
         return false;
     }
+
+#if LACE_COUNT_EVENTS
+    lace_count_reset();
+#endif
     clock_gettime(CLOCK_MONOTONIC, &init_finish);
 
     if (!nqueens_ctx_init(&ctx, size)) {
@@ -379,6 +389,16 @@ cleanup:
         formula = NULL;
     }
     nqueens_ctx_destroy(&ctx);
+
+#if LACE_COUNT_EVENTS
+    // Report counters before mtpndd_quit(), which shuts down Lace workers.
+    if (ok) {
+        fprintf(stdout, "== lace counters ==\n");
+        lace_count_report_file(stdout);
+        fflush(stdout);
+    }
+#endif
+
     if (mtpndd_quit() != MTPNDD_SUCCESS) {
         fprintf(stderr, "mtpndd_quit reported an error for size %zu.\n", size);
         ok = false;
@@ -510,6 +530,11 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->max_edges_per_node, stats->cache_lookup_hits, stats->cache_lookup_misses);
     printf(".. stats: time and/or/not = %.3f/%.3f/%.3f s\n",
            stats->and_time_ns / 1e9, stats->or_time_ns / 1e9, stats->not_time_ns / 1e9);
+    printf(".. stats: and spawns total/same/diff=%" PRIu64 "/%" PRIu64 "/%" PRIu64 " pending_flushes=%" PRIu64 "\n",
+           stats->and_spawn_total,
+           stats->and_spawn_same_total,
+           stats->and_spawn_diff_total,
+           stats->and_pending_flush_total);
     printf(".. stats: and fast/cache/build/diff/mk = %.3f/%.3f/%.3f/%.3f/%.3f s\n",
            stats->and_fastpath_ns / 1e9,
            stats->and_cache_hit_ns / 1e9,

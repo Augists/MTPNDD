@@ -719,7 +719,7 @@ mtpndd_error_t mtpndd_quit() {
             g_mtpndd_config.field_info[i] = NULL;
         }
         if (g_mtpndd_config.node_tables_by_field[i]) {
-            free(g_mtpndd_config.node_tables_by_field[i]);
+            mtpndd_nodetable_free(g_mtpndd_config.node_tables_by_field[i]);
             g_mtpndd_config.node_tables_by_field[i] = NULL;
         }
     }

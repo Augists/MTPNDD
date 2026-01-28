@@ -5,6 +5,8 @@
 #ifndef MTPNDD_NODETABLE_H
 #define MTPNDD_NODETABLE_H
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
@@ -26,8 +28,15 @@ typedef struct mtpndd_nodetable_bucket_entry_s {
 typedef struct mtpndd_nodetable_s {
     size_t nodetable_bucket_count;
     mtpndd_nodetable_bucket_entry_t **buckets;
-    size_t entry_count; // number of nodes stored in this table
+    _Atomic size_t entry_count; // number of nodes stored in this table
     size_t load_threshold; // trigger rehash when entry_count >= load_threshold
+
+    // Concurrency:
+    // - bucket_locks shard access to buckets for lookups/inserts.
+    // - rehash_mutex ensures a single thread performs rehash at a time.
+    size_t bucket_lock_count; // power of two
+    pthread_spinlock_t *bucket_locks;
+    pthread_mutex_t rehash_mutex;
 } mtpndd_nodetable_t;
 
 #define NODETABLE_HASH_VAL(key, nodetable) \
@@ -143,6 +152,7 @@ record_compare:
 mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge_t *edges);
 
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field();
+void mtpndd_nodetable_free(mtpndd_nodetable_t *table);
 
 /********************************
  * MTPNDD node

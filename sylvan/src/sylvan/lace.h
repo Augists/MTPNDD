@@ -19,6 +19,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <pthread.h> /* for pthread_t */
+#ifdef __linux__
+#include <sched.h> /* for sched_yield */
+#endif
 
 #ifndef __LACE_H__
 #define __LACE_H__
@@ -309,6 +312,59 @@ void lace_yield(WorkerP *__lace_worker, Task *__lace_dq_head);
 
 #ifndef LACE_COUNT_EVENTS
 #define LACE_COUNT_EVENTS (LACE_PIE_TIMES || LACE_COUNT_TASKS || LACE_COUNT_STEALS || LACE_COUNT_SPLITS)
+#endif
+
+#ifndef LACE_STEAL_BACKOFF
+#define LACE_STEAL_BACKOFF 0
+#endif
+
+#if LACE_STEAL_BACKOFF
+#ifndef LACE_STEAL_BACKOFF_YIELD_ITERS
+#define LACE_STEAL_BACKOFF_YIELD_ITERS 1024u
+#endif
+#ifndef LACE_STEAL_BACKOFF_SLEEP_ITERS
+#define LACE_STEAL_BACKOFF_SLEEP_ITERS 16384u
+#endif
+#ifndef LACE_STEAL_BACKOFF_SLEEP_NS
+#define LACE_STEAL_BACKOFF_SLEEP_NS 50000ul
+#endif
+
+static inline void
+lace_cpu_relax(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __asm__ __volatile__("pause" ::: "memory");
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield" ::: "memory");
+#else
+    __asm__ __volatile__("" ::: "memory");
+#endif
+}
+
+static inline void
+lace_idle_backoff(unsigned *streak)
+{
+    unsigned s = ++(*streak);
+    if (s < LACE_STEAL_BACKOFF_YIELD_ITERS) {
+        lace_cpu_relax();
+        return;
+    }
+
+#ifdef __linux__
+    if (s < LACE_STEAL_BACKOFF_SLEEP_ITERS) {
+        sched_yield();
+        return;
+    }
+#endif
+
+    // Fall back to a short sleep. Use usleep() to keep the header POSIX-light.
+    unsigned long ns = (unsigned long)LACE_STEAL_BACKOFF_SLEEP_NS;
+    unsigned int us = (unsigned int)(ns / 1000ul);
+    if (us == 0) us = 1;
+    usleep(us);
+}
+#else
+static inline void lace_idle_backoff(unsigned *streak) { (void)streak; }
 #endif
 
 /**
@@ -709,15 +765,19 @@ lace_leapfrog(WorkerP *__lace_worker, Task *__lace_dq_head)
 
         /* Now leapfrog */
         int attempts = 32;
+        unsigned nowork_streak = 0;
         while (thief != THIEF_COMPLETED) {
             PR_COUNTSTEALS(__lace_worker, CTR_leap_tries);
             Worker *res = lace_steal(__lace_worker, __lace_dq_head, thief);
             if (res == LACE_NOWORK) {
+                lace_idle_backoff(&nowork_streak);
                 YIELD_NEWFRAME();
                 if ((LACE_LEAP_RANDOM) && (--attempts == 0)) { lace_steal_random(); attempts = 32; }
             } else if (res == LACE_STOLEN) {
+                nowork_streak = 0;
                 PR_COUNTSTEALS(__lace_worker, CTR_leaps);
             } else if (res == LACE_BUSY) {
+                nowork_streak = 0;
                 PR_COUNTSTEALS(__lace_worker, CTR_leap_busy);
             }
             compiler_barrier();

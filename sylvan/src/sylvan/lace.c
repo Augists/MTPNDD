@@ -686,6 +686,22 @@ VOID_TASK_1(lace_steal_loop, int*, quit)
     uint32_t seed = worker_id;
     unsigned int n = n_workers;
     int i=0;
+    unsigned nowork_streak = 0;
+
+    // With a single worker there is nobody to steal from; avoid rng(n-1) and just wait.
+    if (n <= 1) {
+        while (*(volatile int*)quit == 0) {
+            lace_idle_backoff(&nowork_streak);
+            YIELD_NEWFRAME();
+            if (must_suspend) {
+                lace_barrier();
+                do {
+                    pthread_barrier_wait(&suspend_barrier);
+                } while (__lace_worker->enabled == 0);
+            }
+        }
+        return;
+    }
 
     while(*(volatile int*)quit == 0) {
         // Select victim
@@ -704,8 +720,12 @@ VOID_TASK_1(lace_steal_loop, int*, quit)
         Worker *res = lace_steal(__lace_worker, __lace_dq_head, *victim);
         if (res == LACE_STOLEN) {
             PR_COUNTSTEALS(__lace_worker, CTR_steals);
+            nowork_streak = 0;
         } else if (res == LACE_BUSY) {
             PR_COUNTSTEALS(__lace_worker, CTR_steal_busy);
+            nowork_streak = 0;
+        } else { // LACE_NOWORK
+            lace_idle_backoff(&nowork_streak);
         }
 
         YIELD_NEWFRAME();
@@ -1020,10 +1040,19 @@ lace_count_report_file(FILE *file)
 
 #if LACE_COUNT_STEALS && LACE_COUNT_TASKS
     for (i=0;i<n_workers;i++) {
-        fprintf(file, "Tasks per steal (%d): %zu\n", i,
-            workers_p[i]->ctr[CTR_tasks]/(workers_p[i]->ctr[CTR_steals]+workers_p[i]->ctr[CTR_leaps]));
+        uint64_t denom = workers_p[i]->ctr[CTR_steals] + workers_p[i]->ctr[CTR_leaps];
+        if (denom == 0) {
+            fprintf(file, "Tasks per steal (%d): n/a\n", i);
+        } else {
+            fprintf(file, "Tasks per steal (%d): %zu\n", i, workers_p[i]->ctr[CTR_tasks] / denom);
+        }
     }
-    fprintf(file, "Tasks per steal (sum): %zu\n", ctr_all[CTR_tasks]/(ctr_all[CTR_steals]+ctr_all[CTR_leaps]));
+    uint64_t denom = ctr_all[CTR_steals] + ctr_all[CTR_leaps];
+    if (denom == 0) {
+        fprintf(file, "Tasks per steal (sum): n/a\n");
+    } else {
+        fprintf(file, "Tasks per steal (sum): %zu\n", ctr_all[CTR_tasks] / denom);
+    }
     fprintf(file, "\n");
 #endif
 

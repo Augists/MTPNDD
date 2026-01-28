@@ -98,6 +98,13 @@ void mtpndd_clear_error();
 #define MTPNDD_DEFAULT_NODETABLE_ENTRY_SLAB_CAPACITY 2048
 #define MTPNDD_DEFAULT_EDGE_MAP_SLAB_CAPACITY 2048
 
+// Backpressure for batched `mtpndd_and_rec` SPAWN/SYNC: bounds the number of pending child tasks
+// (and referenced edge-label BDDs) before forcing a drain. Override at compile time, e.g.:
+//   cc ... -DMTPNDD_AND_PENDING_FLUSH_THRESHOLD=512
+#ifndef MTPNDD_AND_PENDING_FLUSH_THRESHOLD
+#define MTPNDD_AND_PENDING_FLUSH_THRESHOLD 256
+#endif
+
 /********************************
  * Global config definitions
  ********************************/
@@ -164,6 +171,10 @@ typedef struct mtpndd_stats_s {
     uint64_t nodetable_rehash_total;
     uint64_t nodetable_max_buckets;
     uint64_t and_time_ns;
+    uint64_t and_spawn_total;
+    uint64_t and_spawn_same_total;
+    uint64_t and_spawn_diff_total;
+    uint64_t and_pending_flush_total;
     uint64_t or_time_ns;
     uint64_t not_time_ns;
     uint64_t and_fastpath_ns;
