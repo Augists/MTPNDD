@@ -614,13 +614,7 @@ static void dump_dot_file(const char *filename, mtpndd_t *node) {
     ensure_dot_dir();
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", DOT_OUTPUT_DIR, filename);
-    FILE *out = fopen(path, "w");
-    if (!out) {
-        perror("fopen dot file");
-        return;
-    }
-    mtpndd_fprint_dot(out, node);
-    fclose(out);
+    mtpndd_print_dot(node, path);
 }
 
 #endif  // MTPNDD_NQUEENS_ENABLE_DOT

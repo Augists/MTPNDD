@@ -120,6 +120,6 @@ mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result);
 mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result);
 
 void mtpndd_fprint_dot(FILE *out, mtpndd_t *root);
-void mtpndd_print_dot(mtpndd_t *root);
+void mtpndd_print_dot(mtpndd_t *root, const char *path);
 
 #endif // MTPNDD_NODE_H

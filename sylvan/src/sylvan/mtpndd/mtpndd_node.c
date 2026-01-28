@@ -2153,6 +2153,22 @@ void mtpndd_fprint_dot(FILE *out, mtpndd_t *root) {
     mtpndd_dot_ctx_cleanup(&ctx);
 }
 
-void mtpndd_print_dot(mtpndd_t *root) {
-    mtpndd_fprint_dot(stdout, root);
+void mtpndd_print_dot(mtpndd_t *root, const char *path) {
+    FILE *out = stdout;
+    FILE *file = NULL;
+
+    if (path && path[0] != '\0') {
+        file = fopen(path, "w");
+        if (file) {
+            out = file;
+        } else {
+            perror("fopen dot file");
+        }
+    }
+
+    mtpndd_fprint_dot(out, root);
+
+    if (file) {
+        fclose(file);
+    }
 }

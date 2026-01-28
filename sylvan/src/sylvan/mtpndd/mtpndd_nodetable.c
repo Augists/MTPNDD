@@ -25,8 +25,6 @@ static void mtpndd_nodetable_maybe_rehash(mtpndd_nodetable_t *table);
 static size_t mtpndd_round_up_pow2(size_t v);
 
 static void gcOrGrow(void);
-static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out);
-static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count);
 static size_t mtpndd_gc_sweep(void);
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node);
 
@@ -563,10 +561,7 @@ static void gc_internal(void) {
 #endif
     mtpndd_gc_run_prehooks();
 
-    mtpndd_node_t **gc_roots = NULL;
-    size_t gc_root_count = mtpndd_gc_collect_roots(&gc_roots);
     size_t reclaimed = mtpndd_gc_sweep();
-    mtpndd_gc_release_roots(gc_roots, gc_root_count);
 
     if (reclaimed > 0) {
         __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
@@ -577,27 +572,6 @@ static void gc_internal(void) {
     }
 
     mtpndd_gc_run_posthooks();
-}
-
-static size_t mtpndd_gc_collect_roots(mtpndd_node_t ***roots_out) {
-    if (roots_out == NULL) {
-        return 0;
-    }
-    *roots_out = NULL;
-    return 0;
-}
-
-static void mtpndd_gc_release_roots(mtpndd_node_t **roots, size_t count) {
-    if (!roots) {
-        return;
-    }
-    for (size_t i = 0; i < count; ++i) {
-        mtpndd_node_t *node = roots[i];
-        if (node) {
-            mtpndd_deref(node);
-        }
-    }
-    free(roots);
 }
 
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node) {
