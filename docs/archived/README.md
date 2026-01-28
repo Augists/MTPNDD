@@ -23,3 +23,4 @@ Each file follows the same rough structure:
 - `docs/archived/2026-01-28-mtpndd-and-batched-sync-item-tasks.md`
 - `docs/archived/2026-01-28-lace-idle-and-leapfrog-backoff.md`
 - `docs/archived/2026-01-28-per-worker-slab-pool-caches.md`
+- `docs/archived/2026-01-28-and-outer-chunk-parallelization-experiment.md`

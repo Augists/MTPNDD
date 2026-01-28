@@ -84,3 +84,8 @@ add_executable(mtpndd_conversion_test test/conversion.c)
 target_link_libraries(mtpndd_conversion_test PRIVATE mtpndd::mtpndd)
 target_compile_features(mtpndd_conversion_test PRIVATE c_std_11)
 target_compile_options(mtpndd_conversion_test PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
+
+add_executable(mtpndd_and_microbench test/and_microbench.c)
+target_link_libraries(mtpndd_and_microbench PRIVATE mtpndd::mtpndd)
+target_compile_features(mtpndd_and_microbench PRIVATE c_std_11)
+target_compile_options(mtpndd_and_microbench PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
