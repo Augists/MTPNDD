@@ -24,3 +24,9 @@ Each file follows the same rough structure:
 - `docs/archived/2026-01-28-lace-idle-and-leapfrog-backoff.md`
 - `docs/archived/2026-01-28-per-worker-slab-pool-caches.md`
 - `docs/archived/2026-01-28-and-outer-chunk-parallelization-experiment.md`
+
+## Quick Summary
+
+| Topic | Status | Highlight |
+|-------|--------|----------|
+| AND outer-chunk experiment | Experimental | Improves shallow 128×64/256×128; mixed 256×128 roughly neutral. |
