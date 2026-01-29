@@ -41,6 +41,24 @@
 | 3 | 7.845 | 14200 |
 | 4 | 7.943 | 14200 |
 
+### N-Queens benchmark (per-worker refs, signed counts + GC merge)
+Source: `mtpndd_nqueens_benchmark <n> <workers>`
+#### N=8
+| workers | time(s) | solutions |
+|---:|---:|---:|
+| 1 | 0.033 | 92 |
+| 2 | 0.027 | 92 |
+| 3 | 0.023 | 92 |
+| 4 | 0.022 | 92 |
+
+#### N=12
+| workers | time(s) | solutions |
+|---:|---:|---:|
+| 1 | 11.849 | 14200 |
+| 2 | 7.523 | 14200 |
+| 3 | 5.824 | 14200 |
+| 4 | 5.647 | 14200 |
+
 ## perf stat (N=12, taskset 1–4 workers)
 Units: cycles/instructions in G, cache-misses in M.
 | workers | elapsed(s) | cycles(G) | instructions(G) | cache-misses(M) |

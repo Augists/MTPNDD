@@ -1055,6 +1055,7 @@ void mtbdd_deref(MTBDD dd);
  * Compute the number of values in the values table.
  */
 size_t mtbdd_count_refs(void);
+size_t mtbdd_count_refs_worker(unsigned int worker);
 
 /**
  * Infrastructure for internal references.

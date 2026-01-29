@@ -61,10 +61,14 @@ uint64_t *refs_iter(refs_table_t *tbl, size_t first, size_t end);
 
 // Continue iterating, set bucket to next bucket or NULL
 uint64_t refs_next(refs_table_t *tbl, uint64_t **bucket, size_t end);
+// Continue iterating, return key and count
+uint64_t refs_next_full(refs_table_t *tbl, uint64_t **bucket, size_t end, int32_t *count_out);
 
 // User must supply a pointer, refs_create and refs_free handle initialization/destruction
 void refs_create(refs_table_t *tbl, size_t _refs_size);
 void refs_free(refs_table_t *tbl);
+void refs_clear(refs_table_t *tbl);
+int refs_set_add(refs_table_t *tbl, uint64_t key, int32_t delta);
 #ifdef SYLVAN_REFS_STATS
 void refs_stats_register(refs_table_t *tbl, const char *name);
 void refs_stats_dump(FILE *out);

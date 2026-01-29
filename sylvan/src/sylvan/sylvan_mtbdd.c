@@ -22,8 +22,15 @@ static inline int sylvan_lace_is_worker(void)
     return lace_get_worker() != NULL;
 }
 
+static inline unsigned int mtbdd_worker_id(void)
+{
+    WorkerP *worker = lace_get_worker();
+    return worker ? worker->worker : 0;
+}
+
 #include <inttypes.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <sylvan_refs.h>
@@ -110,7 +117,12 @@ VOID_TASK_IMPL_1(mtbdd_gc_mark_rec, MDD, mtbdd)
  * External references
  */
 
-refs_table_t mtbdd_refs;
+refs_table_t *mtbdd_refs;
+static refs_table_t mtbdd_refs_merge;
+static size_t mtbdd_refs_workers = 0;
+#ifdef SYLVAN_REFS_STATS
+static char **mtbdd_refs_names;
+#endif
 refs_table_t mtbdd_protected;
 static int mtbdd_protected_created = 0;
 
@@ -118,7 +130,7 @@ MDD
 mtbdd_ref(MDD a)
 {
     if (a == mtbdd_true || a == mtbdd_false) return a;
-    refs_up(&mtbdd_refs, MTBDD_STRIPMARK(a));
+    refs_up(&mtbdd_refs[mtbdd_worker_id()], MTBDD_STRIPMARK(a));
     return a;
 }
 
@@ -126,13 +138,25 @@ void
 mtbdd_deref(MDD a)
 {
     if (a == mtbdd_true || a == mtbdd_false) return;
-    refs_down(&mtbdd_refs, MTBDD_STRIPMARK(a));
+    refs_down(&mtbdd_refs[mtbdd_worker_id()], MTBDD_STRIPMARK(a));
 }
 
 size_t
 mtbdd_count_refs()
 {
-    return refs_count(&mtbdd_refs);
+    size_t total = 0;
+    for (size_t i = 0; i < mtbdd_refs_workers; i++) {
+        total += refs_count(&mtbdd_refs[i]);
+    }
+    return total;
+}
+
+size_t
+mtbdd_count_refs_worker(unsigned int worker)
+{
+    if (mtbdd_refs_workers == 0) return 0;
+    if (worker >= mtbdd_refs_workers) return 0;
+    return refs_count(&mtbdd_refs[worker]);
 }
 
 void
@@ -161,16 +185,27 @@ mtbdd_count_protected()
 /* Called during garbage collection */
 VOID_TASK_0(mtbdd_gc_mark_external_refs)
 {
-    // iterate through refs hash table, mark all found
-    size_t count=0;
-    uint64_t *it = refs_iter(&mtbdd_refs, 0, mtbdd_refs.refs_size);
+    refs_clear(&mtbdd_refs_merge);
+    for (size_t i = 0; i < mtbdd_refs_workers; i++) {
+        uint64_t *it = refs_iter(&mtbdd_refs[i], 0, mtbdd_refs[i].refs_size);
+        while (it != NULL) {
+            int32_t count = 0;
+            uint64_t key = refs_next_full(&mtbdd_refs[i], &it, mtbdd_refs[i].refs_size, &count);
+            if (count != 0) refs_set_add(&mtbdd_refs_merge, key, count);
+        }
+    }
+
+    size_t count = 0;
+    uint64_t *it = refs_iter(&mtbdd_refs_merge, 0, mtbdd_refs_merge.refs_size);
     while (it != NULL) {
-        SPAWN(mtbdd_gc_mark_rec, refs_next(&mtbdd_refs, &it, mtbdd_refs.refs_size));
-        count++;
+        int32_t net = 0;
+        uint64_t key = refs_next_full(&mtbdd_refs_merge, &it, mtbdd_refs_merge.refs_size, &net);
+        if (net > 0) {
+            SPAWN(mtbdd_gc_mark_rec, key);
+            count++;
+        }
     }
-    while (count--) {
-        SYNC(mtbdd_gc_mark_rec);
-    }
+    while (count--) SYNC(mtbdd_gc_mark_rec);
 }
 
 VOID_TASK_0(mtbdd_gc_mark_protected)
@@ -390,7 +425,24 @@ static int mtbdd_initialized = 0;
 static void
 mtbdd_quit()
 {
-    refs_free(&mtbdd_refs);
+    if (mtbdd_refs) {
+        for (size_t i = 0; i < mtbdd_refs_workers; i++) {
+            refs_free(&mtbdd_refs[i]);
+        }
+        free(mtbdd_refs);
+        mtbdd_refs = NULL;
+        mtbdd_refs_workers = 0;
+    }
+    refs_free(&mtbdd_refs_merge);
+#ifdef SYLVAN_REFS_STATS
+    if (mtbdd_refs_names) {
+        for (size_t i = 0; i < mtbdd_refs_workers; i++) {
+            free(mtbdd_refs_names[i]);
+        }
+        free(mtbdd_refs_names);
+        mtbdd_refs_names = NULL;
+    }
+#endif
     if (mtbdd_protected_created) {
         protect_free(&mtbdd_protected);
         mtbdd_protected_created = 0;
@@ -411,9 +463,32 @@ sylvan_init_mtbdd()
     sylvan_gc_add_mark(TASK(mtbdd_gc_mark_external_refs));
     sylvan_gc_add_mark(TASK(mtbdd_gc_mark_protected));
 
-    refs_create(&mtbdd_refs, SYLVAN_REFS_INIT_SIZE);
+    mtbdd_refs_workers = lace_workers();
+    if (mtbdd_refs_workers == 0) mtbdd_refs_workers = 1;
+    mtbdd_refs = (refs_table_t*)malloc(sizeof(refs_table_t) * mtbdd_refs_workers);
+    if (mtbdd_refs == NULL) {
+        fprintf(stderr, "mtbdd: Unable to allocate refs tables!\n");
+        exit(1);
+    }
+    for (size_t i = 0; i < mtbdd_refs_workers; i++) {
+        refs_create(&mtbdd_refs[i], SYLVAN_REFS_INIT_SIZE);
+    }
+    refs_create(&mtbdd_refs_merge, SYLVAN_REFS_INIT_SIZE);
 #ifdef SYLVAN_REFS_STATS
-    refs_stats_register(&mtbdd_refs, "mtbdd_refs");
+    mtbdd_refs_names = (char**)malloc(sizeof(char*) * mtbdd_refs_workers);
+    if (mtbdd_refs_names == NULL) {
+        fprintf(stderr, "mtbdd: Unable to allocate refs stats names!\n");
+        exit(1);
+    }
+    for (size_t i = 0; i < mtbdd_refs_workers; i++) {
+        mtbdd_refs_names[i] = (char*)malloc(32);
+        if (mtbdd_refs_names[i] == NULL) {
+            fprintf(stderr, "mtbdd: Unable to allocate refs stats name!\n");
+            exit(1);
+        }
+        snprintf(mtbdd_refs_names[i], 32, "mtbdd_refs_w%zu", i);
+        refs_stats_register(&mtbdd_refs[i], mtbdd_refs_names[i]);
+    }
 #endif
     if (!mtbdd_protected_created) {
         protect_create(&mtbdd_protected, SYLVAN_PROTECT_INIT_SIZE);

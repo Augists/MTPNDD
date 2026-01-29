@@ -42,6 +42,23 @@ static const uint64_t refs_ts = 0x7fffffffffffffff; // tombstone
 
 #define fnvhash8(a) sylvan_fnvhash8(a, 14695981039346656037LLU)
 
+static const int32_t refs_count_max = 0x007fffff;
+static const int32_t refs_count_min = -0x00800000;
+
+static inline int32_t
+refs_unpack_count(uint64_t v)
+{
+    int32_t count = (int32_t)(v >> 40);
+    if (count & 0x00800000) count |= ~0x00ffffff;
+    return count;
+}
+
+static inline uint64_t
+refs_pack_count(uint64_t key, int32_t count)
+{
+    return (key & 0x000000ffffffffffULL) | ((uint64_t)(count & 0x00ffffff) << 40);
+}
+
 #ifdef SYLVAN_REFS_STATS
 #define SYLVAN_REFS_STATS_BUCKETS 4096u
 #define SYLVAN_REFS_STATS_MAX 8u
@@ -417,22 +434,24 @@ ref_restart:
         } else if (v == 0) {
             // not found
             res = 0;
-            if (dir < 0) goto ref_exit;
             if (ts_bucket != NULL) {
                 bucket = ts_bucket;
                 ts_bucket = NULL;
                 v = refs_ts;
             }
-            new_v = a | (1ULL << 40);
+            new_v = refs_pack_count(a, (int32_t)dir);
             goto ref_mod;
         } else if ((v & 0x000000ffffffffff) == a) {
             // found
             res = 1;
-            uint64_t count = v >> 40;
-            if (count == 0x7fffff) goto ref_exit;
+            int32_t count = refs_unpack_count(v);
+            if ((dir > 0 && count == refs_count_max) ||
+                (dir < 0 && count == refs_count_min)) {
+                goto ref_exit;
+            }
             count += dir;
             if (count == 0) new_v = refs_ts;
-            else new_v = a | (count << 40);
+            else new_v = refs_pack_count(a, count);
             goto ref_mod;
         }
 
@@ -440,14 +459,11 @@ ref_restart:
     }
 
     // not found after linear probing
-    if (dir < 0) {
-        res = 0;
-        goto ref_exit;
-    } else if (ts_bucket != NULL) {
+    if (ts_bucket != NULL) {
         bucket = ts_bucket;
         ts_bucket = NULL;
         v = refs_ts;
-        new_v = a | (1ULL << 40);
+        new_v = refs_pack_count(a, (int32_t)dir);
         if (!atomic_compare_exchange_weak(bucket, &v, new_v)) {
 #ifdef SYLVAN_REFS_STATS
             retry_count++;
@@ -514,12 +530,7 @@ refs_up(refs_table_t *tbl, uint64_t a)
 void
 refs_down(refs_table_t *tbl, uint64_t a)
 {
-#ifdef NDEBUG
     refs_modify(tbl, a, -1);
-#else
-    int res = refs_modify(tbl, a, -1);
-    assert(res != 0);
-#endif
 }
 
 uint64_t*
@@ -557,6 +568,26 @@ refs_next(refs_table_t *tbl, uint64_t **_bucket, size_t end)
     return result;
 }
 
+uint64_t
+refs_next_full(refs_table_t *tbl, uint64_t **_bucket, size_t end, int32_t *count_out)
+{
+    _Atomic(uint64_t)* bucket = (_Atomic(uint64_t)*)*_bucket;
+    uint64_t v = atomic_load_explicit(bucket, memory_order_relaxed);
+    uint64_t result = v & 0x000000ffffffffff;
+    if (count_out) *count_out = refs_unpack_count(v);
+    bucket++;
+    while (bucket != tbl->refs_table + end) {
+        uint64_t d = atomic_load_explicit(bucket, memory_order_relaxed);
+        if (d != 0 && d != refs_ts) {
+            *_bucket = (uint64_t*)bucket;
+            return result;
+        }
+        bucket++;
+    }
+    *_bucket = NULL;
+    return result;
+}
+
 void
 refs_create(refs_table_t *tbl, size_t _refs_size)
 {
@@ -580,6 +611,46 @@ void
 refs_free(refs_table_t *tbl)
 {
     free_aligned(tbl->refs_table, tbl->refs_size * sizeof(uint64_t));
+}
+
+void
+refs_clear(refs_table_t *tbl)
+{
+    memset(tbl->refs_table, 0, tbl->refs_size * sizeof(uint64_t));
+}
+
+int
+refs_set_add(refs_table_t *tbl, uint64_t key, int32_t delta)
+{
+    _Atomic(uint64_t)* bucket = tbl->refs_table + (fnvhash8(key) & (tbl->refs_size - 1));
+    _Atomic(uint64_t)* ts_bucket = NULL;
+    int i = 128;
+
+    while (i--) {
+        uint64_t v = *bucket;
+        if (v == refs_ts) {
+            if (ts_bucket == NULL) ts_bucket = bucket;
+        } else if (v == 0) {
+            if (ts_bucket != NULL) {
+                bucket = ts_bucket;
+                ts_bucket = NULL;
+            }
+            *bucket = refs_pack_count(key, delta);
+            return 1;
+        } else if ((v & 0x000000ffffffffff) == key) {
+            int32_t count = refs_unpack_count(v);
+            if ((delta > 0 && count == refs_count_max) ||
+                (delta < 0 && count == refs_count_min)) {
+                return 0;
+            }
+            count += delta;
+            if (count == 0) *bucket = refs_ts;
+            else *bucket = refs_pack_count(key, count);
+            return 1;
+        }
+        if (++bucket == tbl->refs_table + tbl->refs_size) bucket = tbl->refs_table;
+    }
+    return 0;
 }
 
 /**
