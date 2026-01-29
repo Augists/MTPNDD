@@ -31,6 +31,8 @@ typedef struct mtpndd_slab_pool_s {
     mtpndd_slab_block_t *blocks;
     size_t slab_count;
     _Atomic size_t in_use;
+    size_t refill_batch;
+    size_t local_max;
     pthread_mutex_t lock;
     bool lock_initialized;
 
@@ -50,8 +52,8 @@ static size_t g_edge_bucket_array_offset = 0;
 
 // Batch sizes are tuned for high-frequency alloc/free paths:
 // refill/spill in larger chunks amortizes the global mutex.
-#define MTPNDD_POOL_REFILL_BATCH 32
-#define MTPNDD_POOL_LOCAL_MAX 256
+#define MTPNDD_POOL_REFILL_BATCH_DEFAULT 32
+#define MTPNDD_POOL_LOCAL_MAX_DEFAULT 256
 
 static inline int mtpndd_worker_id(void) {
     WorkerP *w = lace_get_worker();
@@ -73,6 +75,8 @@ static void mtpndd_slab_pool_reset(mtpndd_slab_pool_t *pool) {
     pool->blocks = NULL;
     pool->slab_count = 0;
     atomic_store_explicit(&pool->in_use, 0, memory_order_relaxed);
+    pool->refill_batch = MTPNDD_POOL_REFILL_BATCH_DEFAULT;
+    pool->local_max = MTPNDD_POOL_LOCAL_MAX_DEFAULT;
     pool->lock_initialized = false;
     pool->locals = NULL;
     pool->locals_count = 0;
@@ -140,7 +144,7 @@ static void mtpndd_slab_pool_refill_local(mtpndd_slab_pool_t *pool, mtpndd_slab_
     }
 
     size_t moved = 0;
-    while (pool->free_list && moved < MTPNDD_POOL_REFILL_BATCH) {
+    while (pool->free_list && moved < pool->refill_batch) {
         void *obj = pool->free_list;
         pool->free_list = *((void **)obj);
         *((void **)obj) = local->free_list;
@@ -157,7 +161,7 @@ static void mtpndd_slab_pool_spill_local(mtpndd_slab_pool_t *pool, mtpndd_slab_l
     pthread_mutex_lock(&pool->lock);
 
     size_t moved = 0;
-    while (local->free_list && local->count > MTPNDD_POOL_LOCAL_MAX / 2 && moved < MTPNDD_POOL_REFILL_BATCH) {
+    while (local->free_list && local->count > pool->local_max / 2 && moved < pool->refill_batch) {
         void *obj = local->free_list;
         local->free_list = *((void **)obj);
         local->count--;
@@ -220,7 +224,7 @@ static void mtpndd_slab_pool_release(mtpndd_slab_pool_t *pool, void *object) {
         local->count++;
         size_t prev = atomic_load_explicit(&pool->in_use, memory_order_relaxed);
         if (prev > 0) atomic_fetch_sub_explicit(&pool->in_use, 1, memory_order_relaxed);
-        if (local->count > MTPNDD_POOL_LOCAL_MAX) {
+        if (local->count > pool->local_max) {
             mtpndd_slab_pool_spill_local(pool, local);
         }
         return;
@@ -234,12 +238,22 @@ static void mtpndd_slab_pool_release(mtpndd_slab_pool_t *pool, void *object) {
     pthread_mutex_unlock(&pool->lock);
 }
 
-static void mtpndd_slab_pool_setup(mtpndd_slab_pool_t *pool, size_t object_size, size_t alignment, size_t objects_per_slab) {
+static size_t mtpndd_scaled_param(size_t base, unsigned int workers, size_t max_cap) {
+    if (workers == 0) workers = 1;
+    size_t scaled = base * (size_t)workers;
+    if (max_cap && scaled > max_cap) return max_cap;
+    return scaled;
+}
+
+static void mtpndd_slab_pool_setup(mtpndd_slab_pool_t *pool, size_t object_size, size_t alignment,
+                                   size_t objects_per_slab, size_t refill_batch, size_t local_max) {
     mtpndd_slab_pool_reset(pool);
     size_t align = alignment < sizeof(void *) ? sizeof(void *) : alignment;
     size_t aligned_size = mtpndd_align_size(object_size, align);
     pool->object_size = aligned_size;
     pool->objects_per_slab = objects_per_slab ? objects_per_slab : 1;
+    pool->refill_batch = refill_batch ? refill_batch : MTPNDD_POOL_REFILL_BATCH_DEFAULT;
+    pool->local_max = local_max ? local_max : MTPNDD_POOL_LOCAL_MAX_DEFAULT;
     pthread_mutex_init(&pool->lock, NULL);
     pool->lock_initialized = true;
 }
@@ -261,7 +275,12 @@ void mtpndd_memory_pools_init(void) {
     size_t nodetable_capacity = g_mtpndd_pal_config.nodetable_entry_slab_capacity;
     size_t edge_map_capacity = g_mtpndd_pal_config.edge_map_slab_capacity;
 
-    mtpndd_slab_pool_setup(&g_node_pool, sizeof(mtpndd_node_t), _Alignof(mtpndd_node_t), node_capacity);
+    unsigned int workers = lace_workers();
+    size_t edge_refill = mtpndd_scaled_param(64, workers, 256);
+    size_t edge_local = mtpndd_scaled_param(512, workers, 2048);
+
+    mtpndd_slab_pool_setup(&g_node_pool, sizeof(mtpndd_node_t), _Alignof(mtpndd_node_t), node_capacity,
+                           MTPNDD_POOL_REFILL_BATCH_DEFAULT, MTPNDD_POOL_LOCAL_MAX_DEFAULT);
 
     g_edge_bucket_count = g_mtpndd_pal_config.edge_bucket_count;
     if (g_edge_bucket_count == 0) {
@@ -289,9 +308,12 @@ void mtpndd_memory_pools_init(void) {
     offset = mtpndd_align_size(offset, _Alignof(edge_bucket_entry_t *));
     g_edge_bucket_array_offset = offset;
     offset += sizeof(edge_bucket_entry_t *) * g_edge_bucket_count;
-    mtpndd_slab_pool_setup(&g_edge_map_pool, offset, _Alignof(mtpndd_edge_t), edge_map_capacity);
-    mtpndd_slab_pool_setup(&g_edge_entry_pool, sizeof(edge_bucket_entry_t), _Alignof(edge_bucket_entry_t), edge_capacity);
-    mtpndd_slab_pool_setup(&g_nodetable_entry_pool, sizeof(mtpndd_nodetable_bucket_entry_t), _Alignof(mtpndd_nodetable_bucket_entry_t), nodetable_capacity);
+    mtpndd_slab_pool_setup(&g_edge_map_pool, offset, _Alignof(mtpndd_edge_t), edge_map_capacity,
+                           edge_refill, edge_local);
+    mtpndd_slab_pool_setup(&g_edge_entry_pool, sizeof(edge_bucket_entry_t), _Alignof(edge_bucket_entry_t), edge_capacity,
+                           edge_refill, edge_local);
+    mtpndd_slab_pool_setup(&g_nodetable_entry_pool, sizeof(mtpndd_nodetable_bucket_entry_t), _Alignof(mtpndd_nodetable_bucket_entry_t), nodetable_capacity,
+                           MTPNDD_POOL_REFILL_BATCH_DEFAULT, MTPNDD_POOL_LOCAL_MAX_DEFAULT);
 
     // Must be called after lace_start() so lace_workers() is valid.
     (void)mtpndd_slab_pool_init_locals(&g_node_pool);

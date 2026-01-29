@@ -23,6 +23,9 @@
 
 #include <errno.h>  // for errno
 #include <string.h> // for strerror
+#ifdef SYLVAN_REFS_STATS
+#include <inttypes.h>
+#endif
 
 #ifndef compiler_barrier
 #define compiler_barrier() atomic_signal_fence(memory_order_seq_cst)
@@ -36,6 +39,101 @@
 static const uint64_t refs_ts = 0x7fffffffffffffff; // tombstone
 
 #define fnvhash8(a) sylvan_fnvhash8(a, 14695981039346656037LLU)
+
+#ifdef SYLVAN_REFS_STATS
+#define SYLVAN_REFS_STATS_BUCKETS 4096u
+#define SYLVAN_REFS_STATS_MAX 8u
+
+typedef struct refs_stats_entry {
+    refs_table_t *tbl;
+    const char *name;
+    size_t refs_size;
+    _Atomic uint64_t modify_calls;
+    _Atomic uint64_t ups;
+    _Atomic uint64_t downs;
+    _Atomic uint64_t updates;
+    _Atomic uint64_t misses;
+    _Atomic uint64_t probes;
+    _Atomic uint64_t retries;
+    _Atomic uint64_t bucket_hist[SYLVAN_REFS_STATS_BUCKETS];
+} refs_stats_entry_t;
+
+static refs_stats_entry_t refs_stats_entries[SYLVAN_REFS_STATS_MAX];
+static _Atomic size_t refs_stats_count = 0;
+
+static inline refs_stats_entry_t *
+refs_stats_get(refs_table_t *tbl)
+{
+    return (refs_stats_entry_t *)tbl->stats;
+}
+
+void
+refs_stats_register(refs_table_t *tbl, const char *name)
+{
+    if (!tbl || !name) return;
+    size_t idx = atomic_fetch_add(&refs_stats_count, 1);
+    if (idx >= SYLVAN_REFS_STATS_MAX) return;
+    refs_stats_entry_t *entry = &refs_stats_entries[idx];
+    entry->tbl = tbl;
+    entry->name = name;
+    entry->refs_size = tbl->refs_size;
+    tbl->stats = entry;
+}
+
+static void
+refs_stats_dump_entry(FILE *out, refs_stats_entry_t *entry)
+{
+    if (!entry || !out) return;
+    uint64_t modify_calls = atomic_load_explicit(&entry->modify_calls, memory_order_relaxed);
+    uint64_t ups = atomic_load_explicit(&entry->ups, memory_order_relaxed);
+    uint64_t downs = atomic_load_explicit(&entry->downs, memory_order_relaxed);
+    uint64_t updates = atomic_load_explicit(&entry->updates, memory_order_relaxed);
+    uint64_t misses = atomic_load_explicit(&entry->misses, memory_order_relaxed);
+    uint64_t probes = atomic_load_explicit(&entry->probes, memory_order_relaxed);
+    uint64_t retries = atomic_load_explicit(&entry->retries, memory_order_relaxed);
+    double avg_probes = modify_calls ? ((double)probes / (double)modify_calls) : 0.0;
+
+    fprintf(out, "[refs-stats] %s\n", entry->name);
+    fprintf(out, "[refs-stats] modify_calls=%" PRIu64 " ups=%" PRIu64 " downs=%" PRIu64
+                 " updates=%" PRIu64 " misses=%" PRIu64 " retries=%" PRIu64 " avg_probes=%.3f\n",
+            modify_calls, ups, downs, updates, misses, retries, avg_probes);
+
+    /* Top 8 buckets in histogram (hash into SYLVAN_REFS_STATS_BUCKETS) */
+    uint64_t top_counts[8] = {0};
+    size_t top_idx[8] = {0};
+    for (size_t i = 0; i < SYLVAN_REFS_STATS_BUCKETS; i++) {
+        uint64_t v = atomic_load_explicit(&entry->bucket_hist[i], memory_order_relaxed);
+        if (v == 0) continue;
+        for (size_t j = 0; j < 8; j++) {
+            if (v > top_counts[j]) {
+                for (size_t k = 7; k > j; k--) {
+                    top_counts[k] = top_counts[k-1];
+                    top_idx[k] = top_idx[k-1];
+                }
+                top_counts[j] = v;
+                top_idx[j] = i;
+                break;
+            }
+        }
+    }
+    fprintf(out, "[refs-stats] top_buckets (bucket_mod,count):");
+    for (size_t j = 0; j < 8; j++) {
+        if (top_counts[j] == 0) break;
+        fprintf(out, " %zu=%" PRIu64, top_idx[j], top_counts[j]);
+    }
+    fprintf(out, "\n");
+}
+
+void
+refs_stats_dump(FILE *out)
+{
+    if (!out) out = stderr;
+    size_t count = atomic_load_explicit(&refs_stats_count, memory_order_relaxed);
+    for (size_t i = 0; i < count; i++) {
+        refs_stats_dump_entry(out, &refs_stats_entries[i]);
+    }
+}
+#endif
 
 // Count number of unique entries (not number of references)
 size_t
@@ -183,6 +281,15 @@ refs_modify(refs_table_t *tbl, const uint64_t a, const int dir)
     _Atomic(uint64_t)* ts_bucket;
     uint64_t v, new_v;
     int res, i;
+#ifdef SYLVAN_REFS_STATS
+    refs_stats_entry_t *stats = refs_stats_get(tbl);
+    int probe_count = 0;
+    if (stats) {
+        atomic_fetch_add_explicit(&stats->modify_calls, 1, memory_order_relaxed);
+        if (dir > 0) atomic_fetch_add_explicit(&stats->ups, 1, memory_order_relaxed);
+        else atomic_fetch_add_explicit(&stats->downs, 1, memory_order_relaxed);
+    }
+#endif
 
     refs_enter(tbl);
 
@@ -192,6 +299,9 @@ ref_retry:
     i = 128; // try 128 times linear probing
 
     while (i--) {
+#ifdef SYLVAN_REFS_STATS
+        probe_count++;
+#endif
 ref_restart:
         v = *bucket;
         if (v == refs_ts) {
@@ -230,7 +340,12 @@ ref_restart:
         ts_bucket = NULL;
         v = refs_ts;
         new_v = a | (1ULL << 40);
-        if (!atomic_compare_exchange_weak(bucket, &v, new_v)) goto ref_retry;
+        if (!atomic_compare_exchange_weak(bucket, &v, new_v)) {
+#ifdef SYLVAN_REFS_STATS
+            if (stats) atomic_fetch_add_explicit(&stats->retries, 1, memory_order_relaxed);
+#endif
+            goto ref_retry;
+        }
         res = 1;
         goto ref_exit;
     } else {
@@ -241,9 +356,27 @@ ref_restart:
     }
 
 ref_mod:
-    if (!atomic_compare_exchange_weak(bucket, &v, new_v)) goto ref_restart;
+    if (!atomic_compare_exchange_weak(bucket, &v, new_v)) {
+#ifdef SYLVAN_REFS_STATS
+        if (stats) atomic_fetch_add_explicit(&stats->retries, 1, memory_order_relaxed);
+#endif
+        goto ref_restart;
+    }
+#ifdef SYLVAN_REFS_STATS
+    if (stats) {
+        atomic_fetch_add_explicit(&stats->updates, 1, memory_order_relaxed);
+        size_t idx = (size_t)(bucket - tbl->refs_table);
+        atomic_fetch_add_explicit(&stats->bucket_hist[idx & (SYLVAN_REFS_STATS_BUCKETS - 1)], 1, memory_order_relaxed);
+    }
+#endif
 
 ref_exit:
+#ifdef SYLVAN_REFS_STATS
+    if (stats) {
+        if (res == 0) atomic_fetch_add_explicit(&stats->misses, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&stats->probes, (uint64_t)probe_count, memory_order_relaxed);
+    }
+#endif
     refs_leave(tbl);
     return res;
 }
@@ -314,6 +447,9 @@ refs_create(refs_table_t *tbl, size_t _refs_size)
         fprintf(stderr, "refs: Unable to allocate memory: %s!\n", strerror(errno));
         exit(1);
     }
+#ifdef SYLVAN_REFS_STATS
+    tbl->stats = NULL;
+#endif
 }
 
 void

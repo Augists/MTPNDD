@@ -101,6 +101,12 @@ if(SYLVAN_STATS)
     target_compile_definitions(sylvan PUBLIC SYLVAN_STATS)
 endif()
 
+# Optional refcount statistics (compile-time only)
+option(SYLVAN_REFS_STATS "Collect refs table statistics for profiling" OFF)
+if(SYLVAN_REFS_STATS)
+    target_compile_definitions(sylvan PUBLIC SYLVAN_REFS_STATS)
+endif()
+
 set_target_properties(sylvan PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib

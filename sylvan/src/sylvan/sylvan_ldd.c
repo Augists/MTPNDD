@@ -342,6 +342,9 @@ sylvan_init_ldd()
     sylvan_gc_add_mark(TASK(lddmc_gc_mark_serialize));
 
     refs_create(&lddmc_refs, 1024);
+#ifdef SYLVAN_REFS_STATS
+    refs_stats_register(&lddmc_refs, "lddmc_refs");
+#endif
     if (!lddmc_protected_created) {
         protect_create(&lddmc_protected, 4096);
         lddmc_protected_created = 1;

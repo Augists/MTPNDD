@@ -20,6 +20,9 @@
 #ifndef REFS_INLINE_H
 #define REFS_INLINE_H
 
+#ifdef SYLVAN_REFS_STATS
+#include <stdio.h>
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
@@ -40,6 +43,9 @@ typedef struct
     size_t refs_resize_size;              // size of previous table
     _Atomic(size_t) refs_resize_part;     // which part is next
     _Atomic(size_t) refs_resize_done;     // how many parts are done
+#ifdef SYLVAN_REFS_STATS
+    void *stats;
+#endif
 } refs_table_t;
 
 // Count number of unique entries (not number of references)
@@ -59,6 +65,10 @@ uint64_t refs_next(refs_table_t *tbl, uint64_t **bucket, size_t end);
 // User must supply a pointer, refs_create and refs_free handle initialization/destruction
 void refs_create(refs_table_t *tbl, size_t _refs_size);
 void refs_free(refs_table_t *tbl);
+#ifdef SYLVAN_REFS_STATS
+void refs_stats_register(refs_table_t *tbl, const char *name);
+void refs_stats_dump(FILE *out);
+#endif
 
 // The same, but now for 64-bit values ("protect pointers")
 size_t protect_count(refs_table_t *tbl);
