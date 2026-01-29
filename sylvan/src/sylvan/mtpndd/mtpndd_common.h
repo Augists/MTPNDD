@@ -10,9 +10,32 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <stdio.h>
 
-#ifdef ENABLE_RECORDING
+#ifndef MTPNDD_LOG_LEVEL
+#define MTPNDD_LOG_LEVEL 1
+#endif
+
+#define MTPNDD_LOG_LEVEL_QUIET 0
+#define MTPNDD_LOG_LEVEL_INFO 1
+#define MTPNDD_LOG_LEVEL_DEBUG 2
+
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 #include <time.h>
+#endif
+
+#define MTPNDD_LOG_ERROR(...) do { fprintf(stderr, __VA_ARGS__); fflush(stderr); } while (0)
+
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
+#define MTPNDD_LOG_INFO(...) do { fprintf(stdout, __VA_ARGS__); fflush(stdout); } while (0)
+#else
+#define MTPNDD_LOG_INFO(...) ((void)0)
+#endif
+
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+#define MTPNDD_LOG_DEBUG(...) do { fprintf(stdout, __VA_ARGS__); fflush(stdout); } while (0)
+#else
+#define MTPNDD_LOG_DEBUG(...) ((void)0)
 #endif
 
 struct mtpndd_node_s;
@@ -127,7 +150,7 @@ extern mtpndd_pal_config_t g_mtpndd_pal_config;
 
 typedef struct mtpndd_stats_s {
     uint64_t node_count;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     uint64_t max_edges_per_node;
     uint64_t bdd_nodes_converted;
     uint64_t cache_lookup_hits;
@@ -209,7 +232,7 @@ typedef struct mtpndd_stats_s {
 
 extern mtpndd_stats_t g_mtpndd_stats;
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 static inline void mtpndd_stat_add(uint64_t *field, uint64_t value) {
     __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
 }

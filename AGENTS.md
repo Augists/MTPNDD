@@ -17,13 +17,13 @@ MTPNDD adds Lace-backed parallelism on top of Sylvan; most contributions should 
 ## Build, Test, and Development Commands
 
 - Native (C):  
-  `cd sylvan && cmake -B build -DMTPNDD_ENABLE_RECORDING=ON && cmake --build build`
+  `cd sylvan && cmake -B build -DMTPNDD_LOG_LEVEL=2 && cmake --build build`
 - Run the n-queens smoke test:  
   `./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_test 8`
 - Run C tests (if built):  
   `ctest --test-dir sylvan/build`
 - JNI build + unit tests:  
-  `cd jni && cmake -B build -DMTPNDD_ENABLE_RECORDING=ON && cmake --build build`  
+  `cd jni && cmake -B build -DMTPNDD_LOG_LEVEL=2 && cmake --build build`  
   `mvn -DskipTests package`  
   `mvn -Dorg.ants.mtpndd.library.path="$PWD/build/libmtpnddjni.so" test`
 

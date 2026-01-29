@@ -257,7 +257,7 @@ static bool run_benchmark(size_t n) {
     double elapsed = timespec_diff_seconds(&start_ts, &end_ts);
 
     printf("\t%.3f\t%" PRIu64 "\n", elapsed, solutions);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     const mtpndd_stats_t *stats = mtpndd_get_stats();
     if (stats) {
         printf(".. stats: created=%" PRIu64 ", reused=%" PRIu64 ", collected=%" PRIu64 "\n",

@@ -37,7 +37,7 @@
 3. **JSylvan 新版适配移除 `LACE_ME`**：在新 Lace 语义下无法在 Java 线程创建 worker 上下文，导致所有操作走慢路径。
 
 ## 3. MTPNDD 当前基线（NQueens N=12）
-- 命令：`./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12`（`MTPNDD_ENABLE_RECORDING=ON`）
+- 命令：`./sylvan/build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12`（`MTPNDD_LOG_LEVEL=2`）
 - 结果：solutions=14200，总耗时 **28.143s**
 - AND 时间分解：
   - and/or/not 总时间：27.822 / 0.032 / 0.001 s

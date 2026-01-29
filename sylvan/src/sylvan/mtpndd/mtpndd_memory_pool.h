@@ -32,7 +32,7 @@ typedef struct {
 void mtpndd_memory_pools_init(void);
 void mtpndd_memory_pools_shutdown(void);
 void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 void mtpndd_log_memory_pools(const char *phase);
 #endif
 

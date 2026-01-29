@@ -7,7 +7,7 @@ This note lists candidate efficiency improvements derived from contention eviden
 - Refcount table cacheline dominates HITM (likely `mtbdd_refs`): `docs/archived/perf/c2c_addr_mapping.md`
 - c2c intensity shows ~78% of HITM on a single cacheline: `docs/archived/perf/c2c_intensity_metrics.md`
 - refs_stats (1c vs 4c): `docs/archived/perf/refs_stats_n12.md`
-- Note: N=12 runtimes are sensitive to `MTPNDD_ENABLE_RECORDING`; recording-enabled builds are significantly slower. Use consistent build flags when comparing runs.
+- Note: N=12 runtimes are sensitive to `MTPNDD_LOG_LEVEL`; DEBUG (>=2) builds are significantly slower. Use consistent build flags when comparing runs.
 
 ## Hypothesis 1: Slab pool lock contention is a primary scaling limiter
 **Why:** perf futex tracepoints show ~95% of futex activity on slab pool locks (edge_map/edge_entry dominate), and futex WAKE/WAIT counts rise steeply with workers.

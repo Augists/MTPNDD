@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 #include <time.h>
 #endif
 
@@ -51,7 +51,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
     if (a == b) return true;
     if (!a || !b) return false;
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     struct timespec compare_start = {0};
     struct timespec compare_end = {0};
     size_t compare_entries = 0;
@@ -59,7 +59,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
     size_t compare_max_steps = 0;
     clock_gettime(CLOCK_MONOTONIC, &compare_start);
 #endif
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     bool result = true;
 #define NODETABLE_RETURN(val) do { result = (val); goto record_compare; } while (0)
 #else
@@ -86,7 +86,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
     for (size_t i = 0; i < edge_bucket_cnt; i++) {
         edge_bucket_entry_t *entry_a = a->buckets ? a->buckets[i] : NULL;
         while (entry_a) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
             size_t steps = 0;
             compare_entries++;
 #endif
@@ -100,7 +100,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
                 size_t b_bucket = EDGE_MAP_BUCKET_INDEX(b, child_a);
                 edge_bucket_entry_t *entry_b = b->buckets[b_bucket];
                 while (entry_b) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
                     steps++;
 #endif
                     if (entry_b->child == child_a) {
@@ -113,7 +113,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
                     entry_b = entry_b->next;
                 }
             }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
             compare_steps_total += steps;
             if (steps > compare_max_steps) {
                 compare_max_steps = steps;
@@ -126,7 +126,7 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
             entry_a = entry_a->next;
         }
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 record_compare:
     clock_gettime(CLOCK_MONOTONIC, &compare_end);
     MTPNDD_STAT_ADD(nodetable_edge_compare_ns, mtpndd_timespec_diff_ns(&compare_start, &compare_end));

@@ -19,7 +19,8 @@ if(NOT EXISTS "${MTPNDD_INCLUDE_DIR}/mtpndd.h")
     message(FATAL_ERROR "MTPNDD headers not found in ${MTPNDD_INCLUDE_DIR}. Set MTPNDD_INCLUDE_DIR to the directory containing mtpndd.h")
 endif()
 
-option(MTPNDD_ENABLE_RECORDING "Enable MTPNDD recording instrumentation for JNI bridge" OFF)
+set(MTPNDD_LOG_LEVEL "1" CACHE STRING "MTPNDD log level: 0=QUIET, 1=INFO, 2=DEBUG")
+set_property(CACHE MTPNDD_LOG_LEVEL PROPERTY STRINGS 0 1 2)
 
 add_library(mtpnddjni SHARED src/main/native/mtpndd_jni.c)
 target_include_directories(mtpnddjni
@@ -39,8 +40,6 @@ target_link_libraries(mtpnddjni PRIVATE
     m
 )
 
-if(MTPNDD_ENABLE_RECORDING)
-    target_compile_definitions(mtpnddjni PRIVATE ENABLE_RECORDING)
-endif()
+target_compile_definitions(mtpnddjni PRIVATE MTPNDD_LOG_LEVEL=${MTPNDD_LOG_LEVEL})
 
 set_target_properties(mtpnddjni PROPERTIES OUTPUT_NAME "mtpnddjni")

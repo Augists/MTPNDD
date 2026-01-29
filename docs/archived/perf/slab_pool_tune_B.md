@@ -10,7 +10,7 @@ File: `sylvan/src/sylvan/mtpndd/mtpndd_memory_pool.c`
 - node + nodetable_entry: keep defaults `32 / 256`.
 
 ## Method
-- Build with `MTPNDD_ENABLE_RECORDING=OFF` and `MTPNDD_NQUEENS_ENABLE_DOT=OFF`.
+- Build with `MTPNDD_LOG_LEVEL=1` and `MTPNDD_NQUEENS_ENABLE_DOT=OFF`.
 - Run `mtpndd_nqueens_test 12` with taskset for 1-4 workers.
 
 Commands (per worker):

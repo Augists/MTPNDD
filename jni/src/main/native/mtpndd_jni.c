@@ -426,7 +426,7 @@ Java_org_ants_mtpndd_MTPNDDEngine_getStatsNative(JNIEnv *env, jclass clazz)
     if (ctor == NULL) {
         return NULL;
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     jlong values[] = {
         (jlong)stats->max_edges_per_node,
         (jlong)stats->bdd_nodes_converted,
@@ -465,12 +465,12 @@ Java_org_ants_mtpndd_MTPNDDEngine_getStatsNative(JNIEnv *env, jclass clazz)
     if (arr == NULL) {
         return NULL;
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     (*env)->SetLongArrayRegion(env, arr, 0, len, values);
 #endif
     jobject result = (*env)->NewObject(env, statsClass, ctor,
             (jlong)stats->node_count,
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
             JNI_TRUE,
 #else
             JNI_FALSE,

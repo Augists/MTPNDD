@@ -131,7 +131,7 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
     mtpndd_node_t *res = atomic_load_explicit(&entry->result, memory_order_acquire);
 
     bool hit = (op0 == lhs && op1 == rhs && res != NULL);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     if (hit) {
         __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
     } else {
@@ -151,7 +151,7 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, 
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     __atomic_add_fetch(&g_mtpndd_stats.cache_store_total, 1, __ATOMIC_RELAXED);
     // Check if we're overwriting a valid entry with different operands
     mtpndd_node_t *old_res = atomic_load_explicit(&entry->result, memory_order_relaxed);
@@ -183,7 +183,7 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
     mtpndd_node_t *res = atomic_load_explicit(&entry->result, memory_order_acquire);
 
     bool hit = (op0 == operand && res != NULL);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     if (hit) {
         __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
     } else {

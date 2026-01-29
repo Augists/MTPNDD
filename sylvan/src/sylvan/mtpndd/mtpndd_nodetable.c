@@ -14,7 +14,7 @@
 #include "sylvan_common.h"
 #include "lace.h"
 #include <stdio.h>
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 #include <time.h>
 #endif
 
@@ -146,7 +146,7 @@ void mtpndd_nodetable_free(mtpndd_nodetable_t *table) {
 
 mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge_t *edges) {
     size_t hash = 0;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     struct timespec phase_start = {0};
     struct timespec phase_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &phase_start);
@@ -154,7 +154,7 @@ mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge
     uint64_t cached_hash = edges ? edges->cached_hash : 0;
     mtpndd_nodetable_lock_hash(nodetable, cached_hash);
     hash = NODETABLE_HASH_VAL(edges, nodetable);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     clock_gettime(CLOCK_MONOTONIC, &phase_end);
     MTPNDD_STAT_ADD(nodetable_hash_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
     clock_gettime(CLOCK_MONOTONIC, &phase_start);
@@ -184,7 +184,7 @@ mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge
     }
     mtpndd_nodetable_unlock_hash(nodetable, cached_hash);
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     clock_gettime(CLOCK_MONOTONIC, &phase_end);
     MTPNDD_STAT_ADD(nodetable_bucket_scan_ns, mtpndd_timespec_diff_ns(&phase_start, &phase_end));
     if (found) {
@@ -265,7 +265,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return;
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     typedef enum {
         MTPNDD_MK_OTHER = 0,
         MTPNDD_MK_HASH,
@@ -319,7 +319,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     *result = NULL;
     if (edges->edge_count == 0) {
         *result = &MTPNDD_FALSE;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_MK_SWITCH(MTPNDD_MK_FAST_RETURN);
         MTPNDD_MK_FINISH();
 #endif
@@ -335,7 +335,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         }
         if (only_entry && atomic_load_explicit(&only_entry->label, memory_order_acquire) == sylvan_true) {
             *result = only_entry->child;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
             MTPNDD_MK_SWITCH(MTPNDD_MK_FAST_RETURN);
             MTPNDD_MK_FINISH();
 #endif
@@ -345,26 +345,26 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
 
     // Compute and cache hash value for edges (like Java HashMap)
     // This must be done after all edges are added and before lookup
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_HASH);
 #endif
     edges->cached_hash = mtpndd_edge_map_compute_hash(edges);
 
     mtpndd_nodetable_t *nodetable = g_mtpndd_config.node_tables_by_field[field];
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_LOOKUP);
 #endif
     mtpndd_node_t *node = find_node_in_nodetable(nodetable, edges);
     edge_bucket_entry_t *entry = NULL;
     if (node) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_MK_SWITCH(MTPNDD_MK_REUSE_CLEANUP);
 #endif
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
             sylvan_deref(label);
         }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_STAT_ADD(nodes_reused_total, 1);
         MTPNDD_MK_FINISH();
 #endif
@@ -373,7 +373,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     }
     // Create new node
     // 1. add ref count of all children
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_REF_CHILDREN);
 #endif
     FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
@@ -382,20 +382,20 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         }
     }
     // 2. check if there should be a gc or grow
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_GC_OR_GROW);
 #endif
     if (g_mtpndd_stats.node_count > g_mtpndd_pal_config.mtpndd_nodetable_size) {
         gcOrGrow();
     }
     // 3. create new node
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_ALLOC_NODE);
 #endif
     node = mtpndd_memory_acquire_node();
     if (!node) {
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_MK_FINISH();
 #endif
         return;
@@ -404,14 +404,14 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     node->edges = edges;
     atomic_init(&node->ref_count, 0);
     // 4. insert into nodetable
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_ALLOC_ENTRY);
 #endif
     mtpndd_nodetable_bucket_entry_t *new_entry = mtpndd_memory_acquire_nodetable_entry();
     if (!new_entry) {
         mtpndd_memory_release_node(node);
         mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_MK_FINISH();
 #endif
         return;
@@ -421,10 +421,10 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     mtpndd_nodetable_lock_hash(nodetable, edges->cached_hash);
     size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
     mtpndd_nodetable_bucket_entry_t *existing_entry = nodetable->buckets[hash];
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     bool bucket_had_entries = existing_entry != NULL;
 #endif
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_BUCKET_SCAN);
 #endif
     while (existing_entry) {
@@ -439,7 +439,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         mtpndd_nodetable_unlock_hash(nodetable, edges->cached_hash);
         mtpndd_memory_release_nodetable_entry(new_entry);
         mtpndd_memory_release_node(node);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_MK_SWITCH(MTPNDD_MK_COLLISION_CLEANUP);
 #endif
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(edges, entry) {
@@ -449,7 +449,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
             mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
             sylvan_deref(label);
         }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         if (bucket_had_entries) {
             MTPNDD_STAT_ADD(nodetable_collision_total, 1);
         }
@@ -461,7 +461,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         return;
     }
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_LINK);
 #endif
     new_entry->next = nodetable->buckets[hash];
@@ -474,7 +474,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     mtpndd_nodetable_unlock_hash(nodetable, edges->cached_hash);
     mtpndd_nodetable_maybe_rehash(nodetable);
     __atomic_add_fetch(&g_mtpndd_stats.node_count, 1, __ATOMIC_RELAXED);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(nodes_created_total, 1);
     if (bucket_had_entries) {
         MTPNDD_STAT_ADD(nodetable_collision_total, 1);
@@ -482,23 +482,21 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     MTPNDD_MK_FINISH();
 #endif
     *result = node;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     #undef MTPNDD_MK_SWITCH
     #undef MTPNDD_MK_FINISH
 #endif
 }
 
 static void gcOrGrow(void) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     struct timespec gc_timer_start = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_start);
-
-    fprintf(stdout,
+    MTPNDD_LOG_DEBUG(
             "[MTPNDD DEBUG] gcOrGrow start node_count=%zu capacity=%zu threshold=%.2f\n",
             (size_t)g_mtpndd_stats.node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size,
             g_mtpndd_pal_config.quick_growth_threshold);
-    fflush(stdout);
     // ← 删除这里的 prehooks 调用（移到 gc_internal() 中）
     mtpndd_log_memory_pools("pre-gc");
 #endif
@@ -516,13 +514,9 @@ static void gcOrGrow(void) {
 
     if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
             < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
-#ifdef ENABLE_RECORDING
-        fprintf(stdout, "[MTPNDD DEBUG] triggering grow (node_count=%zu capacity=%zu)\n",
+        MTPNDD_LOG_DEBUG("[MTPNDD DEBUG] triggering grow (node_count=%zu capacity=%zu)\n",
                 (size_t)g_mtpndd_stats.node_count,
                 (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
-        fflush(stdout);
-#endif
-
         grow_internal();
     }
 
@@ -540,14 +534,12 @@ static void gcOrGrow(void) {
     // 清除 GC 运行标志（原子操作）
     atomic_store(&g_mtpndd_gc_running, false);
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     // ← 删除这里的 posthooks 调用（移到 gc_internal() 中）
     mtpndd_log_memory_pools("post-gc");
-    fprintf(stdout,
-            "[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
+    MTPNDD_LOG_DEBUG("[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
             (size_t)g_mtpndd_stats.node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
-    fflush(stdout);
 
     struct timespec gc_timer_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_end);
@@ -556,7 +548,7 @@ static void gcOrGrow(void) {
 }
 
 static void gc_internal(void) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     __atomic_add_fetch(&g_mtpndd_stats.gc_runs, 1, __ATOMIC_RELAXED);
 #endif
     mtpndd_gc_run_prehooks();
@@ -566,7 +558,7 @@ static void gc_internal(void) {
     if (reclaimed > 0) {
         __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_STAT_SET(nodes_collected_last, reclaimed);
 #endif
     }
@@ -676,7 +668,7 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
     table->buckets = new_buckets;
     table->nodetable_bucket_count = new_bucket_count;
     table->load_threshold = new_bucket_count - (new_bucket_count >> 2);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(nodetable_rehash_total, 1);
     MTPNDD_STAT_MAX(nodetable_max_buckets, new_bucket_count);
 #endif
@@ -731,14 +723,12 @@ static void grow_internal(void) {
         mtpndd_nodetable_unlock_all(table);
         pthread_mutex_unlock(&table->rehash_mutex);
         if (!ok) {
-            fprintf(stderr, "[MTPNDD ERROR] nodetable rehash failed for field=%u (bucket target=%zu)\n",
+            MTPNDD_LOG_ERROR("[MTPNDD ERROR] nodetable rehash failed for field=%u (bucket target=%zu)\n",
                     field, new_bucket_count);
-            fflush(stderr);
             return;
         }
-        fprintf(stdout, "[MTPNDD DEBUG] field=%u rehashed to buckets=%zu\n",
+        MTPNDD_LOG_DEBUG("[MTPNDD DEBUG] field=%u rehashed to buckets=%zu\n",
                 field, new_bucket_count);
-        fflush(stdout);
     }
     g_mtpndd_pal_config.mtpndd_nodetable_size = new_capacity;
     size_t config_bucket = g_mtpndd_pal_config.nodetable_bucket_count;
@@ -746,7 +736,6 @@ static void grow_internal(void) {
         config_bucket = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
     g_mtpndd_pal_config.nodetable_bucket_count = config_bucket * 2;
-    fprintf(stdout, "[MTPNDD DEBUG] nodetable capacity doubled to %zu (config buckets=%zu)\n",
+    MTPNDD_LOG_DEBUG("[MTPNDD DEBUG] nodetable capacity doubled to %zu (config buckets=%zu)\n",
             new_capacity, g_mtpndd_pal_config.nodetable_bucket_count);
-    fflush(stdout);
 }

@@ -644,7 +644,7 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     mtpndd_gc_hook_pregc(mtpndd_gc_hook_mtpndd_pre);
     mtpndd_gc_hook_postgc(mtpndd_gc_hook_mtpndd_post);
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     memset(&g_mtpndd_stats, 0, sizeof(g_mtpndd_stats));
 #endif
     
@@ -673,36 +673,39 @@ static void mtpndd_gc_hook_sylvan_pre(WorkerP *worker, Task *task) {
     // MTPNDD GC before Sylvan GC
     mtpndd_gc_before_sylvan();
 
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
     size_t refs = sylvan_count_refs();
-    fprintf(stdout, "[Sylvan GC] start refs=%zu capacity=%zu\n",
+    MTPNDD_LOG_INFO("[Sylvan GC] start refs=%zu capacity=%zu\n",
             refs, g_mtpndd_pal_config.bdd_nodetable_size);
-    fflush(stdout);
+#endif
 }
 
 static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task) {
     (void)worker;
     (void)task;
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
     size_t refs = sylvan_count_refs();
-    fprintf(stdout, "[Sylvan GC] end refs=%zu\n", refs);
-    fflush(stdout);
+    MTPNDD_LOG_INFO("[Sylvan GC] end refs=%zu\n", refs);
+#endif
 }
 
 static void mtpndd_gc_hook_mtpndd_pre(void) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
     size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
     size_t capacity = g_mtpndd_pal_config.mtpndd_nodetable_size;
-    fprintf(stdout, "[MTPNDD GC] start nodes=%zu capacity=%zu\n", nodes, capacity);
-    fflush(stdout);
+    MTPNDD_LOG_INFO("[MTPNDD GC] start nodes=%zu capacity=%zu\n", nodes, capacity);
+#endif
 }
 
 static void mtpndd_gc_hook_mtpndd_post(void) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
     size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
-#ifdef ENABLE_RECORDING
-    unsigned long long reclaimed = __atomic_load_n(&g_mtpndd_stats.nodes_collected_last, __ATOMIC_RELAXED);
-#else
     unsigned long long reclaimed = 0;
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    reclaimed = __atomic_load_n(&g_mtpndd_stats.nodes_collected_last, __ATOMIC_RELAXED);
 #endif
-    fprintf(stdout, "[MTPNDD GC] end nodes=%zu reclaimed=%llu\n", nodes, reclaimed);
-    fflush(stdout);
+    MTPNDD_LOG_INFO("[MTPNDD GC] end nodes=%zu reclaimed=%llu\n", nodes, reclaimed);
+#endif
 }
 
 mtpndd_error_t mtpndd_quit() {

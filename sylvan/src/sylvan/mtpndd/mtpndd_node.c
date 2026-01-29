@@ -17,7 +17,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <math.h>
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 #include <time.h>
 #endif
 
@@ -283,7 +283,7 @@ static bool mtpndd_edge_map_rehash(mtpndd_edge_t *edges, size_t new_bucket_count
     edges->buckets_malloced = true;
     edges->bucket_count = new_bucket_count;
     edges->load_threshold = new_bucket_count - (new_bucket_count >> 3);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(edge_map_rehash_total, 1);
     MTPNDD_STAT_MAX(edge_map_max_buckets, new_bucket_count);
 #endif
@@ -346,7 +346,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     mtpndd_error_t status = MTPNDD_SUCCESS;
     edge_bucket_entry_t *entry = NULL;
     edge_bucket_entry_t *bucket_head = edges->buckets[hash];
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     bool created_entry = false;
     bool collision_on_insert = false;
 #endif
@@ -377,7 +377,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
             goto unlock_and_return;
         }
         entry->child = descendant;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         created_entry = true;
         if (bucket_head != NULL) {
             collision_on_insert = true;
@@ -398,7 +398,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     edges->buckets[hash] = bucket_head;
     edges->edge_count++;
     mtpndd_edge_map_maybe_rehash(edges);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     if (created_entry) {
         MTPNDD_STAT_ADD(edge_insert_total, 1);
         MTPNDD_STAT_ADD(edge_entry_total, 1);
@@ -431,7 +431,7 @@ static mtpndd_error_t mtpndd_or_rec(mtpndd_t *a, mtpndd_t *b, mtpndd_t **result)
 static mtpndd_error_t mtpndd_not_rec(mtpndd_t *a, mtpndd_t **result);
 static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **result);
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 typedef enum {
     MTPNDD_AND_PROF_OTHER = 0,
     MTPNDD_AND_PROF_FASTPATH,
@@ -737,7 +737,7 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
             mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_INNER_LOOP);
             FOR_EACH_ENTRY_IN_ALL_BUCKETS(b->edges, entry_b) {
                 if (mtpndd_should_spawn(entry_a->child, entry_b->child)) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
                     MTPNDD_STAT_ADD(and_spawn_total, 1);
                     MTPNDD_STAT_ADD(and_spawn_same_total, 1);
 #endif
@@ -751,7 +751,7 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
                 }
 
                 if (pending >= MTPNDD_AND_PENDING_FLUSH_THRESHOLD) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
                     MTPNDD_STAT_ADD(and_pending_flush_total, 1);
 #endif
                     size_t keep = MTPNDD_AND_PENDING_FLUSH_THRESHOLD / 2;
@@ -781,7 +781,7 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
         edge_bucket_entry_t *entry_a;
         FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
             if (mtpndd_should_spawn(entry_a->child, b)) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
                 MTPNDD_STAT_ADD(and_spawn_total, 1);
                 MTPNDD_STAT_ADD(and_spawn_diff_total, 1);
 #endif
@@ -795,7 +795,7 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
             }
 
             if (pending >= MTPNDD_AND_PENDING_FLUSH_THRESHOLD) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
                 MTPNDD_STAT_ADD(and_pending_flush_total, 1);
 #endif
                 size_t keep = MTPNDD_AND_PENDING_FLUSH_THRESHOLD / 2;
@@ -829,7 +829,7 @@ fail_build_edges:
 
 build_edges_ok:
     mtpndd_and_prof_switch(MTPNDD_AND_PROF_MK);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     struct timespec mk_total_start = {0};
     struct timespec mk_total_end = {0};
     struct timespec mk_phase_start = {0};
@@ -841,7 +841,7 @@ build_edges_ok:
     clock_gettime(CLOCK_MONOTONIC, &mk_phase_start);
 #endif
     mtpndd_mk(a->field_id, res_edges, &res_node);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     struct timespec mk_phase_end = {0};
     clock_gettime(CLOCK_MONOTONIC, &mk_phase_end);
     mk_call_ns = mtpndd_timespec_diff_ns(&mk_phase_start, &mk_phase_end);
@@ -850,7 +850,7 @@ build_edges_ok:
     if (!res_node) {
         mtpndd_temp_refs_release(&temp_refs);
         mtpndd_edge_map_free(res_edges);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         clock_gettime(CLOCK_MONOTONIC, &mk_total_end);
         uint64_t mk_total_ns = mtpndd_timespec_diff_ns(&mk_total_start, &mk_total_end);
         mk_other_ns = 0;
@@ -866,7 +866,7 @@ build_edges_ok:
     mtpndd_temp_refs_release(&temp_refs);
 
     mtpndd_op_cache_store_binary(and_cache, cache_a, cache_b, res_node);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     clock_gettime(CLOCK_MONOTONIC, &mk_phase_end);
     mk_cache_ns = mtpndd_timespec_diff_ns(&mk_phase_start, &mk_phase_end);
     mtpndd_stat_add(&g_mtpndd_stats.and_mk_cache_store_ns, mk_cache_ns);
@@ -1732,7 +1732,7 @@ mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t *node, mtpndd_bdd_t *result) {
         mtpndd_to_mtbdd_cache_destroy(&cache);
         return status;
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     if (status == MTPNDD_SUCCESS) {
         uint64_t nodecount = sylvan_nodecount(tmp);
         __atomic_store_n(&g_mtpndd_stats.bdd_nodes_converted, nodecount, __ATOMIC_RELAXED);
@@ -1859,7 +1859,7 @@ mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result) {
     MTPNDD_CHECK_INIT();
     MTPNDD_CHECK_NULL(result, MTPNDD_ERROR_NULL_POINTER);
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     uint64_t bdd_nodecount = sylvan_nodecount(bdd);
     __atomic_store_n(&g_mtpndd_stats.bdd_nodes_converted, bdd_nodecount, __ATOMIC_RELAXED);
     MTPNDD_STAT_ADD(bdd_nodes_processed_total, bdd_nodecount);

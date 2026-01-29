@@ -24,7 +24,7 @@ brew install sphinx-doc
 
 ```bash
 cd sylvan
-cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake -B build -DMTPNDD_LOG_LEVEL=2
 cmake --build build     # 生成 libsylvan.a、libmtpndd.a 等
 ./build/src/sylvan/mtpndd/mtpndd_nqueens_test 8
 ```
@@ -33,7 +33,7 @@ cmake --build build     # 生成 libsylvan.a、libmtpndd.a 等
 
 ```bash
 cd jni
-cmake -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake -B build -DMTPNDD_LOG_LEVEL=2
 cmake --build build     # 得到 build/libmtpnddjni.so
 
 mvn -DskipTests package # 产出 target/mtpndd-java-0.1.0-SNAPSHOT.jar

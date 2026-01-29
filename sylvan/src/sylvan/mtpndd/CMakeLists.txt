@@ -12,10 +12,9 @@ target_include_directories(mtpndd
 )
 target_compile_options(mtpndd PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-option(MTPNDD_ENABLE_RECORDING "Enable MTPNDD recording instrumentation" OFF)
-if(MTPNDD_ENABLE_RECORDING)
-    target_compile_definitions(mtpndd PUBLIC ENABLE_RECORDING)
-endif()
+set(MTPNDD_LOG_LEVEL "1" CACHE STRING "MTPNDD log level: 0=QUIET, 1=INFO, 2=DEBUG")
+set_property(CACHE MTPNDD_LOG_LEVEL PROPERTY STRINGS 0 1 2)
+target_compile_definitions(mtpndd PUBLIC MTPNDD_LOG_LEVEL=${MTPNDD_LOG_LEVEL})
 
 if(TARGET sylvan::sylvan)
     target_link_libraries(mtpndd PUBLIC sylvan::sylvan)

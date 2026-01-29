@@ -370,7 +370,7 @@ e9b3e69 perf: replace pthread_rwlock with lock-free atomic operations
 **标准测试流程**:
 ```bash
 # 1. 清理并重新编译
-cmake -S . -B build -DMTPNDD_ENABLE_RECORDING=OFF
+cmake -S . -B build -DMTPNDD_LOG_LEVEL=1
 cmake --build build --target mtpndd_nqueens_benchmark -j$(nproc)
 
 # 2. 运行3次取平均
@@ -379,7 +379,7 @@ for run in 1 2 3; do
 done
 
 # 3. 获取详细统计 (RECORDING=ON)
-cmake -S . -B build -DMTPNDD_ENABLE_RECORDING=ON
+cmake -S . -B build -DMTPNDD_LOG_LEVEL=2
 cmake --build build --target mtpndd_nqueens_benchmark -j$(nproc)
 ./build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12 1
 ```

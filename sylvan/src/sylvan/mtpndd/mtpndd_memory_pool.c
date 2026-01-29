@@ -348,7 +348,7 @@ void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats) {
     stats->edge_map_capacity_per_slab = g_edge_map_pool.objects_per_slab;
 }
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 void mtpndd_log_memory_pools(const char *phase) {
     mtpndd_memory_pool_stats_t stats = {0};
     mtpndd_memory_pools_snapshot(&stats);
@@ -370,7 +370,7 @@ mtpndd_node_t *mtpndd_memory_acquire_node(void) {
         MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         return NULL;
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(node_pool_acquire_total, 1);
     if (grew) {
         MTPNDD_STAT_ADD(node_pool_slab_total, 1);
@@ -384,7 +384,7 @@ void mtpndd_memory_release_node(mtpndd_node_t *node) {
         return;
     }
     mtpndd_slab_pool_release(&g_node_pool, node);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(node_pool_release_total, 1);
 #endif
 }
@@ -396,7 +396,7 @@ edge_bucket_entry_t *mtpndd_memory_acquire_edge_entry(void) {
         MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         return NULL;
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(edge_entry_pool_acquire_total, 1);
     if (grew) {
         MTPNDD_STAT_ADD(edge_entry_pool_slab_total, 1);
@@ -410,7 +410,7 @@ void mtpndd_memory_release_edge_entry(edge_bucket_entry_t *entry) {
         return;
     }
     mtpndd_slab_pool_release(&g_edge_entry_pool, entry);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(edge_entry_pool_release_total, 1);
 #endif
 }
@@ -422,7 +422,7 @@ mtpndd_nodetable_bucket_entry_t *mtpndd_memory_acquire_nodetable_entry(void) {
         MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
         return NULL;
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(nodetable_entry_pool_acquire_total, 1);
     if (grew) {
         MTPNDD_STAT_ADD(nodetable_entry_pool_slab_total, 1);
@@ -436,7 +436,7 @@ void mtpndd_memory_release_nodetable_entry(mtpndd_nodetable_bucket_entry_t *entr
         return;
     }
     mtpndd_slab_pool_release(&g_nodetable_entry_pool, entry);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(nodetable_entry_pool_release_total, 1);
 #endif
 }
@@ -453,7 +453,7 @@ mtpndd_edge_t *mtpndd_memory_acquire_edge_map(void) {
     edges->bucket_count = g_edge_bucket_count;
     edges->load_threshold = g_edge_bucket_count - (g_edge_bucket_count >> 2);
     edges->buckets_malloced = false;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(edge_map_pool_acquire_total, 1);
     if (grew) {
         MTPNDD_STAT_ADD(edge_map_pool_slab_total, 1);
@@ -471,7 +471,7 @@ void mtpndd_memory_release_edge_map(mtpndd_edge_t *edges) {
         edges->buckets = NULL;
     }
     mtpndd_slab_pool_release(&g_edge_map_pool, edges);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(edge_map_pool_release_total, 1);
 #endif
 }

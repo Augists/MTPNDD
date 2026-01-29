@@ -6,7 +6,7 @@
 
 **Architecture:** (1) Make MTPNDD slab pools use per-worker caches with batched refill/spill to a global pool. (2) Coarsen `mtpndd_and` spawn granularity from per-(edge_a, edge_b) to per-(edge_a chunk) so we keep enough stealable work without exploding task count.
 
-**Tech Stack:** C, Lace (Sylvan), pthreads (spinlock/mutex), existing `ENABLE_RECORDING` stats.
+**Tech Stack:** C, Lace (Sylvan), pthreads (spinlock/mutex), existing `MTPNDD_LOG_LEVEL>=2` stats.
 
 ---
 

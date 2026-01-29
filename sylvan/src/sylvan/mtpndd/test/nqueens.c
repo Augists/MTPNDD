@@ -26,7 +26,7 @@ typedef struct {
     uint64_t solutions;
     double seconds;
     uint64_t mtpndd_nodes;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     uint64_t mtpndd_nodes_created;
     uint64_t mtpndd_nodes_reused;
     uint64_t mtpndd_nodes_collected;
@@ -40,7 +40,7 @@ static void nqueens_ctx_destroy(nqueens_ctx_t *ctx);
 static uint64_t expected_solutions(size_t size);
 static double timespec_diff_seconds(const struct timespec *start, const struct timespec *end);
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 static void log_formula_progress(const char *phase, size_t current, size_t total);
 static void print_run_stats(const mtpndd_stats_t *stats);
 #else
@@ -179,12 +179,12 @@ static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formu
         mtpndd_ref(next);
         mtpndd_deref(old);
         formula = next;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         log_formula_progress("row_at_least_one", row + 1, n);
 #endif
     }
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     size_t total_cells = n * n;
     size_t progress = 0;
 #endif
@@ -210,7 +210,7 @@ static bool build_nqueens_formula(const nqueens_ctx_t *ctx, mtpndd_t **out_formu
             mtpndd_ref(next);
             mtpndd_deref(old);
             formula = next;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
             progress++;
             log_formula_progress("cell_implications", progress, total_cells);
 #endif
@@ -227,7 +227,7 @@ cleanup:
 }
 
 static bool run_case(size_t size, nqueens_metrics_t *metrics) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     printf("== solving n=%zu\n", size);
     fflush(stdout);
 #endif
@@ -338,7 +338,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     }
 
     const mtpndd_stats_t *stats = mtpndd_get_stats();
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     print_run_stats(stats);
 
     mtpndd_memory_pool_stats_t pool_stats = {0};
@@ -355,7 +355,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         metrics->solutions = solutions;
         metrics->seconds = elapsed;
         metrics->mtpndd_nodes = stats ? stats->node_count : 0;
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         if (stats) {
             metrics->mtpndd_nodes_created = stats->nodes_created_total;
             metrics->mtpndd_nodes_reused = stats->nodes_reused_total;
@@ -407,7 +407,7 @@ cleanup:
 }
 
 int main(int argc, char **argv) {
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 #endif
@@ -437,7 +437,7 @@ int main(int argc, char **argv) {
     fflush(stdout);
 
     printf("N-Queens results (n = %zu)\n", n);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     printf(" n  solutions  expected   time(s)  nodes(created/reused/collected)  maxEdges  cache(h/m)\n");
 #else
     printf(" n  solutions  expected   time(s)  MTPNDD(nodes)\n");
@@ -450,7 +450,7 @@ int main(int argc, char **argv) {
     } else {
         snprintf(expected_buf, sizeof(expected_buf), "%" PRIu64, m->expected);
     }
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     printf("%2zu %10" PRIu64 " %10s %8.3f  %10" PRIu64 " (%" PRIu64 "/%" PRIu64 "/%" PRIu64 ")  %7" PRIu64
            "  %10" PRIu64 "/%-10" PRIu64 "\n",
            m->size,
@@ -513,7 +513,7 @@ static double timespec_diff_seconds(const struct timespec *start, const struct t
     return (double)sec_diff + (double)nsec_diff / 1e9;
 }
 
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 static void log_formula_progress(const char *phase, size_t current, size_t total) {
     size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
     printf("[nqueens] %s %zu/%zu nodes=%zu\n",
@@ -594,7 +594,7 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->nodetable_edge_compare_max_steps);
 }
 
-#endif  // ENABLE_RECORDING
+#endif  // MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 
 #ifdef MTPNDD_NQUEENS_ENABLE_DOT
 

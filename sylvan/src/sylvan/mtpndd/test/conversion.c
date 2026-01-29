@@ -100,7 +100,7 @@ static mtpndd_bdd_t build_ip_set_bdd(const uint32_t field_ids[4], const uint32_t
 
 // TODO: 1. check parallel
 // TODO: 2. check multi-terminal
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 static void print_recording_stats(void) {
     const mtpndd_stats_t *stats = mtpndd_get_stats();
     if (!stats) {
@@ -208,7 +208,7 @@ int main(void) {
     sylvan_deref(expected_difference);
     sylvan_deref(ip_a_bdd);
     sylvan_deref(ip_b_bdd);
-#ifdef ENABLE_RECORDING
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     print_recording_stats();
 #endif
 
