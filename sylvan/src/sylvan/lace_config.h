@@ -20,6 +20,10 @@
 #define LACE_COUNT_SPLITS 0
 #endif
 
+#ifndef LACE_IDLE_STATS
+#define LACE_IDLE_STATS 0
+#endif
+
 #ifndef LACE_USE_HWLOC
 #define LACE_USE_HWLOC 0
 #endif

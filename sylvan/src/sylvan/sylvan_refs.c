@@ -25,6 +25,8 @@
 #include <string.h> // for strerror
 #ifdef SYLVAN_REFS_STATS
 #include <inttypes.h>
+#include <pthread.h>
+#include <time.h>
 #endif
 
 #ifndef compiler_barrier
@@ -43,6 +45,9 @@ static const uint64_t refs_ts = 0x7fffffffffffffff; // tombstone
 #ifdef SYLVAN_REFS_STATS
 #define SYLVAN_REFS_STATS_BUCKETS 4096u
 #define SYLVAN_REFS_STATS_MAX 8u
+#define SYLVAN_REFS_STATS_THREADS 64u
+#define SYLVAN_REFS_STATS_TIME_SAMPLE_SHIFT 10u
+#define SYLVAN_REFS_STATS_TIME_SAMPLE_MASK ((1u << SYLVAN_REFS_STATS_TIME_SAMPLE_SHIFT) - 1u)
 
 typedef struct refs_stats_entry {
     refs_table_t *tbl;
@@ -55,16 +60,84 @@ typedef struct refs_stats_entry {
     _Atomic uint64_t misses;
     _Atomic uint64_t probes;
     _Atomic uint64_t retries;
+    _Atomic uint64_t time_ns;
+    _Atomic uint64_t time_samples;
     _Atomic uint64_t bucket_hist[SYLVAN_REFS_STATS_BUCKETS];
+    struct {
+        _Atomic int used;
+        pthread_t tid;
+        uint64_t modify_calls;
+        uint64_t ups;
+        uint64_t downs;
+        uint64_t updates;
+        uint64_t misses;
+        uint64_t probes;
+        uint64_t retries;
+        uint64_t time_ns;
+        uint64_t time_samples;
+    } threads[SYLVAN_REFS_STATS_THREADS];
 } refs_stats_entry_t;
 
 static refs_stats_entry_t refs_stats_entries[SYLVAN_REFS_STATS_MAX];
 static _Atomic size_t refs_stats_count = 0;
+static _Thread_local uint64_t refs_stats_sample_tick = 0;
+
+static inline uint64_t
+refs_stats_next_tick(void)
+{
+    return refs_stats_sample_tick++;
+}
+
+static inline uint64_t
+refs_stats_timespec_diff_ns(const struct timespec *start, const struct timespec *end)
+{
+    return (uint64_t)(end->tv_sec - start->tv_sec) * 1000000000ull +
+           (uint64_t)(end->tv_nsec - start->tv_nsec);
+}
 
 static inline refs_stats_entry_t *
 refs_stats_get(refs_table_t *tbl)
 {
     return (refs_stats_entry_t *)tbl->stats;
+}
+
+static inline void
+refs_stats_thread_add(refs_stats_entry_t *entry, int dir, uint64_t probes, uint64_t retries,
+                      uint64_t misses, uint64_t updates, uint64_t time_ns, uint64_t time_samples)
+{
+    if (!entry) return;
+    pthread_t tid = pthread_self();
+    for (size_t i = 0; i < SYLVAN_REFS_STATS_THREADS; i++) {
+        int used = atomic_load_explicit(&entry->threads[i].used, memory_order_relaxed);
+        if (used && pthread_equal(entry->threads[i].tid, tid)) {
+            entry->threads[i].modify_calls++;
+            if (dir > 0) entry->threads[i].ups++;
+            else if (dir < 0) entry->threads[i].downs++;
+            entry->threads[i].probes += probes;
+            entry->threads[i].retries += retries;
+            entry->threads[i].misses += misses;
+            entry->threads[i].updates += updates;
+            entry->threads[i].time_ns += time_ns;
+            entry->threads[i].time_samples += time_samples;
+            return;
+        }
+    }
+    for (size_t i = 0; i < SYLVAN_REFS_STATS_THREADS; i++) {
+        int expected = 0;
+        if (atomic_compare_exchange_strong(&entry->threads[i].used, &expected, 1)) {
+            entry->threads[i].tid = tid;
+            entry->threads[i].modify_calls = 1;
+            if (dir > 0) entry->threads[i].ups = 1;
+            else if (dir < 0) entry->threads[i].downs = 1;
+            entry->threads[i].probes = probes;
+            entry->threads[i].retries = retries;
+            entry->threads[i].misses = misses;
+            entry->threads[i].updates = updates;
+            entry->threads[i].time_ns = time_ns;
+            entry->threads[i].time_samples = time_samples;
+            return;
+        }
+    }
 }
 
 void
@@ -91,12 +164,18 @@ refs_stats_dump_entry(FILE *out, refs_stats_entry_t *entry)
     uint64_t misses = atomic_load_explicit(&entry->misses, memory_order_relaxed);
     uint64_t probes = atomic_load_explicit(&entry->probes, memory_order_relaxed);
     uint64_t retries = atomic_load_explicit(&entry->retries, memory_order_relaxed);
+    uint64_t time_ns = atomic_load_explicit(&entry->time_ns, memory_order_relaxed);
+    uint64_t time_samples = atomic_load_explicit(&entry->time_samples, memory_order_relaxed);
     double avg_probes = modify_calls ? ((double)probes / (double)modify_calls) : 0.0;
+    double avg_time_ns = time_samples ? ((double)time_ns / (double)time_samples) : 0.0;
 
     fprintf(out, "[refs-stats] %s\n", entry->name);
     fprintf(out, "[refs-stats] modify_calls=%" PRIu64 " ups=%" PRIu64 " downs=%" PRIu64
                  " updates=%" PRIu64 " misses=%" PRIu64 " retries=%" PRIu64 " avg_probes=%.3f\n",
             modify_calls, ups, downs, updates, misses, retries, avg_probes);
+    fprintf(out, "[refs-stats] time_samples=%" PRIu64 " time_ns=%" PRIu64
+                 " avg_time_ns=%.1f sample_rate=1/%u\n",
+            time_samples, time_ns, avg_time_ns, 1u << SYLVAN_REFS_STATS_TIME_SAMPLE_SHIFT);
 
     /* Top 8 buckets in histogram (hash into SYLVAN_REFS_STATS_BUCKETS) */
     uint64_t top_counts[8] = {0};
@@ -122,6 +201,23 @@ refs_stats_dump_entry(FILE *out, refs_stats_entry_t *entry)
         fprintf(out, " %zu=%" PRIu64, top_idx[j], top_counts[j]);
     }
     fprintf(out, "\n");
+
+    for (size_t i = 0; i < SYLVAN_REFS_STATS_THREADS; i++) {
+        if (!atomic_load_explicit(&entry->threads[i].used, memory_order_relaxed)) continue;
+        fprintf(out, "[refs-stats] thread idx=%zu modify=%" PRIu64 " up=%" PRIu64 " down=%" PRIu64
+                     " updates=%" PRIu64 " misses=%" PRIu64 " retries=%" PRIu64 " probes=%" PRIu64
+                     " time_ns=%" PRIu64 " time_samples=%" PRIu64 "\n",
+                i,
+                entry->threads[i].modify_calls,
+                entry->threads[i].ups,
+                entry->threads[i].downs,
+                entry->threads[i].updates,
+                entry->threads[i].misses,
+                entry->threads[i].retries,
+                entry->threads[i].probes,
+                entry->threads[i].time_ns,
+                entry->threads[i].time_samples);
+    }
 }
 
 void
@@ -284,7 +380,19 @@ refs_modify(refs_table_t *tbl, const uint64_t a, const int dir)
 #ifdef SYLVAN_REFS_STATS
     refs_stats_entry_t *stats = refs_stats_get(tbl);
     int probe_count = 0;
+    uint64_t retry_count = 0;
+    uint64_t update_count = 0;
+    uint64_t miss_count = 0;
+    uint64_t sample_ns = 0;
+    uint64_t sample_count = 0;
+    int do_sample = 0;
+    struct timespec t0;
     if (stats) {
+        uint64_t tick = refs_stats_next_tick();
+        if ((tick & SYLVAN_REFS_STATS_TIME_SAMPLE_MASK) == 0) {
+            do_sample = 1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+        }
         atomic_fetch_add_explicit(&stats->modify_calls, 1, memory_order_relaxed);
         if (dir > 0) atomic_fetch_add_explicit(&stats->ups, 1, memory_order_relaxed);
         else atomic_fetch_add_explicit(&stats->downs, 1, memory_order_relaxed);
@@ -342,6 +450,7 @@ ref_restart:
         new_v = a | (1ULL << 40);
         if (!atomic_compare_exchange_weak(bucket, &v, new_v)) {
 #ifdef SYLVAN_REFS_STATS
+            retry_count++;
             if (stats) atomic_fetch_add_explicit(&stats->retries, 1, memory_order_relaxed);
 #endif
             goto ref_retry;
@@ -358,6 +467,7 @@ ref_restart:
 ref_mod:
     if (!atomic_compare_exchange_weak(bucket, &v, new_v)) {
 #ifdef SYLVAN_REFS_STATS
+        retry_count++;
         if (stats) atomic_fetch_add_explicit(&stats->retries, 1, memory_order_relaxed);
 #endif
         goto ref_restart;
@@ -368,13 +478,27 @@ ref_mod:
         size_t idx = (size_t)(bucket - tbl->refs_table);
         atomic_fetch_add_explicit(&stats->bucket_hist[idx & (SYLVAN_REFS_STATS_BUCKETS - 1)], 1, memory_order_relaxed);
     }
+    update_count = 1;
 #endif
 
 ref_exit:
 #ifdef SYLVAN_REFS_STATS
     if (stats) {
-        if (res == 0) atomic_fetch_add_explicit(&stats->misses, 1, memory_order_relaxed);
+        if (do_sample) {
+            struct timespec t1;
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            sample_ns = refs_stats_timespec_diff_ns(&t0, &t1);
+            sample_count = 1;
+            atomic_fetch_add_explicit(&stats->time_ns, sample_ns, memory_order_relaxed);
+            atomic_fetch_add_explicit(&stats->time_samples, 1, memory_order_relaxed);
+        }
+        if (res == 0) {
+            miss_count = 1;
+            atomic_fetch_add_explicit(&stats->misses, 1, memory_order_relaxed);
+        }
         atomic_fetch_add_explicit(&stats->probes, (uint64_t)probe_count, memory_order_relaxed);
+        refs_stats_thread_add(stats, dir, (uint64_t)probe_count, retry_count,
+                              miss_count, update_count, sample_ns, sample_count);
     }
 #endif
     refs_leave(tbl);

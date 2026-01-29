@@ -442,6 +442,9 @@ lace_init_worker(unsigned int worker)
 #if LACE_COUNT_EVENTS
     // Initialize counters
     { int k; for (k=0; k<CTR_MAX; k++) w->ctr[k] = 0; }
+#if LACE_IDLE_STATS
+    w->idle_tick = 0;
+#endif
 #endif
 
     // Synchronize with others
@@ -691,7 +694,7 @@ VOID_TASK_1(lace_steal_loop, int*, quit)
     // With a single worker there is nobody to steal from; avoid rng(n-1) and just wait.
     if (n <= 1) {
         while (*(volatile int*)quit == 0) {
-            lace_idle_backoff(&nowork_streak);
+            lace_idle_backoff_stats(__lace_worker, &nowork_streak, 0);
             YIELD_NEWFRAME();
             if (must_suspend) {
                 lace_barrier();
@@ -725,7 +728,7 @@ VOID_TASK_1(lace_steal_loop, int*, quit)
             PR_COUNTSTEALS(__lace_worker, CTR_steal_busy);
             nowork_streak = 0;
         } else { // LACE_NOWORK
-            lace_idle_backoff(&nowork_streak);
+            lace_idle_backoff_stats(__lace_worker, &nowork_streak, 0);
         }
 
         YIELD_NEWFRAME();
@@ -1036,6 +1039,43 @@ lace_count_report_file(FILE *file)
         ctr_all[CTR_steal_tries], ctr_all[CTR_leaps],
         ctr_all[CTR_leap_busy], ctr_all[CTR_leap_tries]);
     fprintf(file, "\n");
+#endif
+
+#if LACE_IDLE_STATS
+    const uint64_t idle_scale = 1u << LACE_IDLE_STATS_SAMPLE_SHIFT;
+    for (i=0;i<n_workers;i++) {
+        uint64_t steal_count = workers_p[i]->ctr[CTR_idle_steal];
+        uint64_t leap_count = workers_p[i]->ctr[CTR_idle_leap];
+        uint64_t steal_ns = workers_p[i]->ctr[CTR_idle_steal_ns];
+        uint64_t leap_ns = workers_p[i]->ctr[CTR_idle_leap_ns];
+        uint64_t steal_samples = workers_p[i]->ctr[CTR_idle_steal_samples];
+        uint64_t leap_samples = workers_p[i]->ctr[CTR_idle_leap_samples];
+        double steal_avg = steal_samples ? ((double)steal_ns / (double)steal_samples) : 0.0;
+        double leap_avg = leap_samples ? ((double)leap_ns / (double)leap_samples) : 0.0;
+        double steal_est_ms = (double)steal_ns * (double)idle_scale / 1e6;
+        double leap_est_ms = (double)leap_ns * (double)idle_scale / 1e6;
+        fprintf(file, "Idle steal (%d): %zu nowork, avg %.1f ns (samples %zu, est %.2f ms)\n",
+            i, steal_count, steal_avg, steal_samples, steal_est_ms);
+        fprintf(file, "Idle leap  (%d): %zu nowork, avg %.1f ns (samples %zu, est %.2f ms)\n",
+            i, leap_count, leap_avg, leap_samples, leap_est_ms);
+    }
+    {
+        uint64_t steal_count = ctr_all[CTR_idle_steal];
+        uint64_t leap_count = ctr_all[CTR_idle_leap];
+        uint64_t steal_ns = ctr_all[CTR_idle_steal_ns];
+        uint64_t leap_ns = ctr_all[CTR_idle_leap_ns];
+        uint64_t steal_samples = ctr_all[CTR_idle_steal_samples];
+        uint64_t leap_samples = ctr_all[CTR_idle_leap_samples];
+        double steal_avg = steal_samples ? ((double)steal_ns / (double)steal_samples) : 0.0;
+        double leap_avg = leap_samples ? ((double)leap_ns / (double)leap_samples) : 0.0;
+        double steal_est_ms = (double)steal_ns * (double)idle_scale / 1e6;
+        double leap_est_ms = (double)leap_ns * (double)idle_scale / 1e6;
+        fprintf(file, "Idle steal (sum): %zu nowork, avg %.1f ns (samples %zu, est %.2f ms)\n",
+            steal_count, steal_avg, steal_samples, steal_est_ms);
+        fprintf(file, "Idle leap  (sum): %zu nowork, avg %.1f ns (samples %zu, est %.2f ms)\n",
+            leap_count, leap_avg, leap_samples, leap_est_ms);
+        fprintf(file, "Idle sample rate: 1/%u\n\n", 1u << LACE_IDLE_STATS_SAMPLE_SHIFT);
+    }
 #endif
 
 #if LACE_COUNT_STEALS && LACE_COUNT_TASKS

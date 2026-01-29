@@ -121,7 +121,110 @@ Derived by mapping uaddr sample shares to pool locks.
 ## refs_stats instrumentation (N=12, SYLVAN_REFS_STATS=ON)
 | workers | modify_calls | ups | downs | updates | misses | retries | avg_probes |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 50,735,424 | 27,008,577 | 23,726,847 | 50,735,421 | 8,999 | 0 | 1.091 |
-| 4 | 50,764,202 | 27,022,966 | 23,741,236 | 50,764,198 | 9,020 | 78,844 | 1.089 |
+| 1 | 50,732,756 | 27,007,243 | 23,725,513 | 50,732,753 | 8,999 | 0 | 1.091 |
+| 2 | 50,751,716 | 27,016,723 | 23,734,993 | 50,751,706 | 9,014 | 19,824 | 1.071 |
+| 3 | 50,746,094 | 27,013,912 | 23,732,182 | 50,746,089 | 9,021 | 57,904 | 1.221 |
+| 4 | 50,739,666 | 27,010,698 | 23,728,968 | 50,739,661 | 9,019 | 77,701 | 1.084 |
+
+## refs_stats derived (N=12, SYLVAN_REFS_STATS=ON)
+| workers | retries_per_million_modify |
+|---:|---:|
+| 1 | 0.00 |
+| 2 | 390.61 |
+| 3 | 1141.05 |
+| 4 | 1531.37 |
+
+## refs_stats timing (N=12, SYLVAN_REFS_STATS=ON, sample_rate=1/1024)
+| workers | time_samples | time_ns | avg_time_ns |
+|---:|---:|---:|---:|
+| 1 | 49,544 | 2,806,657 | 56.6 |
+| 2 | 49,563 | 5,302,180 | 107.0 |
+| 3 | 49,558 | 7,499,678 | 151.3 |
+| 4 | 49,552 | 9,900,557 | 199.8 |
+
+## refs_stats imbalance (N=12, SYLVAN_REFS_STATS=ON)
+| workers | max/min modify share | cv |
+|---:|---:|---:|
+| 1 | 1.00 | 0.000 |
+| 2 | 1.29 | 0.128 |
+| 3 | 1.58 | 0.225 |
+| 4 | 1.87 | 0.288 |
+
+## lace idle stats (N=12, LACE_IDLE_STATS=ON, sample_rate=1/1024)
+| workers | idle_steal_nowork | idle_steal_est_ms | idle_leap_nowork | idle_leap_est_ms | wall_time_ms | idle_total_ms | idle_total/wall | idle_total/(wall*workers) |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0 | 0.00 | 0 | 0.00 | 11661 | 0.00 | 0.00 | 0.00 |
+| 2 | 689069 | 1691.64 | 161941 | 61.54 | 8912 | 1753.18 | 0.20 | 0.10 |
+| 3 | 1309155 | 4317.49 | 242333 | 291.95 | 7807 | 4609.44 | 0.59 | 0.20 |
+| 4 | 1772825 | 7535.16 | 292993 | 171.07 | 7812 | 7706.23 | 0.99 | 0.25 |
+
+## lace nowork ratios (N=12, LACE_COUNT_STEALS=ON)
+| workers | steal_nowork | steal_tries | steal_nowork_rate | leap_nowork | leap_tries | leap_nowork_rate |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0 | 0 | 0.0000 | 0 | 0 | 0.0000 |
+| 2 | 693933 | 696474 | 0.9964 | 161941 | 162497 | 0.9966 |
+| 3 | 1316381 | 1321658 | 0.9960 | 242333 | 243321 | 0.9959 |
+| 4 | 1781504 | 1789472 | 0.9955 | 292993 | 293898 | 0.9969 |
+
+## lace nowork rates (N=12, per wall-second)
+| workers | steal_nowork_per_s | leap_nowork_per_s | idle_total_ms_per_s |
+|---:|---:|---:|---:|
+| 1 | 0.0 | 0.0 | 0.0 |
+| 2 | 77865.0 | 18171.1 | 196.7 |
+| 3 | 168615.5 | 31040.5 | 590.4 |
+| 4 | 228047.1 | 37505.5 | 986.5 |
+
+## lace task/steal effectiveness (N=12, LACE_COUNT_TASKS=ON)
+| workers | tasks | success_steal+leap | tries_total | nowork_total | nowork_rate | success_rate | tasks_per_try | tasks_per_steal |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 98560 | 0 | 0 | 0 | 0.0000 | 0.0000 | 0.000000 | n/a |
+| 2 | 101147 | 2917 | 857825 | 854823 | 0.9965 | 0.0034 | 0.117911 | 34 |
+| 3 | 100989 | 6104 | 1580884 | 1574111 | 0.9957 | 0.0039 | 0.063881 | 16 |
+| 4 | 100827 | 9106 | 2237525 | 2227641 | 0.9956 | 0.0041 | 0.045062 | 11 |
+
+## lace backoff tune A (N=12, baseline vs tune A)
+Baseline: YIELD_ITERS=256, SLEEP_ITERS=2048, SLEEP_NS=50000
+Tune A: YIELD_ITERS=64, SLEEP_ITERS=512, SLEEP_NS=10000
+| workers | wall_ms_base | wall_ms_A | idle_ms_per_s_base | idle_ms_per_s_A | nowork_rate_base | nowork_rate_A | tasks_per_try_base | tasks_per_try_A | tasks_per_steal_base | tasks_per_steal_A |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 11559 | 11532 | 0.0 | 0.0 | 0.0000 | 0.0000 | 0.000000 | 0.000000 | n/a | n/a |
+| 2 | 8711 | 8803 | 182.5 | 162.5 | 0.9962 | 0.9903 | 0.1159 | 0.3182 | 31 | 33 |
+| 3 | 7811 | 7838 | 566.0 | 660.1 | 0.9960 | 0.9912 | 0.0647 | 0.1795 | 17 | 21 |
+| 4 | 8048 | 7816 | 1004.4 | 942.8 | 0.9959 | 0.9918 | 0.0458 | 0.1322 | 12 | 17 |
+
+## lace backoff tune A2 (N=12, baseline vs tune A2)
+Baseline: YIELD_ITERS=256, SLEEP_ITERS=2048, SLEEP_NS=50000
+Tune A2: YIELD_ITERS=128, SLEEP_ITERS=1024, SLEEP_NS=20000
+| workers | wall_ms_base | wall_ms_A2 | idle_ms_per_s_base | idle_ms_per_s_A2 | nowork_rate_base | nowork_rate_A2 | tasks_per_try_base | tasks_per_try_A2 | tasks_per_steal_base | tasks_per_steal_A2 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 11559 | 11523 | 0.0 | 0.0 | 0.0000 | 0.0000 | 0.000000 | 0.000000 | n/a | n/a |
+| 2 | 8711 | 8612 | 182.5 | 201.9 | 0.9962 | 0.9939 | 0.1159 | 0.1915 | 31 | 32 |
+| 3 | 7811 | 7955 | 566.0 | 574.7 | 0.9960 | 0.9940 | 0.0647 | 0.1150 | 17 | 20 |
+| 4 | 8048 | 7909 | 1004.4 | 962.7 | 0.9959 | 0.9941 | 0.0458 | 0.0829 | 12 | 15 |
+
+## refs init size sweep (N=12, SYLVAN_REFS_STATS=ON)
+| refs_init_size | workers | wall_ms | refs_avg_time_ns | retries_per_million | avg_probes |
+|---:|---:|---:|---:|---:|---:|
+| 1024 | 1 | 14028 | 56.5 | 0.0 | 1.091 |
+| 1024 | 2 | 11416 | 117.6 | 623.7 | 1.099 |
+| 1024 | 3 | 10554 | 187.8 | 1346.5 | 1.077 |
+| 1024 | 4 | 10366 | 251.7 | 2490.6 | 1.186 |
+| 4096 | 1 | 14030 | 56.6 | 0.0 | 1.090 |
+| 4096 | 2 | 11593 | 123.3 | 599.6 | 1.093 |
+| 4096 | 3 | 10518 | 180.2 | 1520.3 | 1.077 |
+| 4096 | 4 | 10284 | 244.5 | 2200.1 | 1.095 |
+| 16384 | 1 | 13956 | 55.6 | 0.0 | 1.024 |
+| 16384 | 2 | 11392 | 118.8 | 662.3 | 1.027 |
+| 16384 | 3 | 10652 | 181.5 | 1479.0 | 1.026 |
+| 16384 | 4 | 10279 | 249.0 | 2046.7 | 1.035 |
+
+## combined indicators (N=12, separate runs)
+Note: values are compiled from separate instrumentation runs (refs_stats, lace idle, lace tasks). Use for trend comparison, not strict cross-run timing.
+| workers | wall_time_ms | ref_avg_time_ns | ref_retries_per_million | idle_total_ms_per_s | steal_nowork_rate | tasks_per_try | tasks_per_steal |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 11661 | 56.6 | 0.00 | 0.0 | 0.0000 | 0.000000 | n/a |
+| 2 | 8912 | 107.0 | 390.61 | 196.7 | 0.9965 | 0.117911 | 34 |
+| 3 | 7807 | 151.3 | 1141.05 | 590.4 | 0.9957 | 0.063881 | 16 |
+| 4 | 7812 | 199.8 | 1531.37 | 986.5 | 0.9956 | 0.045062 | 11 |
 
 Top bucket_mod distributions are recorded in `docs/archived/perf/refs_stats_n12.md`.

@@ -34,8 +34,13 @@
 #    define LACE_COUNT_TASKS   0
 #    define LACE_COUNT_STEALS  0
 #    define LACE_COUNT_SPLITS  0
+#    define LACE_IDLE_STATS    0
 #    define LACE_USE_HWLOC     0
 #  endif
+#endif
+
+#if LACE_IDLE_STATS
+#include <time.h>
 #endif
 
 #ifdef __cplusplus
@@ -311,7 +316,14 @@ void lace_yield(WorkerP *__lace_worker, Task *__lace_dq_head);
 #endif
 
 #ifndef LACE_COUNT_EVENTS
-#define LACE_COUNT_EVENTS (LACE_PIE_TIMES || LACE_COUNT_TASKS || LACE_COUNT_STEALS || LACE_COUNT_SPLITS)
+#define LACE_COUNT_EVENTS (LACE_PIE_TIMES || LACE_COUNT_TASKS || LACE_COUNT_STEALS || LACE_COUNT_SPLITS || LACE_IDLE_STATS)
+#endif
+
+#if LACE_IDLE_STATS
+#ifndef LACE_IDLE_STATS_SAMPLE_SHIFT
+#define LACE_IDLE_STATS_SAMPLE_SHIFT 10u
+#endif
+#define LACE_IDLE_STATS_SAMPLE_MASK ((1u << LACE_IDLE_STATS_SAMPLE_SHIFT) - 1u)
 #endif
 
 #ifndef LACE_STEAL_BACKOFF
@@ -478,6 +490,14 @@ typedef enum {
     CTR_wsignal,     /* Timer for signal after work (steal) */
     CTR_lsignal,     /* Timer for signal after work (leap) */
 #endif
+#ifdef LACE_IDLE_STATS
+    CTR_idle_steal,        /* LACE_NOWORK count in steal loop */
+    CTR_idle_leap,         /* LACE_NOWORK count in leapfrog loop */
+    CTR_idle_steal_ns,     /* sampled idle backoff time (steal loop) */
+    CTR_idle_leap_ns,      /* sampled idle backoff time (leapfrog loop) */
+    CTR_idle_steal_samples,/* number of idle time samples (steal loop) */
+    CTR_idle_leap_samples, /* number of idle time samples (leapfrog loop) */
+#endif
     CTR_MAX
 } CTR_index;
 
@@ -533,6 +553,9 @@ typedef struct _WorkerP {
     uint64_t ctr[CTR_MAX];      // counters
     volatile uint64_t time;
     volatile int level;
+#if LACE_IDLE_STATS
+    uint64_t idle_tick;
+#endif
 #endif
 
     int16_t pu;                 // my pu (for HWLOC)
@@ -541,6 +564,63 @@ typedef struct _WorkerP {
 #define LACE_STOLEN   ((Worker*)0)
 #define LACE_BUSY     ((Worker*)1)
 #define LACE_NOWORK   ((Worker*)2)
+
+#if LACE_IDLE_STATS
+static inline int
+lace_idle_stats_should_sample(WorkerP *w)
+{
+    return ((w->idle_tick++ & LACE_IDLE_STATS_SAMPLE_MASK) == 0);
+}
+
+static inline uint64_t
+lace_idle_stats_timespec_diff_ns(const struct timespec *start, const struct timespec *end)
+{
+    return (uint64_t)(end->tv_sec - start->tv_sec) * 1000000000ull +
+           (uint64_t)(end->tv_nsec - start->tv_nsec);
+}
+
+static inline void
+lace_idle_stats_record(WorkerP *w, int is_leap, uint64_t ns, int sampled)
+{
+    if (is_leap) {
+        PR_ADD(w, CTR_idle_leap, 1);
+        if (sampled) {
+            PR_ADD(w, CTR_idle_leap_ns, ns);
+            PR_ADD(w, CTR_idle_leap_samples, 1);
+        }
+    } else {
+        PR_ADD(w, CTR_idle_steal, 1);
+        if (sampled) {
+            PR_ADD(w, CTR_idle_steal_ns, ns);
+            PR_ADD(w, CTR_idle_steal_samples, 1);
+        }
+    }
+}
+
+static inline void
+lace_idle_backoff_stats(WorkerP *w, unsigned *streak, int is_leap)
+{
+    struct timespec t0;
+    int sampled = lace_idle_stats_should_sample(w);
+    if (sampled) clock_gettime(CLOCK_MONOTONIC, &t0);
+    lace_idle_backoff(streak);
+    if (sampled) {
+        struct timespec t1;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        lace_idle_stats_record(w, is_leap, lace_idle_stats_timespec_diff_ns(&t0, &t1), 1);
+    } else {
+        lace_idle_stats_record(w, is_leap, 0, 0);
+    }
+}
+#else
+static inline void
+lace_idle_backoff_stats(WorkerP *w, unsigned *streak, int is_leap)
+{
+    (void)w;
+    (void)is_leap;
+    lace_idle_backoff(streak);
+}
+#endif
 
 #if LACE_DEBUG_PROGRAMSTACK
 static inline void CHECKSTACK(WorkerP *w)
@@ -770,7 +850,7 @@ lace_leapfrog(WorkerP *__lace_worker, Task *__lace_dq_head)
             PR_COUNTSTEALS(__lace_worker, CTR_leap_tries);
             Worker *res = lace_steal(__lace_worker, __lace_dq_head, thief);
             if (res == LACE_NOWORK) {
-                lace_idle_backoff(&nowork_streak);
+                lace_idle_backoff_stats(__lace_worker, &nowork_streak, 1);
                 YIELD_NEWFRAME();
                 if ((LACE_LEAP_RANDOM) && (--attempts == 0)) { lace_steal_random(); attempts = 32; }
             } else if (res == LACE_STOLEN) {

@@ -411,12 +411,12 @@ sylvan_init_mtbdd()
     sylvan_gc_add_mark(TASK(mtbdd_gc_mark_external_refs));
     sylvan_gc_add_mark(TASK(mtbdd_gc_mark_protected));
 
-    refs_create(&mtbdd_refs, 1024);
+    refs_create(&mtbdd_refs, SYLVAN_REFS_INIT_SIZE);
 #ifdef SYLVAN_REFS_STATS
     refs_stats_register(&mtbdd_refs, "mtbdd_refs");
 #endif
     if (!mtbdd_protected_created) {
-        protect_create(&mtbdd_protected, 4096);
+        protect_create(&mtbdd_protected, SYLVAN_PROTECT_INIT_SIZE);
         mtbdd_protected_created = 1;
     }
 
