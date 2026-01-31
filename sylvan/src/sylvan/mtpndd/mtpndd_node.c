@@ -122,11 +122,9 @@ TASK_DECL_3(mtpndd_and_item_t, mtpndd_and_diff_field_item,
             mtpndd_t, uint32_t, mtpndd_t);
 
 // Granularity control: decide whether to SPAWN a sub-problem
+// Phase 1A: Conservative thresholds for gradual parallelization
 static inline bool mtpndd_should_spawn(mtpndd_t a, mtpndd_t b) {
-    // TEMPORARY: Force serial execution for debugging
-    return false;
-
-    /* // Never spawn if only 1 worker
+    // Never spawn if only 1 worker
     if (lace_workers() <= 1) return false;
 
     // Don't spawn for terminal nodes
@@ -135,13 +133,15 @@ static inline bool mtpndd_should_spawn(mtpndd_t a, mtpndd_t b) {
     const mtpndd_node_record_t na = mtpndd_node_read(a);
     const mtpndd_node_record_t nb = mtpndd_node_read(b);
 
-    size_t prod = (size_t)na.edge_num * (size_t)nb.edge_num;
+    // CONSERVATIVE: Only spawn at very top levels for now
+    if (na.field_id <= 2 && nb.field_id <= 2) {
+        size_t prod = (size_t)na.edge_num * (size_t)nb.edge_num;
+        // Only spawn if substantial work (256+ edge pairs)
+        return prod >= 256;
+    }
 
-    // Very top levels: allow some parallelism even if edge arrays are not yet large
-    if (na.field_id <= 2 && nb.field_id <= 2) return true;
-
-    // Otherwise, only spawn when the pairwise work is substantial
-    return prod >= 64; */
+    // Don't spawn at deeper levels yet (too fine-grained)
+    return false;
 }
 
 // Forward declarations for OR, NOT, EXIST (remain serial for now)
@@ -336,7 +336,7 @@ TASK_IMPL_2(mtpndd_t, mtpndd_and_rec, mtpndd_t, a, mtpndd_t, b) {
     mtpndd_temp_refs_init(&temp_refs);
 
     if (na.field_id == nb.field_id) {
-        // Same field: combine all edge pairs (INLINE for correctness)
+        // Same field: combine all edge pairs (Phase 1A: Simple parallelization)
         for (uint32_t ia = 0; ia < na.edge_num; ++ia) {
             const mtpndd_edge_record_t ea = mtpndd_node_edge(a, ia);
             for (uint32_t ib = 0; ib < nb.edge_num; ++ib) {
@@ -349,9 +349,21 @@ TASK_IMPL_2(mtpndd_t, mtpndd_and_rec, mtpndd_t, a, mtpndd_t, b) {
                     continue;
                 }
 
-                // Recursive AND (using TASK version)
-                mtpndd_t child = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head,
-                                                      ea.child, eb.child);
+                // Recursive AND with simple parallelization
+                mtpndd_t child;
+                if (mtpndd_should_spawn(ea.child, eb.child)) {
+                    // SPAWN for large sub-problems
+                    mtpndd_and_rec_SPAWN(__lace_worker, __lace_dq_head, ea.child, eb.child);
+                    __lace_dq_head++;
+                    // Immediately SYNC (simple approach, not batched)
+                    __lace_dq_head--;
+                    child = mtpndd_and_rec_SYNC(__lace_worker, __lace_dq_head);
+                } else {
+                    // Direct CALL for small sub-problems
+                    child = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head,
+                                                 ea.child, eb.child);
+                }
+
                 if (child == MTPNDD_INVALID) {
                     sylvan_deref(label);
                     mtpndd_temp_refs_release(&temp_refs);
@@ -389,9 +401,21 @@ TASK_IMPL_2(mtpndd_t, mtpndd_and_rec, mtpndd_t, a, mtpndd_t, b) {
         for (uint32_t i = 0; i < top_node.edge_num; ++i) {
             const mtpndd_edge_record_t e = mtpndd_node_edge(top, i);
 
-            // Recursive AND (using TASK version)
-            mtpndd_t child = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head,
-                                                  e.child, other);
+            // Recursive AND with simple parallelization
+            mtpndd_t child;
+            if (mtpndd_should_spawn(e.child, other)) {
+                // SPAWN for large sub-problems
+                mtpndd_and_rec_SPAWN(__lace_worker, __lace_dq_head, e.child, other);
+                __lace_dq_head++;
+                // Immediately SYNC (simple approach)
+                __lace_dq_head--;
+                child = mtpndd_and_rec_SYNC(__lace_worker, __lace_dq_head);
+            } else {
+                // Direct CALL for small sub-problems
+                child = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head,
+                                             e.child, other);
+            }
+
             if (child == MTPNDD_INVALID) {
                 mtpndd_temp_refs_release(&temp_refs);
                 mtpndd_edge_builder_destroy(&builder);
