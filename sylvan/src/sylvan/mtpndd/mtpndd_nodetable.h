@@ -8,6 +8,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
+#include <pthread.h>
 
 #include "mtpndd_common.h"
 #include "mtpndd_edge_array_pool.h"
@@ -16,7 +18,7 @@
 
 typedef struct mtpndd_node_record_s {
     uint32_t field_id;
-    uint32_t ref_count;
+    _Atomic uint32_t ref_count;  // CRITICAL: Atomic for concurrent ref/deref
     uint32_t edge_array_idx;
     uint32_t edge_num;
 } mtpndd_node_record_t;
@@ -30,6 +32,9 @@ typedef struct mtpndd_node_record_s {
 #define MTPNDD_NODETABLE_SLOT_INDEX_BITS 40u
 #define MTPNDD_NODETABLE_SLOT_HASH_BITS  24u
 
+// Phase 3B: Fixed-size lock array (never reallocated to avoid races)
+#define MTPNDD_FIXED_LOCK_COUNT 1024u
+
 typedef struct mtpndd_nodetable_s {
     // Open addressing hash table.
     // Each slot stores a packed 64-bit value:
@@ -39,14 +44,14 @@ typedef struct mtpndd_nodetable_s {
     uint64_t *hash;
     size_t hash_capacity;
     size_t hash_mask;
-    size_t hash_count;
+    _Atomic size_t hash_count;  // Phase 3: atomic for concurrent access
     size_t hash_capacity_max;
     size_t hash_probe_threshold; // number of cache lines to probe before giving up (Sylvan-style)
 
     // node records indexed by idx
     mtpndd_node_record_t *data;
     size_t data_capacity;
-    size_t data_size; // next idx (>=2)
+    _Atomic size_t data_size; // Phase 3: atomic for concurrent node allocation
     size_t data_capacity_max;
 
     // free-list of reusable node indices (0 means empty)
@@ -54,6 +59,17 @@ typedef struct mtpndd_nodetable_s {
 
     // backing storage for all edges (append-only, optional compact on GC)
     mtpndd_edge_array_pool_t edge_pool;
+
+    // Phase 3B: Concurrency control with fixed-size locks
+    // - bucket_locks: fixed-size array (1024) for hash table slot access
+    // - rehash_mutex: ensures single-threaded rehash
+    // - freelist_mutex: protects free_list_head access
+    // - dataarray_mutex: protects data array growth
+    size_t bucket_lock_count;      // Fixed at MTPNDD_FIXED_LOCK_COUNT
+    pthread_spinlock_t *bucket_locks;
+    pthread_mutex_t rehash_mutex;
+    pthread_mutex_t freelist_mutex;
+    pthread_mutex_t dataarray_mutex;
 } mtpndd_nodetable_t;
 
 extern mtpndd_nodetable_t g_mtpndd_nodetable;

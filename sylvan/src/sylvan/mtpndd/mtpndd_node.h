@@ -35,6 +35,11 @@ mtpndd_t mtpndd_exist(mtpndd_t a, uint32_t field);
 double mtpndd_satcount(mtpndd_t node);
 
 /********************************
+ * Parallelization statistics
+ ********************************/
+void mtpndd_print_parallel_stats(void);
+
+/********************************
  * MTPNDD <-> MTBDD conversion
  ********************************/
 mtpndd_error_t mtpndd_to_mtbdd(mtpndd_t node, mtpndd_bdd_t *result);

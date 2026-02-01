@@ -41,6 +41,10 @@ static mtpndd_op_cache_t *mtpndd_op_cache_create(size_t requested_size, uint8_t 
     cache->capacity = capacity;
     cache->mask = capacity - 1;
     cache->arity = arity;
+
+    // CRITICAL: Initialize mutex for concurrent access
+    pthread_mutex_init(&cache->mutex, NULL);
+
     return cache;
 }
 
@@ -48,6 +52,7 @@ static void mtpndd_op_cache_release(mtpndd_op_cache_t *cache) {
     if (!cache) {
         return;
     }
+    pthread_mutex_destroy(&cache->mutex);
     free(cache->entries);
     free(cache);
 }
@@ -135,6 +140,10 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_t lhs, mtpndd
     if (result == MTPNDD_INVALID) {
         return;
     }
+
+    // CRITICAL: Lock for concurrent write
+    pthread_mutex_lock(&cache->mutex);
+
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     size_t base = idx * MTPNDD_CACHE_WAYS;
 
@@ -145,6 +154,7 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_t lhs, mtpndd
             entry->operands[0] = lhs;
             entry->operands[1] = rhs;
             entry->result_plus_one = (uint64_t)result + 1;
+            pthread_mutex_unlock(&cache->mutex);
             return;
         }
     }
@@ -154,6 +164,8 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_t lhs, mtpndd
     entry->operands[0] = lhs;
     entry->operands[1] = rhs;
     entry->result_plus_one = (uint64_t)result + 1;
+
+    pthread_mutex_unlock(&cache->mutex);
 }
 
 mtpndd_t mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_t operand) {

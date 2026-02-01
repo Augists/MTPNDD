@@ -24,6 +24,8 @@ void mtpndd_edge_array_pool_init(mtpndd_edge_array_pool_t *pool, size_t initial_
         return;
     }
     memset(pool, 0, sizeof(*pool));
+    pthread_mutex_init(&pool->mutex, NULL);  // CRITICAL: Init mutex
+    atomic_store_explicit(&pool->size, 0, memory_order_relaxed);
     if (initial_capacity == 0) {
         return;
     }
@@ -33,17 +35,18 @@ void mtpndd_edge_array_pool_init(mtpndd_edge_array_pool_t *pool, size_t initial_
         return;
     }
     pool->capacity = initial_capacity;
-    pool->size = 0;
+    // size already initialized to 0 above
 }
 
 void mtpndd_edge_array_pool_destroy(mtpndd_edge_array_pool_t *pool) {
     if (!pool) {
         return;
     }
+    pthread_mutex_destroy(&pool->mutex);
     free(pool->data);
     pool->data = NULL;
     pool->capacity = 0;
-    pool->size = 0;
+    atomic_store_explicit(&pool->size, 0, memory_order_relaxed);
 }
 
 uint32_t mtpndd_edge_array_pool_alloc(mtpndd_edge_array_pool_t *pool, uint32_t count) {
@@ -54,29 +57,40 @@ uint32_t mtpndd_edge_array_pool_alloc(mtpndd_edge_array_pool_t *pool, uint32_t c
     if (count == 0) {
         return 0;
     }
-    if (pool->size > (size_t)UINT32_MAX || count > UINT32_MAX) {
+
+    // CRITICAL: Atomically reserve space
+    size_t start = atomic_fetch_add_explicit(&pool->size, (size_t)count, memory_order_relaxed);
+    size_t required = start + (size_t)count;
+
+    if (start > (size_t)UINT32_MAX || required > (size_t)UINT32_MAX) {
         MTPNDD_SET_ERROR(MTPNDD_ERROR_CAPACITY_EXCEEDED);
         return UINT32_MAX;
     }
 
-    size_t start = pool->size;
-    size_t required = start + (size_t)count;
+    // Check if capacity growth needed (mutex-protected)
     if (required > pool->capacity) {
-        size_t new_capacity = mtpndd_next_capacity(pool->capacity, required);
-        mtpndd_edge_record_t *new_data =
-                (mtpndd_edge_record_t *)realloc(pool->data, new_capacity * sizeof(mtpndd_edge_record_t));
-        if (!new_data) {
-            MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-            return UINT32_MAX;
+        pthread_mutex_lock(&pool->mutex);
+
+        // Double-check after acquiring lock (another thread may have grown it)
+        if (required > pool->capacity) {
+            size_t new_capacity = mtpndd_next_capacity(pool->capacity, required);
+            mtpndd_edge_record_t *new_data =
+                    (mtpndd_edge_record_t *)realloc(pool->data, new_capacity * sizeof(mtpndd_edge_record_t));
+            if (!new_data) {
+                pthread_mutex_unlock(&pool->mutex);
+                MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+                return UINT32_MAX;
+            }
+            if (new_capacity > pool->capacity) {
+                memset(new_data + pool->capacity, 0,
+                       (new_capacity - pool->capacity) * sizeof(mtpndd_edge_record_t));
+            }
+            pool->data = new_data;
+            pool->capacity = new_capacity;
         }
-        if (new_capacity > pool->capacity) {
-            memset(new_data + pool->capacity, 0,
-                   (new_capacity - pool->capacity) * sizeof(mtpndd_edge_record_t));
-        }
-        pool->data = new_data;
-        pool->capacity = new_capacity;
+
+        pthread_mutex_unlock(&pool->mutex);
     }
 
-    pool->size = required;
     return (uint32_t)start;
 }

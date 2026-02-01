@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #include "mtpndd_common.h"
 
@@ -21,6 +22,7 @@ typedef struct mtpndd_op_cache_s {
     size_t capacity;
     size_t mask;
     uint8_t arity;
+    pthread_mutex_t mutex;  // CRITICAL: Protect concurrent cache access
 } mtpndd_op_cache_t;
 
 bool mtpndd_op_cache_initialize(

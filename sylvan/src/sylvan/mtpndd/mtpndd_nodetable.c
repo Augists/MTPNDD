@@ -202,6 +202,9 @@ static bool mtpndd_node_edges_equal(const mtpndd_nodetable_t *table,
 }
 
 static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_capacity) {
+    // Phase 3B: Acquire rehash_mutex for single-threaded rehash
+    pthread_mutex_lock(&table->rehash_mutex);
+
     if (table->hash_capacity_max && new_capacity > table->hash_capacity_max) {
         new_capacity = table->hash_capacity_max;
     }
@@ -211,11 +214,22 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_capaci
     }
     if (cap < 8) cap = 8;
     if (cap <= table->hash_capacity) {
+        pthread_mutex_unlock(&table->rehash_mutex);
         return true;
+    }
+
+    // Phase 3B: Acquire all bucket locks (stop-the-world for hash table)
+    for (size_t i = 0; i < MTPNDD_FIXED_LOCK_COUNT; ++i) {
+        pthread_spin_lock(&table->bucket_locks[i]);
     }
 
     uint64_t *new_hash = (uint64_t *)mtpndd_aligned_zalloc(MTPNDD_CACHELINE_BYTES, cap * sizeof(uint64_t));
     if (!new_hash) {
+        // Release all locks on failure
+        for (size_t i = 0; i < MTPNDD_FIXED_LOCK_COUNT; ++i) {
+            pthread_spin_unlock(&table->bucket_locks[i]);
+        }
+        pthread_mutex_unlock(&table->rehash_mutex);
         return false;
     }
 
@@ -238,6 +252,16 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_capaci
     table->hash_mask = new_mask;
     table->hash_probe_threshold = probe_threshold;
     // hash_count unchanged
+
+    // Phase 3B: bucket_locks array stays fixed size (never reallocated)
+    // bucket_lock_count remains MTPNDD_FIXED_LOCK_COUNT
+
+    // Release all bucket locks
+    for (size_t i = 0; i < MTPNDD_FIXED_LOCK_COUNT; ++i) {
+        pthread_spin_unlock(&table->bucket_locks[i]);
+    }
+    pthread_mutex_unlock(&table->rehash_mutex);
+
     return true;
 }
 
@@ -285,8 +309,26 @@ void mtpndd_nodetable_init(mtpndd_nodetable_t *table,
         table->hash_capacity_max = table->hash_capacity;
     }
     table->hash_mask = hash_cap - 1;
-    table->hash_count = 0;
+    atomic_store_explicit(&table->hash_count, 0, memory_order_relaxed);  // Phase 3: atomic
     table->hash_probe_threshold = mtpndd_hash_probe_threshold(hash_cap);
+
+    // Phase 3B: Initialize concurrency control with fixed-size lock array
+    table->bucket_lock_count = MTPNDD_FIXED_LOCK_COUNT;
+    table->bucket_locks = (pthread_spinlock_t *)malloc(MTPNDD_FIXED_LOCK_COUNT * sizeof(pthread_spinlock_t));
+    if (!table->bucket_locks) {
+        free(table->hash);
+        free(table->data);
+        table->hash = NULL;
+        table->data = NULL;
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        return;
+    }
+    for (size_t i = 0; i < MTPNDD_FIXED_LOCK_COUNT; ++i) {
+        pthread_spin_init(&table->bucket_locks[i], PTHREAD_PROCESS_PRIVATE);
+    }
+    pthread_mutex_init(&table->rehash_mutex, NULL);
+    pthread_mutex_init(&table->freelist_mutex, NULL);
+    pthread_mutex_init(&table->dataarray_mutex, NULL);
 
     mtpndd_edge_array_pool_init(&table->edge_pool, edge_capacity_hint);
 }
@@ -419,6 +461,18 @@ void mtpndd_nodetable_destroy(mtpndd_nodetable_t *table) {
     mtpndd_edge_array_pool_destroy(&table->edge_pool);
     free(table->hash);
     free(table->data);
+
+    // Phase 3B: Cleanup concurrency control
+    if (table->bucket_locks) {
+        for (size_t i = 0; i < table->bucket_lock_count; ++i) {
+            pthread_spin_destroy(&table->bucket_locks[i]);
+        }
+        free(table->bucket_locks);
+    }
+    pthread_mutex_destroy(&table->rehash_mutex);
+    pthread_mutex_destroy(&table->freelist_mutex);
+    pthread_mutex_destroy(&table->dataarray_mutex);
+
     memset(table, 0, sizeof(*table));
 }
 
@@ -533,10 +587,12 @@ void mtpndd_ref(mtpndd_t node) {
     if (!rec) {
         return;
     }
-    if (rec->ref_count == MTPNDD_REFCOUNT_PROTECTED) {
+    // CRITICAL FIX: Atomic increment for concurrent access
+    uint32_t old_count = atomic_load_explicit(&rec->ref_count, memory_order_relaxed);
+    if (old_count == MTPNDD_REFCOUNT_PROTECTED) {
         return;
     }
-    rec->ref_count += 1;
+    atomic_fetch_add_explicit(&rec->ref_count, 1, memory_order_relaxed);
 }
 
 void mtpndd_deref(mtpndd_t node) {
@@ -547,11 +603,13 @@ void mtpndd_deref(mtpndd_t node) {
     if (!rec) {
         return;
     }
-    if (rec->ref_count == MTPNDD_REFCOUNT_PROTECTED) {
+    // CRITICAL FIX: Atomic decrement for concurrent access
+    uint32_t old_count = atomic_load_explicit(&rec->ref_count, memory_order_relaxed);
+    if (old_count == MTPNDD_REFCOUNT_PROTECTED) {
         return;
     }
-    if (rec->ref_count > 0) {
-        rec->ref_count -= 1;
+    if (old_count > 0) {
+        atomic_fetch_sub_explicit(&rec->ref_count, 1, memory_order_relaxed);
     }
 }
 
@@ -563,7 +621,7 @@ void mtpndd_protect(mtpndd_t node) {
     if (!rec) {
         return;
     }
-    rec->ref_count = MTPNDD_REFCOUNT_PROTECTED;
+    atomic_store_explicit(&rec->ref_count, MTPNDD_REFCOUNT_PROTECTED, memory_order_relaxed);
 }
 
 void mtpndd_unprotect(mtpndd_t node) {
@@ -574,8 +632,9 @@ void mtpndd_unprotect(mtpndd_t node) {
     if (!rec) {
         return;
     }
-    if (rec->ref_count == MTPNDD_REFCOUNT_PROTECTED) {
-        rec->ref_count = 0;
+    uint32_t current = atomic_load_explicit(&rec->ref_count, memory_order_relaxed);
+    if (current == MTPNDD_REFCOUNT_PROTECTED) {
+        atomic_store_explicit(&rec->ref_count, 0, memory_order_relaxed);
     }
 }
 
@@ -604,13 +663,24 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
 
     mtpndd_nodetable_t *table = &g_mtpndd_nodetable;
 
+    // Phase 3B: Check if GC needed BEFORE acquiring any locks
+    size_t current_data_size = atomic_load_explicit(&table->data_size, memory_order_relaxed);
+    if (table->free_list_head == 0 && current_data_size >= table->data_capacity) {
+        // Try GC first to avoid doing it while holding locks
+        (void)mtpndd_gc_collect();
+    }
+
     // Lookup / find insertion slot with cache-line-aware probing (Sylvan-style).
     uint64_t hash = 0;
     uint64_t hash_bits = 0;
     size_t slot = 0;
+    size_t lock_idx = 0;  // Phase 3B: bucket lock index
+    bool lock_held = false;
+
     for (int attempt = 0; attempt < 3; ++attempt) {
         // Rehash when load factor too high (may double up to hash_capacity_max).
-        if (table->hash_capacity > 0 && (table->hash_count + 1) * 10 >= table->hash_capacity * 7) {
+        size_t current_count = atomic_load_explicit(&table->hash_count, memory_order_relaxed);
+        if (table->hash_capacity > 0 && (current_count + 1) * 10 >= table->hash_capacity * 7) {
             size_t target = table->hash_capacity * 2;
             if (table->hash_capacity_max && target > table->hash_capacity_max) target = table->hash_capacity_max;
             if (target > table->hash_capacity) {
@@ -623,6 +693,13 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
         uint64_t hash_rehash = hash;
         const uint64_t step = mtpndd_hash_probe_step(hash_rehash);
         slot = (size_t)hash_rehash & table->hash_mask;
+
+        // Phase 3B: Acquire bucket lock based on initial slot (covers entire probe sequence)
+        // Use modulo with fixed lock count to avoid reallocation issues
+        lock_idx = slot % MTPNDD_FIXED_LOCK_COUNT;
+        pthread_spin_lock(&table->bucket_locks[lock_idx]);
+        lock_held = true;
+
         size_t last = slot;
         size_t i = 0;
         const size_t threshold = table->hash_probe_threshold ? table->hash_probe_threshold : mtpndd_hash_probe_threshold(table->hash_capacity);
@@ -639,7 +716,9 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
                 mtpndd_node_record_t *existing = mtpndd_node_record(table, existing_idx);
                 if (existing && existing->field_id == field_id
                         && mtpndd_node_edges_equal(table, existing, builder->edges, edge_num)) {
-                    // reuse
+                    // reuse - release lock before returning
+                    pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+                    lock_held = false;
                     for (uint32_t e = 0; e < edge_num; ++e) {
                         sylvan_deref(builder->edges[e].label);
                     }
@@ -655,7 +734,9 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
             slot = mtpndd_hash_probe_next(slot);
             if (slot == last) {
                 if (++i == threshold) {
-                    // Probe sequence exhausted: try grow/rebuild and restart.
+                    // Probe sequence exhausted: release lock, try grow/rebuild and restart
+                    pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+                    lock_held = false;
                     bool progressed = false;
                     size_t target = table->hash_capacity * 2;
                     if (table->hash_capacity_max && target > table->hash_capacity_max) target = table->hash_capacity_max;
@@ -678,28 +759,46 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
         continue;
     }
     if (table->hash[slot] != 0) {
+        // Failed to find empty slot - release lock if held
+        if (lock_held) {
+            pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+            lock_held = false;
+        }
         MTPNDD_SET_ERROR(MTPNDD_ERROR_CAPACITY_EXCEEDED);
         return MTPNDD_INVALID;
     }
 
-    // allocate node idx
+    // Phase 3B: Allocate node idx with proper locking
+    // Use freelist_mutex for free list access and dataarray_mutex for growth
     mtpndd_t new_idx = 0;
-    if (table->free_list_head == 0 && table->data_size >= table->data_capacity) {
-        // Try a stop-the-world GC first (Sylvan-style) to populate the free-list and reduce memory pressure.
-        (void)mtpndd_gc_collect();
-    }
+
+    // Try allocate from free list (protected by freelist_mutex)
+    pthread_mutex_lock(&table->freelist_mutex);
     if (table->free_list_head != 0) {
         mtpndd_t idx = table->free_list_head;
         mtpndd_node_record_t *free_rec = &table->data[(size_t)idx];
         table->free_list_head = mtpndd_node_record_free_next(free_rec);
         new_idx = idx;
+        pthread_mutex_unlock(&table->freelist_mutex);
     } else {
-        if (table->data_size >= table->data_capacity) {
+        pthread_mutex_unlock(&table->freelist_mutex);
+
+        // Allocate from data array (protected by dataarray_mutex)
+        pthread_mutex_lock(&table->dataarray_mutex);
+        current_data_size = atomic_load_explicit(&table->data_size, memory_order_relaxed);
+
+        // Check if data array needs growth
+        if (current_data_size >= table->data_capacity) {
             size_t new_cap = table->data_capacity ? table->data_capacity * 2 : 1024;
             if (table->data_capacity_max && new_cap > table->data_capacity_max) {
                 new_cap = table->data_capacity_max;
             }
             if (new_cap <= table->data_capacity) {
+                pthread_mutex_unlock(&table->dataarray_mutex);
+                if (lock_held) {
+                    pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+                    lock_held = false;
+                }
                 MTPNDD_SET_ERROR(MTPNDD_ERROR_CAPACITY_EXCEEDED);
                 return MTPNDD_INVALID;
             }
@@ -708,23 +807,39 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
             mtpndd_node_record_t *new_data = (mtpndd_node_record_t *)mtpndd_aligned_realloc_zextend(
                     table->data, MTPNDD_CACHELINE_BYTES, old_bytes, new_bytes);
             if (!new_data) {
-                // GC already attempted above; propagate OOM.
+                pthread_mutex_unlock(&table->dataarray_mutex);
+                if (lock_held) {
+                    pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+                    lock_held = false;
+                }
                 MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
                 return MTPNDD_INVALID;
             }
             table->data = new_data;
             table->data_capacity = new_cap;
         }
-        new_idx = (mtpndd_t)table->data_size;
-        table->data_size++;
-        if (new_idx > (mtpndd_t)MTPNDD_NODETABLE_SLOT_MASK_INDEX) {
-            MTPNDD_SET_ERROR(MTPNDD_ERROR_CAPACITY_EXCEEDED);
-            return MTPNDD_INVALID;
+
+        // Atomically allocate node index
+        new_idx = (mtpndd_t)atomic_fetch_add_explicit(&table->data_size, 1, memory_order_relaxed);
+        pthread_mutex_unlock(&table->dataarray_mutex);
+    }
+
+    if (new_idx > (mtpndd_t)MTPNDD_NODETABLE_SLOT_MASK_INDEX) {
+        if (lock_held) {
+            pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+            lock_held = false;
         }
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_CAPACITY_EXCEEDED);
+        return MTPNDD_INVALID;
     }
 
     uint32_t edge_start = mtpndd_edge_array_pool_alloc(&table->edge_pool, edge_num);
     if (edge_start == UINT32_MAX) {
+        // Edge pool allocation failed - release locks
+        if (lock_held) {
+            pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+            lock_held = false;
+        }
         return MTPNDD_INVALID;
     }
 
@@ -744,13 +859,19 @@ mtpndd_t mtpndd_mk(uint32_t field_id, mtpndd_edge_builder_t *builder) {
 
     mtpndd_node_record_t *node = &table->data[(size_t)new_idx];
     node->field_id = field_id;
-    node->ref_count = 0;
+    atomic_store_explicit(&node->ref_count, 0, memory_order_relaxed);  // CRITICAL: Atomic init
     node->edge_array_idx = edge_start;
     node->edge_num = edge_num;
 
     table->hash[slot] = mtpndd_hash_slot_pack(hash, new_idx);
-    table->hash_count++;
-    g_mtpndd_stats.node_count = (uint64_t)table->hash_count;
+    size_t new_count = atomic_fetch_add_explicit(&table->hash_count, 1, memory_order_relaxed) + 1;
+    g_mtpndd_stats.node_count = (uint64_t)new_count;
+
+    // Phase 3B: Release bucket lock before returning
+    if (lock_held) {
+        pthread_spin_unlock(&table->bucket_locks[lock_idx]);
+        lock_held = false;
+    }
 
     builder->count = 0;
 

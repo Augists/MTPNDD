@@ -5,8 +5,10 @@
 #ifndef MTPNDD_EDGE_ARRAY_POOL_H
 #define MTPNDD_EDGE_ARRAY_POOL_H
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #include "mtpndd_common.h"
 
@@ -20,7 +22,8 @@ _Static_assert(sizeof(mtpndd_edge_record_t) == sizeof(uint64_t) * 2, "edge recor
 typedef struct mtpndd_edge_array_pool_s {
     mtpndd_edge_record_t *data;
     size_t capacity;
-    size_t size;
+    _Atomic size_t size;  // CRITICAL: Atomic for concurrent allocation
+    pthread_mutex_t mutex;  // Protects capacity growth (realloc)
 } mtpndd_edge_array_pool_t;
 
 void mtpndd_edge_array_pool_init(mtpndd_edge_array_pool_t *pool, size_t initial_capacity);

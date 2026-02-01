@@ -414,7 +414,7 @@ static void fill_baseline_config(size_t n, mtpndd_pal_config_t *config) {
 
     *config = (mtpndd_pal_config_t){
             .n_workers = 0,
-            .lace_dqsize = 1024,
+            .lace_dqsize = 1 << 20,  // Large queue for maximum spawn capacity
             .bdd_nodetable_size = bdd_size,
             .mtpndd_nodetable_size = ndd_size,
             .op_cache_size = cache_size,
@@ -669,6 +669,8 @@ int main(int argc, char **argv) {
     if (!run_case(n, &small_limits, &t, &solutions)) return EXIT_FAILURE;
     print_row("small_growth_sylvan_limits", &t);
 
-    printf("solutions=%" PRIu64 "\n", solutions);
+    printf("\n=== Parallelization Statistics ===\n");
+    mtpndd_print_parallel_stats();
+    printf("\nsolutions=%" PRIu64 "\n", solutions);
     return EXIT_SUCCESS;
 }

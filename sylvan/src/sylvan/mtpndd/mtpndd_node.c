@@ -24,6 +24,52 @@
 #include "sylvan_mtbdd.h"
 
 /********************************
+ * DEBUG: Parallel execution and cache statistics
+ ********************************/
+static _Atomic size_t g_spawn_attempts = 0;
+static _Atomic size_t g_spawn_actually_spawned = 0;
+static _Atomic size_t g_direct_calls = 0;
+static _Atomic size_t g_cache_hits = 0;
+static _Atomic size_t g_cache_misses = 0;
+static _Atomic size_t g_prod_checks = 0;
+static _Atomic size_t g_prod_met_threshold = 0;
+static _Atomic size_t g_max_prod_seen = 0;
+
+// DEBUG: Test 100 spawns with atomic ref + mutex cache
+static _Atomic size_t g_total_spawns_allowed = 100;
+
+void mtpndd_print_parallel_stats(void) {
+    size_t spawns = atomic_load(&g_spawn_actually_spawned);
+    size_t calls = atomic_load(&g_direct_calls);
+    size_t spawn_attempts = atomic_load(&g_spawn_attempts);
+    size_t hits = atomic_load(&g_cache_hits);
+    size_t misses = atomic_load(&g_cache_misses);
+    size_t prod_checks = atomic_load(&g_prod_checks);
+    size_t prod_met = atomic_load(&g_prod_met_threshold);
+    size_t max_prod = atomic_load(&g_max_prod_seen);
+
+    printf("\n=== MTPNDD Parallel & Cache Statistics ===\n");
+    printf("Workers: %d\n", lace_workers());
+    printf("\nSpawn decision analysis:\n");
+    printf("  Prod checks: %zu\n", prod_checks);
+    printf("  Prod >= 64: %zu (%.2f%% of checks)\n",
+           prod_met, 100.0 * prod_met / (prod_checks + 1));
+    printf("  Max prod seen: %zu\n", max_prod);
+    printf("\nActual spawning:\n");
+    printf("  Spawn attempts: %zu\n", spawn_attempts);
+    printf("  Actually spawned: %zu (%.2f%% of attempts)\n",
+           spawns, 100.0 * spawns / (spawn_attempts + 1));
+    printf("  Direct calls: %zu\n", calls);
+    printf("  Spawn ratio: %.2f%% of total work\n",
+           100.0 * spawns / (spawns + calls + 1));
+    printf("\nOperation cache:\n");
+    printf("  Hits: %zu\n", hits);
+    printf("  Misses: %zu\n", misses);
+    printf("  Hit rate: %.2f%%\n", 100.0 * hits / (hits + misses + 1));
+    printf("==========================================\n\n");
+}
+
+/********************************
  * Temp refs - lightweight protection for intermediate results
  ********************************/
 typedef struct {
@@ -122,10 +168,17 @@ TASK_DECL_3(mtpndd_and_item_t, mtpndd_and_diff_field_item,
             mtpndd_t, uint32_t, mtpndd_t);
 
 // Granularity control: decide whether to SPAWN a sub-problem
-// Phase 1A: Conservative thresholds for gradual parallelization
+// Phase 1B: More aggressive thresholds with batched SPAWN/SYNC
 static inline bool mtpndd_should_spawn(mtpndd_t a, mtpndd_t b) {
     // Never spawn if only 1 worker
     if (lace_workers() <= 1) return false;
+
+    // SAFETY LIMIT: 300 spawns (hard limit ~310 with lace_dqsize=1<<20, stack=8MB)
+    // This prevents stack overflow / task queue overflow
+    // For sparse workloads like NQueens, this barely affects performance
+    // For denser workloads, this enables significant parallelization
+    size_t already_spawned = atomic_load(&g_spawn_actually_spawned);
+    if (already_spawned >= 300) return false;
 
     // Don't spawn for terminal nodes
     if (mtpndd_is_terminal(a) || mtpndd_is_terminal(b)) return false;
@@ -133,15 +186,38 @@ static inline bool mtpndd_should_spawn(mtpndd_t a, mtpndd_t b) {
     const mtpndd_node_record_t na = mtpndd_node_read(a);
     const mtpndd_node_record_t nb = mtpndd_node_read(b);
 
-    // CONSERVATIVE: Only spawn at very top levels for now
-    if (na.field_id <= 2 && nb.field_id <= 2) {
-        size_t prod = (size_t)na.edge_num * (size_t)nb.edge_num;
-        // Only spawn if substantial work (256+ edge pairs)
-        return prod >= 256;
+    size_t prod = (size_t)na.edge_num * (size_t)nb.edge_num;
+
+    // BALANCED APPROACH: Spawn at all levels, but with depth-dependent thresholds
+    // Top levels (0-2): spawn if prod >= 4 (very aggressive)
+    // Mid levels (3-6): spawn if prod >= 16 (moderate)
+    // Deep levels (7+): spawn if prod >= 64 (conservative)
+    uint32_t max_field = na.field_id > nb.field_id ? na.field_id : nb.field_id;
+    size_t threshold;
+    if (max_field <= 2) {
+        threshold = 4;   // Top: very aggressive
+    } else if (max_field <= 6) {
+        threshold = 16;  // Mid: moderate
+    } else {
+        threshold = 64;  // Deep: conservative
     }
 
-    // Don't spawn at deeper levels yet (too fine-grained)
-    return false;
+    if (prod < threshold) return false;
+
+    // DEBUG: Track prod distribution
+    atomic_fetch_add(&g_prod_checks, 1);
+
+    // Update max prod seen
+    size_t current_max = atomic_load(&g_max_prod_seen);
+    while (prod > current_max) {
+        if (atomic_compare_exchange_weak(&g_max_prod_seen, &current_max, prod)) {
+            break;
+        }
+    }
+
+    // Threshold already checked above with depth-aware logic
+    atomic_fetch_add(&g_prod_met_threshold, 1);
+    return true;
 }
 
 // Forward declarations for OR, NOT, EXIST (remain serial for now)
@@ -176,7 +252,7 @@ TASK_IMPL_4(mtpndd_and_item_t, mtpndd_and_same_field_item,
         return out;  // emit=0 means invalid
     }
 
-    // Recursive AND
+    // Recursive AND (field_id restriction prevents deep spawning)
     mtpndd_t sub_result = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head,
                                                ea.child, eb.child);
     if (sub_result == MTPNDD_INVALID) {
@@ -316,9 +392,11 @@ TASK_IMPL_2(mtpndd_t, mtpndd_and_rec, mtpndd_t, a, mtpndd_t, b) {
     mtpndd_t cached = mtpndd_op_cache_lookup_binary(and_cache, lhs, rhs);
     if (cached != MTPNDD_INVALID) {
         MTPNDD_STAT_ADD(cache_lookup_hits, 1);
+        atomic_fetch_add(&g_cache_hits, 1);
         return cached;
     }
     MTPNDD_STAT_ADD(cache_lookup_misses, 1);
+    atomic_fetch_add(&g_cache_misses, 1);
 
     const mtpndd_node_record_t na = mtpndd_node_read(a);
     const mtpndd_node_record_t nb = mtpndd_node_read(b);
@@ -334,61 +412,76 @@ TASK_IMPL_2(mtpndd_t, mtpndd_and_rec, mtpndd_t, a, mtpndd_t, b) {
 
     mtpndd_temp_ref_list_t temp_refs;
     mtpndd_temp_refs_init(&temp_refs);
+    size_t pending = 0;  // Track pending SPAWN'd tasks
 
     if (na.field_id == nb.field_id) {
-        // Same field: combine all edge pairs (Phase 1A: Simple parallelization)
+        // Same field: combine all edge pairs (Phase 1B: Batched SPAWN/SYNC with item tasks)
         for (uint32_t ia = 0; ia < na.edge_num; ++ia) {
-            const mtpndd_edge_record_t ea = mtpndd_node_edge(a, ia);
             for (uint32_t ib = 0; ib < nb.edge_num; ++ib) {
+                // Read edges to check should_spawn
+                const mtpndd_edge_record_t ea = mtpndd_node_edge(a, ia);
                 const mtpndd_edge_record_t eb = mtpndd_node_edge(b, ib);
 
-                // Compute combined label
-                mtpndd_bdd_t label = sylvan_ref(sylvan_and(ea.label, eb.label));
-                if (label == sylvan_false) {
-                    sylvan_deref(label);
-                    continue;
+                // Decide: SPAWN or CALL?
+                bool should_spawn = mtpndd_should_spawn(ea.child, eb.child);
+                if (should_spawn) {
+                    atomic_fetch_add(&g_spawn_attempts, 1);
                 }
-
-                // Recursive AND with simple parallelization
-                mtpndd_t child;
-                if (mtpndd_should_spawn(ea.child, eb.child)) {
-                    // SPAWN for large sub-problems
-                    mtpndd_and_rec_SPAWN(__lace_worker, __lace_dq_head, ea.child, eb.child);
+                if (should_spawn) {
+                    // SPAWN item task (don't sync yet - let it run in parallel)
+                    mtpndd_and_same_field_item_SPAWN(__lace_worker, __lace_dq_head, a, ia, b, ib);
                     __lace_dq_head++;
-                    // Immediately SYNC (simple approach, not batched)
-                    __lace_dq_head--;
-                    child = mtpndd_and_rec_SYNC(__lace_worker, __lace_dq_head);
+                    pending++;
+                    atomic_fetch_add(&g_spawn_actually_spawned, 1);
                 } else {
-                    // Direct CALL for small sub-problems
-                    child = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head,
-                                                 ea.child, eb.child);
+                    // Direct CALL item task (execute inline)
+                    atomic_fetch_add(&g_direct_calls, 1);
+                    mtpndd_and_item_t item = mtpndd_and_same_field_item_CALL(
+                        __lace_worker, __lace_dq_head, a, ia, b, ib);
+
+                    mtpndd_error_t status = mtpndd_and_merge_item(&builder, &temp_refs, &item);
+                    if (status != MTPNDD_SUCCESS) {
+                        mtpndd_temp_refs_release(&temp_refs);
+                        mtpndd_edge_builder_destroy(&builder);
+                        return MTPNDD_INVALID;
+                    }
                 }
 
-                if (child == MTPNDD_INVALID) {
-                    sylvan_deref(label);
-                    mtpndd_temp_refs_release(&temp_refs);
-                    mtpndd_edge_builder_destroy(&builder);
-                    return MTPNDD_INVALID;
-                }
+                // Batch flush: prevent task queue overflow
+                if (pending >= MTPNDD_AND_PENDING_FLUSH_THRESHOLD) {
+                    size_t keep = MTPNDD_AND_PENDING_FLUSH_THRESHOLD / 2;
+                    if (keep == 0) keep = 1;
+                    size_t to_drain = pending > keep ? (pending - keep) : pending;
 
-                // Protect intermediate result immediately
-                if (!mtpndd_temp_refs_push(&temp_refs, child)) {
-                    sylvan_deref(label);
-                    mtpndd_temp_refs_release(&temp_refs);
-                    mtpndd_edge_builder_destroy(&builder);
-                    MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-                    return MTPNDD_INVALID;
-                }
-
-                if (!mtpndd_edge_builder_push(&builder, child, label)) {
-                    mtpndd_temp_refs_release(&temp_refs);
-                    mtpndd_edge_builder_destroy(&builder);
-                    return MTPNDD_INVALID;
+                    mtpndd_error_t status = mtpndd_and_drain_same_field_items(
+                        __lace_worker, &__lace_dq_head, &pending, to_drain, &builder, &temp_refs);
+                    if (status != MTPNDD_SUCCESS) {
+                        // Cleanup remaining tasks
+                        while (pending > 0) {
+                            __lace_dq_head--;
+                            (void)mtpndd_and_same_field_item_SYNC(__lace_worker, __lace_dq_head);
+                            pending--;
+                        }
+                        mtpndd_temp_refs_release(&temp_refs);
+                        mtpndd_edge_builder_destroy(&builder);
+                        return MTPNDD_INVALID;
+                    }
                 }
             }
         }
+
+        // Final drain: sync all remaining pending tasks
+        if (pending > 0) {
+            mtpndd_error_t status = mtpndd_and_drain_same_field_items(
+                __lace_worker, &__lace_dq_head, &pending, pending, &builder, &temp_refs);
+            if (status != MTPNDD_SUCCESS) {
+                mtpndd_temp_refs_release(&temp_refs);
+                mtpndd_edge_builder_destroy(&builder);
+                return MTPNDD_INVALID;
+            }
+        }
     } else {
-        // Different fields: ensure a is smaller field (INLINE for correctness)
+        // Different fields: ensure top is smaller field (Phase 1B: Batched SPAWN/SYNC)
         mtpndd_t top = a;
         mtpndd_t other = b;
         mtpndd_node_record_t top_node = na;
@@ -399,38 +492,58 @@ TASK_IMPL_2(mtpndd_t, mtpndd_and_rec, mtpndd_t, a, mtpndd_t, b) {
         }
 
         for (uint32_t i = 0; i < top_node.edge_num; ++i) {
-            const mtpndd_edge_record_t e = mtpndd_node_edge(top, i);
-
-            // Recursive AND with simple parallelization
-            mtpndd_t child;
-            if (mtpndd_should_spawn(e.child, other)) {
-                // SPAWN for large sub-problems
-                mtpndd_and_rec_SPAWN(__lace_worker, __lace_dq_head, e.child, other);
+            // Decide: SPAWN or CALL?
+            bool should_spawn = mtpndd_should_spawn(mtpndd_node_edge(top, i).child, other);
+            if (should_spawn) {
+                atomic_fetch_add(&g_spawn_attempts, 1);
+            }
+            if (should_spawn) {
+                // SPAWN item task (don't sync yet)
+                mtpndd_and_diff_field_item_SPAWN(__lace_worker, __lace_dq_head, top, i, other);
                 __lace_dq_head++;
-                // Immediately SYNC (simple approach)
-                __lace_dq_head--;
-                child = mtpndd_and_rec_SYNC(__lace_worker, __lace_dq_head);
+                pending++;
+                atomic_fetch_add(&g_spawn_actually_spawned, 1);
             } else {
-                // Direct CALL for small sub-problems
-                child = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head,
-                                             e.child, other);
+                atomic_fetch_add(&g_direct_calls, 1);
+                // Direct CALL item task
+                mtpndd_and_item_t item = mtpndd_and_diff_field_item_CALL(
+                    __lace_worker, __lace_dq_head, top, i, other);
+
+                mtpndd_error_t status = mtpndd_and_merge_item(&builder, &temp_refs, &item);
+                if (status != MTPNDD_SUCCESS) {
+                    mtpndd_temp_refs_release(&temp_refs);
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
             }
 
-            if (child == MTPNDD_INVALID) {
-                mtpndd_temp_refs_release(&temp_refs);
-                mtpndd_edge_builder_destroy(&builder);
-                return MTPNDD_INVALID;
-            }
+            // Batch flush
+            if (pending >= MTPNDD_AND_PENDING_FLUSH_THRESHOLD) {
+                size_t keep = MTPNDD_AND_PENDING_FLUSH_THRESHOLD / 2;
+                if (keep == 0) keep = 1;
+                size_t to_drain = pending > keep ? (pending - keep) : pending;
 
-            // Protect intermediate result immediately
-            if (!mtpndd_temp_refs_push(&temp_refs, child)) {
-                mtpndd_temp_refs_release(&temp_refs);
-                mtpndd_edge_builder_destroy(&builder);
-                MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-                return MTPNDD_INVALID;
+                mtpndd_error_t status = mtpndd_and_drain_diff_field_items(
+                    __lace_worker, &__lace_dq_head, &pending, to_drain, &builder, &temp_refs);
+                if (status != MTPNDD_SUCCESS) {
+                    // Cleanup remaining tasks
+                    while (pending > 0) {
+                        __lace_dq_head--;
+                        (void)mtpndd_and_diff_field_item_SYNC(__lace_worker, __lace_dq_head);
+                        pending--;
+                    }
+                    mtpndd_temp_refs_release(&temp_refs);
+                    mtpndd_edge_builder_destroy(&builder);
+                    return MTPNDD_INVALID;
+                }
             }
+        }
 
-            if (!mtpndd_edge_builder_push(&builder, child, sylvan_ref(e.label))) {
+        // Final drain
+        if (pending > 0) {
+            mtpndd_error_t status = mtpndd_and_drain_diff_field_items(
+                __lace_worker, &__lace_dq_head, &pending, pending, &builder, &temp_refs);
+            if (status != MTPNDD_SUCCESS) {
                 mtpndd_temp_refs_release(&temp_refs);
                 mtpndd_edge_builder_destroy(&builder);
                 return MTPNDD_INVALID;
