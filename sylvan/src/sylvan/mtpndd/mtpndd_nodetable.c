@@ -404,7 +404,12 @@ static bool mtpndd_edge_pool_compact(mtpndd_nodetable_t *table, size_t live_edge
         free(table->edge_pool.data);
         table->edge_pool.data = NULL;
         table->edge_pool.capacity = 0;
-        table->edge_pool.size = 0;
+        atomic_store_explicit(&table->edge_pool.size, 0, memory_order_relaxed);
+        // Reset per-worker local buffers (all allocations start fresh)
+        if (table->edge_pool.local_buffers) {
+            memset(table->edge_pool.local_buffers, 0,
+                   table->edge_pool.local_buffer_count * sizeof(mtpndd_edge_local_buffer_t));
+        }
         return true;
     }
 
@@ -437,7 +442,12 @@ static bool mtpndd_edge_pool_compact(mtpndd_nodetable_t *table, size_t live_edge
     free(table->edge_pool.data);
     table->edge_pool.data = new_data;
     table->edge_pool.capacity = new_capacity;
-    table->edge_pool.size = write;
+    atomic_store_explicit(&table->edge_pool.size, write, memory_order_relaxed);
+    // Reset per-worker local buffers (compaction invalidates old indices)
+    if (table->edge_pool.local_buffers) {
+        memset(table->edge_pool.local_buffers, 0,
+               table->edge_pool.local_buffer_count * sizeof(mtpndd_edge_local_buffer_t));
+    }
     return true;
 }
 
