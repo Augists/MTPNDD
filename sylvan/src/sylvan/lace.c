@@ -31,6 +31,24 @@
 
 #include <lace.h>
 
+// Lace backoff configuration (feature/c optimization)
+// Reduce idle worker CPU usage by yielding/sleeping after failed steal attempts
+#ifndef LACE_STEAL_BACKOFF
+#define LACE_STEAL_BACKOFF 1
+#endif
+
+#if LACE_STEAL_BACKOFF
+#ifndef LACE_STEAL_BACKOFF_YIELD_ITERS
+#define LACE_STEAL_BACKOFF_YIELD_ITERS 256u  // sched_yield after 256 failed steals
+#endif
+#ifndef LACE_STEAL_BACKOFF_SLEEP_ITERS
+#define LACE_STEAL_BACKOFF_SLEEP_ITERS 2048u // nanosleep after 2048 failed steals
+#endif
+#ifndef LACE_STEAL_BACKOFF_SLEEP_NS
+#define LACE_STEAL_BACKOFF_SLEEP_NS 50000ul  // Sleep for 50 microseconds
+#endif
+#endif
+
 #if LACE_USE_HWLOC
 #include <hwloc.h>
 
@@ -687,6 +705,10 @@ VOID_TASK_1(lace_steal_loop, int*, quit)
     unsigned int n = n_workers;
     int i=0;
 
+#if LACE_STEAL_BACKOFF
+    unsigned int failed_steals = 0;  // Track consecutive failed steal attempts
+#endif
+
     while(*(volatile int*)quit == 0) {
         // Select victim
         if( i>0 ) {
@@ -704,11 +726,33 @@ VOID_TASK_1(lace_steal_loop, int*, quit)
         Worker *res = lace_steal(__lace_worker, __lace_dq_head, *victim);
         if (res == LACE_STOLEN) {
             PR_COUNTSTEALS(__lace_worker, CTR_steals);
+#if LACE_STEAL_BACKOFF
+            failed_steals = 0;  // Reset counter on successful steal
+#endif
         } else if (res == LACE_BUSY) {
             PR_COUNTSTEALS(__lace_worker, CTR_steal_busy);
+#if LACE_STEAL_BACKOFF
+            failed_steals++;
+#endif
         }
 
         YIELD_NEWFRAME();
+
+#if LACE_STEAL_BACKOFF
+        // Backoff strategy: yield after moderate failures, sleep after many failures
+        if (failed_steals >= LACE_STEAL_BACKOFF_SLEEP_ITERS) {
+            // Too many failed steals - sleep to reduce CPU usage
+            struct timespec ts = {
+                .tv_sec = 0,
+                .tv_nsec = LACE_STEAL_BACKOFF_SLEEP_NS
+            };
+            nanosleep(&ts, NULL);
+            failed_steals = 0;  // Reset after sleeping
+        } else if (failed_steals >= LACE_STEAL_BACKOFF_YIELD_ITERS) {
+            // Moderate failures - yield to other threads
+            sched_yield();
+        }
+#endif
 
         if (must_suspend) {
             lace_barrier();
