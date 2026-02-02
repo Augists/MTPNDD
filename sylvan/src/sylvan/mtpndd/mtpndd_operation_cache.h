@@ -8,13 +8,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <pthread.h>
+#include <stdatomic.h>
 
 #include "mtpndd_common.h"
 
+// Lock-free cache entry using atomic operations (feature/c optimization)
 typedef struct mtpndd_op_cache_entry_s {
-    mtpndd_t operands[2];
-    uint64_t result_plus_one; // 0 means empty; otherwise (result = result_plus_one - 1)
+    _Atomic(mtpndd_t) operands[2];
+    _Atomic(uint64_t) result_plus_one; // 0 means empty; otherwise (result = result_plus_one - 1)
 } mtpndd_op_cache_entry_t;
 
 typedef struct mtpndd_op_cache_s {
@@ -22,7 +23,7 @@ typedef struct mtpndd_op_cache_s {
     size_t capacity;
     size_t mask;
     uint8_t arity;
-    pthread_mutex_t mutex;  // CRITICAL: Protect concurrent cache access
+    // mutex removed - now lock-free!
 } mtpndd_op_cache_t;
 
 bool mtpndd_op_cache_initialize(

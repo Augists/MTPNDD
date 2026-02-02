@@ -42,9 +42,7 @@ static mtpndd_op_cache_t *mtpndd_op_cache_create(size_t requested_size, uint8_t 
     cache->mask = capacity - 1;
     cache->arity = arity;
 
-    // CRITICAL: Initialize mutex for concurrent access
-    pthread_mutex_init(&cache->mutex, NULL);
-
+    // Lock-free: no mutex needed
     return cache;
 }
 
@@ -52,7 +50,7 @@ static void mtpndd_op_cache_release(mtpndd_op_cache_t *cache) {
     if (!cache) {
         return;
     }
-    pthread_mutex_destroy(&cache->mutex);
+    // Lock-free: no mutex to destroy
     free(cache->entries);
     free(cache);
 }
@@ -121,13 +119,22 @@ mtpndd_t mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_t lhs, m
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     size_t base = idx * MTPNDD_CACHE_WAYS;
 
+    // Lock-free lookup: use atomic loads with proper memory ordering
     // Check both ways in the set, also check swapped operands for commutative ops
     for (int w = 0; w < MTPNDD_CACHE_WAYS; w++) {
         mtpndd_op_cache_entry_t *entry = &cache->entries[base + w];
-        if (entry->result_plus_one != 0 &&
-            ((entry->operands[0] == lhs && entry->operands[1] == rhs) ||
-             (entry->operands[0] == rhs && entry->operands[1] == lhs))) {
-            return (mtpndd_t)(entry->result_plus_one - 1);
+
+        // Read result first with acquire semantics (ensures operands read after this)
+        uint64_t result = atomic_load_explicit(&entry->result_plus_one, memory_order_acquire);
+
+        if (result != 0) {
+            // Now read operands with relaxed ordering (protected by acquire fence above)
+            mtpndd_t op0 = atomic_load_explicit(&entry->operands[0], memory_order_relaxed);
+            mtpndd_t op1 = atomic_load_explicit(&entry->operands[1], memory_order_relaxed);
+
+            if ((op0 == lhs && op1 == rhs) || (op0 == rhs && op1 == lhs)) {
+                return (mtpndd_t)(result - 1);
+            }
         }
     }
     return MTPNDD_INVALID;
@@ -141,31 +148,36 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_t lhs, mtpndd
         return;
     }
 
-    // CRITICAL: Lock for concurrent write
-    pthread_mutex_lock(&cache->mutex);
-
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     size_t base = idx * MTPNDD_CACHE_WAYS;
 
+    // Lock-free store: write operands first, then result with release semantics
     // First, try to find an empty slot
     for (int w = 0; w < MTPNDD_CACHE_WAYS; w++) {
         mtpndd_op_cache_entry_t *entry = &cache->entries[base + w];
-        if (entry->result_plus_one == 0) {
-            entry->operands[0] = lhs;
-            entry->operands[1] = rhs;
-            entry->result_plus_one = (uint64_t)result + 1;
-            pthread_mutex_unlock(&cache->mutex);
+
+        // Try to claim this slot if it's empty
+        if (atomic_load_explicit(&entry->result_plus_one, memory_order_relaxed) == 0) {
+            // Write operands first (relaxed - will be ordered by release below)
+            atomic_store_explicit(&entry->operands[0], lhs, memory_order_relaxed);
+            atomic_store_explicit(&entry->operands[1], rhs, memory_order_relaxed);
+
+            // Then write result with release semantics (makes operands visible)
+            atomic_store_explicit(&entry->result_plus_one, (uint64_t)result + 1, memory_order_release);
             return;
         }
     }
 
     // No empty slot, replace the first slot (simple replacement policy)
+    // For concurrent writes to same slot, last write wins (acceptable for cache)
     mtpndd_op_cache_entry_t *entry = &cache->entries[base];
-    entry->operands[0] = lhs;
-    entry->operands[1] = rhs;
-    entry->result_plus_one = (uint64_t)result + 1;
 
-    pthread_mutex_unlock(&cache->mutex);
+    // Write operands first
+    atomic_store_explicit(&entry->operands[0], lhs, memory_order_relaxed);
+    atomic_store_explicit(&entry->operands[1], rhs, memory_order_relaxed);
+
+    // Then write result with release semantics
+    atomic_store_explicit(&entry->result_plus_one, (uint64_t)result + 1, memory_order_release);
 }
 
 mtpndd_t mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_t operand) {
@@ -175,11 +187,20 @@ mtpndd_t mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_t operand
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
     size_t base = idx * MTPNDD_CACHE_WAYS;
 
-    // Check both ways in the set
+    // Lock-free lookup: use atomic loads with proper memory ordering
     for (int w = 0; w < MTPNDD_CACHE_WAYS; w++) {
         mtpndd_op_cache_entry_t *entry = &cache->entries[base + w];
-        if (entry->result_plus_one != 0 && entry->operands[0] == operand) {
-            return (mtpndd_t)(entry->result_plus_one - 1);
+
+        // Read result first with acquire semantics
+        uint64_t result = atomic_load_explicit(&entry->result_plus_one, memory_order_acquire);
+
+        if (result != 0) {
+            // Read operand with relaxed ordering
+            mtpndd_t op0 = atomic_load_explicit(&entry->operands[0], memory_order_relaxed);
+
+            if (op0 == operand) {
+                return (mtpndd_t)(result - 1);
+            }
         }
     }
     return MTPNDD_INVALID;
@@ -195,21 +216,30 @@ void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_t operand, mtp
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
     size_t base = idx * MTPNDD_CACHE_WAYS;
 
-    // First, try to find an empty slot
+    // Lock-free store: write operands first, then result with release semantics
     for (int w = 0; w < MTPNDD_CACHE_WAYS; w++) {
         mtpndd_op_cache_entry_t *entry = &cache->entries[base + w];
-        if (entry->result_plus_one == 0) {
-            entry->operands[0] = operand;
-            entry->operands[1] = MTPNDD_INVALID;
-            entry->result_plus_one = (uint64_t)result + 1;
+
+        // Try to claim this slot if it's empty
+        if (atomic_load_explicit(&entry->result_plus_one, memory_order_relaxed) == 0) {
+            // Write operands first
+            atomic_store_explicit(&entry->operands[0], operand, memory_order_relaxed);
+            atomic_store_explicit(&entry->operands[1], MTPNDD_INVALID, memory_order_relaxed);
+
+            // Then write result with release semantics
+            atomic_store_explicit(&entry->result_plus_one, (uint64_t)result + 1, memory_order_release);
             return;
         }
     }
 
     // No empty slot, replace the first slot (simple replacement policy)
     mtpndd_op_cache_entry_t *entry = &cache->entries[base];
-    entry->operands[0] = operand;
-    entry->operands[1] = MTPNDD_INVALID;
-    entry->result_plus_one = (uint64_t)result + 1;
+
+    // Write operands first
+    atomic_store_explicit(&entry->operands[0], operand, memory_order_relaxed);
+    atomic_store_explicit(&entry->operands[1], MTPNDD_INVALID, memory_order_relaxed);
+
+    // Then write result with release semantics
+    atomic_store_explicit(&entry->result_plus_one, (uint64_t)result + 1, memory_order_release);
 }
 
