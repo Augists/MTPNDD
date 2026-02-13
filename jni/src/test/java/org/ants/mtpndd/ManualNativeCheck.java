@@ -39,7 +39,7 @@ public final class ManualNativeCheck {
         ensureLibraryPath();
 
         MTPNDDConfig config = MTPNDDConfig.builder()
-                .workers(1)
+                .workers(0)
                 .laceDequeSize(1 << 14)
                 .bddNodeTableSize(1 << 20)
                 .mtpnddNodeTableSize(1 << 18)

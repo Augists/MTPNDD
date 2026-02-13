@@ -96,7 +96,8 @@ public final class MTPNDDConfig {
      * Builder exposing the handful of sizing parameters required for the PAL.
      */
     public static final class Builder {
-        private int workers = Runtime.getRuntime().availableProcessors();
+        // 0 means "auto" in native config (use Lace default worker count).
+        private int workers = 0;
         private long laceDequeSize = 4096L;
         private long bddNodeTableSize = 1L << 24;
         private long mtpnddNodeTableSize = 1L << 22;
@@ -112,6 +113,9 @@ public final class MTPNDDConfig {
 
         private Builder() {}
 
+        /**
+         * Sets worker count; 0 lets native pick the worker count automatically.
+         */
         public Builder workers(int workers) {
             if (workers < 0) {
                 throw new IllegalArgumentException("workers must be zero or positive");
