@@ -24,97 +24,28 @@ public final class NQueensMTPNDD {
     }
 
     public static Result solve(int n) {
-        return solveBinary(n);
+        return solve(n, 1);
     }
 
-    public static Result solveBinary(int n) {
-        if (n <= 0) {
-            throw new IllegalArgumentException("n must be positive");
-        }
-
-        Timings timings = new Timings();
-        timings.mark("start");
-        MTPNDDConfig config = buildConfigForSize(n);
-        MTPNDDEngine.init(config);
-        timings.mark("init");
-
-        try {
-            int bitWidth = ceilLog2(n);
-            System.out.println("bitwidth: " + bitWidth);
-            int[] fieldIds = new int[n];
-            for (int i = 0; i < n; i++) {
-                fieldIds[i] = MTPNDDEngine.declareField(bitWidth);
-            }
-            timings.mark("declare");
-
-            MTPNDD[][] positiveBits = new MTPNDD[n][bitWidth];
-            MTPNDD[][] negativeBits = new MTPNDD[n][bitWidth];
-            for (int row = 0; row < n; row++) {
-                for (int bit = 0; bit < bitWidth; bit++) {
-                    positiveBits[row][bit] = MTPNDD.getVar(fieldIds[row], bit);
-                    negativeBits[row][bit] = MTPNDD.getNotVar(fieldIds[row], bit);
-                }
-            }
-
-            MTPNDD[][] eqCache = new MTPNDD[n][n];
-            for (int row = 0; row < n; row++) {
-                for (int value = 0; value < n; value++) {
-                    eqCache[row][value] = buildEquality(row, value, bitWidth, positiveBits, negativeBits);
-                }
-            }
-            timings.mark("cache");
-
-            MTPNDD formula = MTPNDD.terminalTrue();
-            for (int row = 0; row < n; row++) {
-                MTPNDD domain = buildRowDomain(row, n, bitWidth, positiveBits, negativeBits);
-                formula = andRelease(formula, domain);
-            }
-            for (int row = 0; row < n; row++) {
-                MTPNDD atLeastOne = buildRowAtLeastOne(eqCache[row]);
-                formula = andRelease(formula, atLeastOne);
-            }
-            for (int a = 0; a < n; a++) {
-                for (int b = a + 1; b < n; b++) {
-                    for (int col = 0; col < n; col++) {
-                        MTPNDD clause = forbidPair(eqCache, a, col, b, col);
-                        formula = andRelease(formula, clause);
-                    }
-                    int delta = b - a;
-                    for (int col = 0; col < n; col++) {
-                        int other = col + delta;
-                        if (other < n) {
-                            MTPNDD clause = forbidPair(eqCache, a, col, b, other);
-                            formula = andRelease(formula, clause);
-                        }
-                        other = col - delta;
-                        if (other >= 0) {
-                            MTPNDD clause = forbidPair(eqCache, a, col, b, other);
-                            formula = andRelease(formula, clause);
-                        }
-                    }
-                }
-            }
-
-            double solutions = formula.satCount();
-            formula.deref();
-            releaseCache(eqCache);
-            timings.mark("satcount");
-            printStats("binary", n);
-            logTimings("binary", n, timings);
-            return new Result(n, timings.elapsedSeconds(), Math.round(solutions));
-        } finally {
-            MTPNDDEngine.shutdown();
-        }
+    public static Result solve(int n, int workers) {
+        return solveOneHot(n, workers);
     }
 
     public static Result solveOneHot(int n) {
+        return solveOneHot(n, 1);
+    }
+
+    public static Result solveOneHot(int n, int workers) {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
+        }
+        if (workers < 0) {
+            throw new IllegalArgumentException("workers must be zero or positive");
         }
 
         Timings timings = new Timings();
         timings.mark("start");
-        MTPNDDConfig config = buildConfigForSize(n);
+        MTPNDDConfig config = buildConfigForSize(n, workers);
         MTPNDDEngine.init(config);
         timings.mark("init");
 
@@ -174,22 +105,45 @@ public final class NQueensMTPNDD {
         }
     }
 
-    private static MTPNDDConfig buildConfigForSize(int n) {
-        long bddSize = (n <= 7) ? (1L << 19) : (n <= 9) ? (1L << 22) : (1L << 25);
-        long nddSize = (n <= 7) ? (1L << 18) : (n <= 9) ? (1L << 20) : (1L << 23);
-        long cacheSize = (n <= 7) ? (1L << 18) : (n <= 9) ? (1L << 20) : (1L << 23);
-
-        long edgeBuckets = (n <= 7) ? 32 : (n <= 9) ? 128 : 512;
+    private static MTPNDDConfig buildConfigForSize(int n, int workers) {
+        long bddSize = 1L << 19;
+        long nddSize = 1L << 19;
+        long cacheSize = 1L << 19;
+        long edgeBuckets = 16;
         long nodetableBuckets = nddSize;
-        long gcBuckets = (n <= 7) ? 512 : (n <= 9) ? 2048 : 8192;
-        long nodeSlab = (n <= 7) ? 1024 : (n <= 9) ? 2048 : 4096;
-        long edgeEntrySlab = (n <= 7) ? 2048 : (n <= 9) ? 4096 : 8192;
-        long nodetableEntrySlab = (n <= 7) ? 1024 : (n <= 9) ? 2048 : 4096;
-        long edgeMapSlab = (n <= 7) ? 512 : (n <= 9) ? 1024 : 2048;
+        long gcBuckets = 2048;
+        long nodeSlab = 1536;
+        long edgeEntrySlab = 3072;
+        long nodetableEntrySlab = 1536;
+        long edgeMapSlab = 768;
+
+        if (n > 8 && n <= 10) {
+            bddSize = 1L << 20;
+            nddSize = 1L << 19;
+            cacheSize = 1L << 20;
+            edgeBuckets = 16;
+            nodetableBuckets = nddSize;
+            gcBuckets = 4096;
+            nodeSlab = 2048;
+            edgeEntrySlab = 4096;
+            nodetableEntrySlab = 2048;
+            edgeMapSlab = 1024;
+        } else if (n > 10) {
+            bddSize = 1L << 20;
+            nddSize = 1L << 22;
+            cacheSize = 1L << 20;
+            edgeBuckets = 16;
+            nodetableBuckets = 1L << 19;
+            gcBuckets = 8192;
+            nodeSlab = 3072;
+            edgeEntrySlab = 6144;
+            nodetableEntrySlab = 3072;
+            edgeMapSlab = 1280;
+        }
 
         return MTPNDDConfig.builder()
-                .workers(0)
-                .laceDequeSize(1024)
+                .workers(workers)
+                .laceDequeSize(1L << 20)
                 .bddNodeTableSize(bddSize)
                 .mtpnddNodeTableSize(nddSize)
                 .operationCacheSize(cacheSize)
@@ -233,50 +187,6 @@ public final class NQueensMTPNDD {
                 stats.maxEdgesPerNode(),
                 stats.cacheHits(),
                 stats.cacheMisses());
-    }
-
-    private static MTPNDD buildEquality(int row, int value, int bitWidth,
-                                        MTPNDD[][] positiveBits,
-                                        MTPNDD[][] negativeBits) {
-        MTPNDD result = MTPNDD.terminalTrue();
-        for (int bit = 0; bit < bitWidth; bit++) {
-            boolean bitSet = ((value >> bit) & 1) != 0;
-            MTPNDD literal = (bitSet ? positiveBits[row][bit] : negativeBits[row][bit]).ref();
-            result = andRelease(result, literal);
-        }
-        return result;
-    }
-
-    private static MTPNDD buildRowDomain(int row, int n, int bitWidth,
-                                         MTPNDD[][] positiveBits,
-                                         MTPNDD[][] negativeBits) {
-        int limit = 1 << bitWidth;
-        MTPNDD domain = MTPNDD.terminalTrue();
-        for (int value = n; value < limit; value++) {
-            MTPNDD eq = buildEquality(row, value, bitWidth, positiveBits, negativeBits);
-            MTPNDD neg = eq.not();
-            eq.deref();
-            neg.ref();
-            domain = andRelease(domain, neg);
-        }
-        return domain;
-    }
-
-    private static MTPNDD buildRowAtLeastOne(MTPNDD[] rowValues) {
-        MTPNDD condition = MTPNDD.terminalFalse();
-        for (MTPNDD handle : rowValues) {
-            condition = orRelease(condition, handle.ref());
-        }
-        return condition;
-    }
-
-    private static MTPNDD forbidPair(MTPNDD[][] eqCache, int rowA, int valueA, int rowB, int valueB) {
-        MTPNDD left = eqCache[rowA][valueA].ref();
-        MTPNDD right = eqCache[rowB][valueB].ref();
-        MTPNDD both = andRelease(left, right);
-        MTPNDD clause = both.not().ref();
-        both.deref();
-        return clause;
     }
 
     private static MTPNDD buildCellConstraints(int row, int col, int n,
@@ -326,14 +236,6 @@ public final class NQueensMTPNDD {
         return orRelease(negatedPremise, consequenceRef);
     }
 
-    private static int ceilLog2(int value) {
-        if (value <= 1) {
-            return 1;
-        }
-        int highest = Integer.highestOneBit(value - 1);
-        return Integer.numberOfTrailingZeros(highest) + 1;
-    }
-
     private static MTPNDD andRelease(MTPNDD left, MTPNDD right) {
         MTPNDD result = left.and(right);
         left.deref();
@@ -370,8 +272,8 @@ public final class NQueensMTPNDD {
 
     public static void main(String[] args) {
         int n = args.length > 0 ? Integer.parseInt(args[0]) : 8;
-        boolean useOneHot = args.length > 1 && "onehot".equalsIgnoreCase(args[1]);
-        Result result = useOneHot ? solveOneHot(n) : solveBinary(n);
+        int workers = args.length > 1 ? Integer.parseInt(args[1]) : 1;
+        Result result = solveOneHot(n, workers);
         System.out.printf("n=%d solutions=%d time=%.3fs%n", result.n, result.solutions, result.seconds);
     }
 

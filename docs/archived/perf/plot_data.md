@@ -59,6 +59,162 @@ Source: `mtpndd_nqueens_benchmark <n> <workers>`
 | 3 | 5.824 | 14200 |
 | 4 | 5.647 | 14200 |
 
+#### N=12 (reboot rerun, 3x mean/sd, workers 1-6)
+| workers | mean_time(s) | sd(s) | solutions |
+|---:|---:|---:|---:|
+| 1 | 11.892 | 0.054 | 14200 |
+| 2 | 7.533 | 0.017 | 14200 |
+| 3 | 5.864 | 0.012 | 14200 |
+| 4 | 5.566 | 0.037 | 14200 |
+| 5 | 4.642 | 0.011 | 14200 |
+| 6 | 4.595 | 0.019 | 14200 |
+
+### JNI N-Queens (onehot only)
+Source: `java ... org.ants.mtpndd.NQueensMTPNDD 12 [workers]`
+| workers | time(s) | solutions | note |
+|---:|---:|---:|---|
+| 1 | 12.991 | 14200 | onehot-only JNI test |
+| 6 | 5.443 | 14200 | onehot-only JNI test |
+
+### N=12 reboot rerun (LOG_LEVEL=0, 5 repeats, workers 1-6)
+Native source:
+- `taskset -c 0..(workers-1) ./sylvan/build-log0/src/sylvan/mtpndd/mtpndd_nqueens_benchmark 12 <workers>`
+
+JNI onehot source:
+- `taskset -c 0..(workers-1) java -cp target/test-classes:target/classes -Dorg.ants.mtpndd.library.path=$PWD/build-log0/libmtpnddjni.so org.ants.mtpndd.NQueensMTPNDD 12 <workers>`
+
+| workers | native mean(s) | native std(s) | jni mean(s) | jni std(s) | jni/native |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 12.041 | 0.008 | 12.759 | 0.030 | 1.060 |
+| 2 | 7.634 | 0.034 | 8.516 | 0.377 | 1.116 |
+| 3 | 5.953 | 0.023 | 6.611 | 0.176 | 1.111 |
+| 4 | 5.607 | 0.037 | 5.878 | 0.075 | 1.048 |
+| 5 | 4.742 | 0.032 | 5.392 | 0.044 | 1.137 |
+| 6 | 4.665 | 0.023 | 4.951 | 0.047 | 1.061 |
+
+Notes:
+- all runs returned `14200`.
+- this dataset is intended for low-overhead comparison (`LOG_LEVEL=0`) after reboot + clean rebuild.
+
+### N-Queens benchmark (per-worker protect add/del tables)
+Source: `taskset -c 0..(workers-1) mtpndd_nqueens_benchmark 12 <workers>` (5 repeats, mean)
+#### N=12
+| workers | time(s) | solutions |
+|---:|---:|---:|
+| 1 | 12.060 | 14200 |
+| 2 | 7.662 | 14200 |
+| 3 | 6.017 | 14200 |
+| 4 | 5.627 | 14200 |
+
+### N=12 branch-to-branch recheck (5 repeats each, workers 1-6)
+Source:
+- baseline: `feature/c`
+- candidate: `feature/mtbdd-per-worker-protect` (`f9637b7` state + follow-up doc run)
+
+| workers | feature/c mean(s) | feature/c std(s) | per-worker mean(s) | per-worker std(s) | delta(s) | delta(%) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 12.219 | 0.029 | 12.236 | 0.116 | +0.017 | +0.14 |
+| 2 | 7.732 | 0.043 | 7.675 | 0.046 | -0.057 | -0.74 |
+| 3 | 6.007 | 0.048 | 5.991 | 0.024 | -0.016 | -0.27 |
+| 4 | 5.693 | 0.053 | 5.606 | 0.024 | -0.087 | -1.53 |
+| 5 | 4.802 | 0.033 | 4.718 | 0.020 | -0.084 | -1.75 |
+| 6 | 4.861 | 0.053 | 4.761 | 0.147 | -0.100 | -2.06 |
+
+Solutions note:
+- `feature/c`: 30/30 runs `14200`.
+- `feature/mtbdd-per-worker-protect`: 29/30 runs `14200`, one run at `workers=3` returned `14199`.
+
+### N=12 branch-to-branch recheck (high-load batch, LOG_LEVEL=0, 5 repeats each, workers 1-6)
+Environment snapshot during run:
+- `/proc/loadavg`: `18.09 17.99 14.05` on `6` CPUs.
+- spot-check under same load: `feature/c w=1 = 33.107s`, `worktree w=1 = 32.863s`.
+
+| workers | feature/c mean(s) | feature/c std(s) | worktree mean(s) | worktree std(s) | delta(s) | delta(%) | feature/c bad | worktree bad |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 16.028 | 1.553 | 29.528 | 2.093 | +13.500 | +84.23 | 0/5 | 0/5 |
+| 2 | 13.983 | 0.518 | 19.076 | 1.575 | +5.093 | +36.42 | 0/5 | 0/5 |
+| 3 | 13.066 | 0.439 | 16.010 | 0.732 | +2.944 | +22.53 | 0/5 | 1/5 |
+| 4 | 12.121 | 0.168 | 15.418 | 0.572 | +3.298 | +27.21 | 1/5 | 0/5 |
+| 5 | 11.793 | 0.686 | 14.938 | 0.222 | +3.144 | +26.66 | 0/5 | 0/5 |
+| 6 | 14.863 | 0.278 | 14.878 | 0.473 | +0.015 | +0.10 | 0/5 | 0/5 |
+
+Interpretation:
+- This batch is for fluctuation characterization only; high machine load dominates timing.
+- Use this table to justify repeated-measure design and load recording in the paper.
+
+### N=12 branch-to-branch interleaved recheck (high-load, LOG_LEVEL=0, 5 repeats each, workers 1-6)
+Method note:
+- run order alternates each repeat: odd `feature->worktree`, even `worktree->feature`.
+- this is for order-bias control under the same noisy environment.
+
+Load note:
+- `load1` range: `21.48 .. 26.25` (mean `23.78`) on 6 CPUs.
+
+| workers | feature/c mean(s) | feature/c std(s) | worktree mean(s) | worktree std(s) | delta(s) | delta(%) | feature/c bad | worktree bad |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 42.651 | 2.041 | 42.643 | 1.668 | -0.009 | -0.02 | 0/5 | 0/5 |
+| 2 | 27.782 | 0.749 | 24.768 | 2.063 | -3.014 | -10.85 | 0/5 | 0/5 |
+| 3 | 20.332 | 0.764 | 20.761 | 0.319 | +0.429 | +2.11 | 0/5 | 0/5 |
+| 4 | 19.025 | 0.686 | 19.182 | 0.560 | +0.157 | +0.82 | 0/5 | 0/5 |
+| 5 | 19.263 | 0.545 | 18.847 | 0.675 | -0.416 | -2.16 | 0/5 | 1/5 |
+| 6 | 19.002 | 0.243 | 18.719 | 0.533 | -0.283 | -1.49 | 0/5 | 0/5 |
+
+Order-effect summary:
+- `feature/c`: first `24.836s`, second `24.436s`
+- `worktree`: first `24.118s`, second `24.177s`
+
+### N=12 branch-to-branch interleaved recheck (low-load custom CPU set, LOG_LEVEL=0, 5 repeats each)
+CPU sets:
+- `w1=5`, `w2=4,5`, `w3=2,4,5`, `w4=1,2,4,5`, `w5=0,1,2,4,5`, `w6=0,1,2,3,4,5`.
+
+Load note:
+- `load1` range `1.95..5.73`, mean `3.26`.
+
+| workers | feature/c mean(s) | feature/c std(s) | worktree mean(s) | worktree std(s) | delta(s) | delta(%) | feature/c bad | worktree bad |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 12.378 | 0.027 | 12.476 | 0.021 | +0.097 | +0.79 | 0/5 | 0/5 |
+| 2 | 7.786 | 0.024 | 7.827 | 0.032 | +0.041 | +0.53 | 0/5 | 0/5 |
+| 3 | 6.037 | 0.027 | 6.049 | 0.059 | +0.012 | +0.21 | 1/5 | 0/5 |
+| 4 | 5.711 | 0.019 | 5.696 | 0.026 | -0.015 | -0.26 | 0/5 | 0/5 |
+| 5 | 4.819 | 0.021 | 4.863 | 0.016 | +0.045 | +0.93 | 0/5 | 0/5 |
+| 6 | 4.830 | 0.021 | 4.843 | 0.022 | +0.013 | +0.27 | 0/5 | 0/5 |
+
+### N=12 DEBUG instrumentation snapshot (workers 1-6, one run each)
+Build: `-DMTPNDD_LOG_LEVEL=2` (debug counters enabled in `mtpndd` and `sylvan`).
+| workers | time(s) | solutions | temp_refs_grow_total | temp_refs_peak | refs_resize | protect_resize | refs_merge_drop | refs_net_positive | refs_net_negative | protect_add | unprotect | hit | miss | del_only |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 21.098 | 14200 | 8603624 | 32 | 3 | 0 | 0 | 0 | 0 | 24 | 0 | 0 | 0 | 0 |
+| 2 | 20.379 | 14200 | 8605155 | 32 | 5 | 0 | 0 | 0 | 0 | 24 | 0 | 0 | 0 | 0 |
+| 3 | 18.616 | 14200 | 8604726 | 32 | 7 | 0 | 0 | 0 | 0 | 24 | 0 | 0 | 0 | 0 |
+| 4 | 17.051 | 14200 | 8615328 | 32 | 9 | 0 | 0 | 0 | 0 | 24 | 0 | 0 | 0 | 0 |
+| 5 | 16.923 | 14200 | 8620103 | 32 | 11 | 0 | 0 | 0 | 0 | 24 | 0 | 0 | 0 | 0 |
+| 6 | 16.391 | 14200 | 8610439 | 32 | 13 | 0 | 0 | 0 | 0 | 24 | 0 | 0 | 0 | 0 |
+
+### N=12 DEBUG instrumentation after Step A (inline temp refs buffer, workers 1-6, one run each)
+Build: `-DMTPNDD_LOG_LEVEL=2`.
+| workers | time(s) | solutions | temp_refs_grow_total | temp_refs_peak | refs_resize | protect_resize |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 26.520 | 14200 | 0 | 32 | 3 | 0 |
+| 2 | 20.058 | 14200 | 0 | 32 | 6 | 0 |
+| 3 | 18.819 | 14200 | 0 | 32 | 7 | 0 |
+| 4 | 17.671 | 14200 | 0 | 32 | 9 | 0 |
+| 5 | 16.355 | 14200 | 0 | 32 | 11 | 0 |
+| 6 | 15.747 | 14200 | 0 | 32 | 13 | 0 |
+
+Interpretation:
+- Step A removes observed dynamic-growth events in this workload (`grow_total` from ~8.6M to 0).
+- DEBUG times are instrumentation-heavy and not directly used for final speedup claims.
+
+### N=12 DEBUG instrumentation after Step B (per-worker temp refs pool + frame)
+Build: `-DMTPNDD_LOG_LEVEL=2`.
+| workers | time(s) | solutions | temp_refs_grow_total | temp_refs_peak | refs_resize | protect_resize |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 68.251 | 14200 | 1 | 64 | 3 | 0 |
+| 4 | 29.667 | 14200 | 0 | 32 | 9 | 0 |
+
+Notes:
+- These are sanity/diagnostic snapshots under high machine load, not final speedup measurements.
+- Growth remains near zero compared with pre-StepA baseline (millions of growth events).
 ## perf stat (N=12, taskset 1–4 workers)
 Units: cycles/instructions in G, cache-misses in M.
 | workers | elapsed(s) | cycles(G) | instructions(G) | cache-misses(M) |
@@ -98,6 +254,30 @@ Units: cycles/instructions in G, cache-misses in M.
 |---|---:|
 | 0x00000081 (WAKE) | 59.90 |
 | 0x00000080 (WAIT) | 38.38 |
+
+## N=12 correctness stress (workers=3, taskset `2,4,5`)
+Purpose: isolate low-frequency wrong-answer issue and validate op-cache fix.
+
+| case | command condition | sample size | failures | notes |
+|---|---|---:|---:|---|
+| baseline (`feature/c`) | default | 24 runs | 1 | fail example: `14199` |
+| worktree (before op-cache read fix) | default | 14 runs | 1 | fail example: `14198` |
+| temporary isolation A | `MTPNDD_FORCE_NO_SPAWN=1` | 5 runs | 0 | points to parallel path involvement |
+| temporary isolation B | `MTPNDD_FORCE_NO_CACHE=1` | 8 runs | 0 | points to AND op-cache involvement |
+| worktree (after op-cache read fix) | default | 12 runs | 0 | all `14200` |
+
+Raw data files in `/tmp` used for this table:
+- `/tmp/w3_featurec_solution_check.tsv`
+- `/tmp/w3_worktree_solution_check.tsv`
+- `/tmp/n12_w3_nospawn.tsv`
+- `/tmp/n12_w3_nocache.tsv`
+- `/tmp/n12_default_after_opcache_fix.tsv`
+
+### Runtime snapshot (LOG_LEVEL=0, same CPU set)
+| case | runs | mean(s) | std(s) |
+|---|---:|---:|---:|
+| pre-fix reference (`/tmp/w3_worktree_solution_check.tsv`, first 12 successful runs) | 12 | 6.300 | 0.024 |
+| post-fix (`/tmp/n12_log0_after_opcache_fix.tsv`) | 12 | 6.411 | 0.027 |
 
 ## Futex address mapping (ASLR-robust)
 | futex uaddr (low 12 bits) | mapped pool lock |

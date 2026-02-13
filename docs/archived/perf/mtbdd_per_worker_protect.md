@@ -406,3 +406,58 @@ Summary:
 Context:
 - During this batch, `/proc/loadavg` snapshot was `11.03 10.68 9.73` on a 6-core host.
 - Compared with earlier low-load runs (w1 around 12s), this confirms current slowdown is primarily machine-load noise, not a new code regression.
+
+## Update (2026-02-13 reboot rerun, LOG_LEVEL=0, 5 repeats)
+
+### Setup
+- Branch: `feature/mtbdd-per-worker-protect` (worktree HEAD)
+- Native build:
+  - `cd sylvan && cmake -B build-log0 -DMTPNDD_LOG_LEVEL=0 && cmake --build build-log0 -j`
+- JNI build:
+  - `cd jni && cmake -B build-log0 -DMTPNDD_LOG_LEVEL=0 && cmake --build build-log0 -j`
+- Binding:
+  - use onehot JNI harness only: `org.ants.mtpndd.NQueensMTPNDD`
+- Run matrix:
+  - `N=12`, workers `1..6`, each worker repeats `5` times
+  - CPU pinning: `taskset -c 0..(workers-1)`
+
+### Native MTPNDD results
+All runs returned `solutions=14200`.
+
+| workers | mean(s) | std(s) | cv(%) | min(s) | max(s) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 12.041 | 0.008 | 0.06 | 12.028 | 12.051 |
+| 2 | 7.634 | 0.034 | 0.45 | 7.576 | 7.678 |
+| 3 | 5.953 | 0.023 | 0.39 | 5.925 | 5.987 |
+| 4 | 5.607 | 0.037 | 0.66 | 5.546 | 5.643 |
+| 5 | 4.742 | 0.032 | 0.68 | 4.700 | 4.779 |
+| 6 | 4.665 | 0.023 | 0.50 | 4.638 | 4.697 |
+
+### JNI onehot results
+All runs returned `solutions=14200`.
+
+| workers | mean(s) | std(s) | cv(%) | min(s) | max(s) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 12.759 | 0.030 | 0.23 | 12.721 | 12.809 |
+| 2 | 8.516 | 0.377 | 4.42 | 8.124 | 9.068 |
+| 3 | 6.611 | 0.176 | 2.66 | 6.386 | 6.761 |
+| 4 | 5.878 | 0.075 | 1.28 | 5.739 | 5.943 |
+| 5 | 5.392 | 0.044 | 0.81 | 5.332 | 5.466 |
+| 6 | 4.951 | 0.047 | 0.95 | 4.874 | 5.006 |
+
+### JNI vs Native ratio
+
+| workers | native mean(s) | jni mean(s) | jni/native |
+|---:|---:|---:|---:|
+| 1 | 12.041 | 12.759 | 1.060 |
+| 2 | 7.634 | 8.516 | 1.116 |
+| 3 | 5.953 | 6.611 | 1.111 |
+| 4 | 5.607 | 5.878 | 1.048 |
+| 5 | 4.742 | 5.392 | 1.137 |
+| 6 | 4.665 | 4.951 | 1.061 |
+
+### Interpretation (fluctuation and "sudden slow" concern)
+- This rerun does not reproduce the earlier severe slowdown. With `LOG_LEVEL=0` and clean rebuild, native times are back to the expected range.
+- JNI is consistently slower than native by about `4.8%..13.7%`, mainly from Java/JNI overhead.
+- JNI variance is concentrated at `workers=2/3` (higher `cv`) due JVM-process-level jitter (startup/GC/scheduling), while native variance stays below `1%`.
+- For paper figures, use repeated measurements with mean/std and environment notes; avoid single-run conclusions.
