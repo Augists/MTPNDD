@@ -122,4 +122,9 @@ mtpndd_error_t mtbdd_to_mtpndd(mtpndd_bdd_t bdd, mtpndd_t **result);
 void mtpndd_fprint_dot(FILE *out, mtpndd_t *root);
 void mtpndd_print_dot(mtpndd_t *root, const char *path);
 
+uint64_t mtpndd_temp_refs_grow_total(void);
+uint64_t mtpndd_temp_refs_peak_capacity(void);
+mtpndd_error_t mtpndd_temp_refs_runtime_init(void);
+void mtpndd_temp_refs_runtime_shutdown(void);
+
 #endif // MTPNDD_NODE_H

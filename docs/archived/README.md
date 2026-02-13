@@ -23,3 +23,5 @@ Each file follows the same rough structure:
 - `docs/archived/2026-01-28-mtpndd-and-batched-sync-item-tasks.md`
 - `docs/archived/2026-01-28-lace-idle-and-leapfrog-backoff.md`
 - `docs/archived/2026-01-28-per-worker-slab-pool-caches.md`
+- `docs/archived/perf/optimization_docs_audit_2026-02-11.md` (documentation completeness audit)
+- `docs/archived/perf/per_worker_protect_temp_refs_2026-02-11.md` (per-worker protect/temp-refs status + results)

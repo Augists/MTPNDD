@@ -69,6 +69,8 @@ void refs_create(refs_table_t *tbl, size_t _refs_size);
 void refs_free(refs_table_t *tbl);
 void refs_clear(refs_table_t *tbl);
 int refs_set_add(refs_table_t *tbl, uint64_t key, int32_t delta);
+uint64_t refs_resize_total(void);
+uint64_t protect_resize_total(void);
 #ifdef SYLVAN_REFS_STATS
 void refs_stats_register(refs_table_t *tbl, const char *name);
 void refs_stats_dump(FILE *out);
@@ -78,6 +80,9 @@ void refs_stats_dump(FILE *out);
 size_t protect_count(refs_table_t *tbl);
 void protect_up(refs_table_t *tbl, uint64_t a);
 void protect_down(refs_table_t *tbl, uint64_t a);
+void protect_add_insert(refs_table_t *tbl, uint64_t a);
+int protect_add_remove_one(refs_table_t *tbl, uint64_t a);
+void protect_del_insert(refs_table_t *tbl, uint64_t a);
 uint64_t *protect_iter(refs_table_t *tbl, size_t first, size_t end);
 uint64_t protect_next(refs_table_t *tbl, uint64_t **bucket, size_t end);
 void protect_create(refs_table_t *tbl, size_t _refs_size);

@@ -628,6 +628,9 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     if (!mtpndd_lace_init()) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_PARALLEL_INIT);
     }
+    if (mtpndd_temp_refs_runtime_init() != MTPNDD_SUCCESS) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+    }
     if (!mtpndd_op_cache_initialize(
                 config->op_cache_size,
                 &g_mtpndd_config.and_cache,
@@ -712,6 +715,9 @@ mtpndd_error_t mtpndd_quit() {
     if (!mtpndd_is_initialized()) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_NOT_INITIALIZED);
     }
+
+    // Release any worker-local temporary refs before tearing down nodes/tables.
+    mtpndd_temp_refs_runtime_shutdown();
 
     // free every fields and their node tables
     for (uint32_t i = 1; i <= g_mtpndd_config.field_count; i++) {

@@ -29,6 +29,14 @@
 #include <time.h>
 #endif
 
+#ifndef MTPNDD_LOG_LEVEL
+#define MTPNDD_LOG_LEVEL 1
+#endif
+
+#ifndef MTPNDD_LOG_LEVEL_DEBUG
+#define MTPNDD_LOG_LEVEL_DEBUG 2
+#endif
+
 #ifndef compiler_barrier
 #define compiler_barrier() atomic_signal_fence(memory_order_seq_cst)
 #endif
@@ -44,6 +52,9 @@ static const uint64_t refs_ts = 0x7fffffffffffffff; // tombstone
 
 static const int32_t refs_count_max = 0x007fffff;
 static const int32_t refs_count_min = -0x00800000;
+
+static _Atomic(uint64_t) g_refs_resize_total = 0;
+static _Atomic(uint64_t) g_protect_resize_total = 0;
 
 static inline int32_t
 refs_unpack_count(uint64_t v)
@@ -248,6 +259,18 @@ refs_stats_dump(FILE *out)
 }
 #endif
 
+uint64_t
+refs_resize_total(void)
+{
+    return atomic_load_explicit(&g_refs_resize_total, memory_order_relaxed);
+}
+
+uint64_t
+protect_resize_total(void)
+{
+    return atomic_load_explicit(&g_protect_resize_total, memory_order_relaxed);
+}
+
 // Count number of unique entries (not number of references)
 size_t
 refs_count(refs_table_t *tbl)
@@ -323,6 +346,9 @@ refs_resize(refs_table_t *tbl)
             return;
         }
         if (atomic_compare_exchange_weak(&tbl->refs_control, &v, 0x80000000 | v)) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+            atomic_fetch_add_explicit(&g_refs_resize_total, 1, memory_order_relaxed);
+#endif
             // wait until all users gone
             while (tbl->refs_control != 0x80000000) continue;
             break;
@@ -602,6 +628,12 @@ refs_create(refs_table_t *tbl, size_t _refs_size)
         fprintf(stderr, "refs: Unable to allocate memory: %s!\n", strerror(errno));
         exit(1);
     }
+    memset(tbl->refs_table, 0, tbl->refs_size * sizeof(uint64_t));
+    atomic_store_explicit(&tbl->refs_control, 0, memory_order_relaxed);
+    tbl->refs_resize_table = 0;
+    tbl->refs_resize_size = 0;
+    atomic_store_explicit(&tbl->refs_resize_part, 0, memory_order_relaxed);
+    atomic_store_explicit(&tbl->refs_resize_done, 0, memory_order_relaxed);
 #ifdef SYLVAN_REFS_STATS
     tbl->stats = NULL;
 #endif
@@ -726,6 +758,9 @@ protect_resize(refs_table_t *tbl)
             return;
         }
         if (atomic_compare_exchange_weak(&tbl->refs_control, &v, 0x80000000 | v)) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+            atomic_fetch_add_explicit(&g_protect_resize_total, 1, memory_order_relaxed);
+#endif
             // wait until all users gone
             while (tbl->refs_control != 0x80000000) continue;
             break;
@@ -806,7 +841,11 @@ ref_retry:
     while (i--) {
 ref_restart:
         v = *bucket;
-        if (v == refs_ts) {
+        if (v == a) {
+            // Already present in this table: set semantics, no extra insert needed.
+            protect_leave(tbl);
+            return;
+        } else if (v == refs_ts) {
             if (ts_bucket == NULL) ts_bucket = bucket;
         } else if (v == 0) {
             // go go go
@@ -847,6 +886,41 @@ ref_restart:
         protect_enter(tbl);
         goto ref_retry;
     }
+}
+
+void
+protect_add_insert(refs_table_t *tbl, uint64_t a)
+{
+    protect_up(tbl, a);
+}
+
+int
+protect_add_remove_one(refs_table_t *tbl, uint64_t a)
+{
+    _Atomic(uint64_t)* bucket;
+    protect_enter(tbl);
+
+    bucket = tbl->refs_table + (fnvhash8(a) & (tbl->refs_size - 1));
+    int i = 128; // try 128 times linear probing
+
+    while (i--) {
+        uint64_t d = atomic_load_explicit(bucket, memory_order_relaxed);
+        if (d == a) {
+            atomic_store_explicit(bucket, refs_ts, memory_order_relaxed);
+            protect_leave(tbl);
+            return 1;
+        }
+        if (++bucket == tbl->refs_table + tbl->refs_size) bucket = tbl->refs_table;
+    }
+
+    protect_leave(tbl);
+    return 0;
+}
+
+void
+protect_del_insert(refs_table_t *tbl, uint64_t a)
+{
+    protect_up(tbl, a);
 }
 
 void
@@ -921,6 +995,15 @@ protect_create(refs_table_t *tbl, size_t _refs_size)
         fprintf(stderr, "refs: Unable to allocate memory: %s!\n", strerror(errno));
         exit(1);
     }
+    memset(tbl->refs_table, 0, tbl->refs_size * sizeof(uint64_t));
+    atomic_store_explicit(&tbl->refs_control, 0, memory_order_relaxed);
+    tbl->refs_resize_table = 0;
+    tbl->refs_resize_size = 0;
+    atomic_store_explicit(&tbl->refs_resize_part, 0, memory_order_relaxed);
+    atomic_store_explicit(&tbl->refs_resize_done, 0, memory_order_relaxed);
+#ifdef SYLVAN_REFS_STATS
+    tbl->stats = NULL;
+#endif
 }
 
 void

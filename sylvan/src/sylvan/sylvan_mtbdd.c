@@ -25,13 +25,25 @@ static inline int sylvan_lace_is_worker(void)
 static inline unsigned int mtbdd_worker_id(void)
 {
     WorkerP *worker = lace_get_worker();
-    return worker ? worker->worker : 0;
+    unsigned int wid = worker ? worker->worker : 0;
+    unsigned int workers = lace_workers();
+    if (workers == 0) workers = 1;
+    return wid < workers ? wid : 0;
 }
 
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
+
+#ifndef MTPNDD_LOG_LEVEL
+#define MTPNDD_LOG_LEVEL 1
+#endif
+
+#ifndef MTPNDD_LOG_LEVEL_DEBUG
+#define MTPNDD_LOG_LEVEL_DEBUG 2
+#endif
 
 #include <sylvan_refs.h>
 #include <sylvan_sl.h>
@@ -123,8 +135,24 @@ static size_t mtbdd_refs_workers = 0;
 #ifdef SYLVAN_REFS_STATS
 static char **mtbdd_refs_names;
 #endif
-refs_table_t mtbdd_protected;
+static refs_table_t *mtbdd_protected_add = NULL;
+static refs_table_t *mtbdd_protected_del = NULL;
+static size_t mtbdd_protected_workers = 0;
 static int mtbdd_protected_created = 0;
+static refs_table_t mtbdd_protected_merge;
+static int mtbdd_protected_merge_created = 0;
+static _Atomic uint64_t mtbdd_protect_del_only_total_count = 0;
+static _Atomic uint64_t mtbdd_protect_add_total_count = 0;
+static _Atomic uint64_t mtbdd_unprotect_total_count = 0;
+static _Atomic uint64_t mtbdd_protect_add_remove_hit_total_count = 0;
+static _Atomic uint64_t mtbdd_protect_add_remove_miss_total_count = 0;
+static _Atomic uint64_t mtbdd_protect_gc_merge_add_total_count = 0;
+static _Atomic uint64_t mtbdd_protect_gc_merge_del_total_count = 0;
+static _Atomic uint64_t mtbdd_protect_gc_remaining_total_count = 0;
+static _Atomic uint64_t mtbdd_protect_gc_unmatched_total_count = 0;
+static _Atomic uint64_t mtbdd_refs_merge_drop_total_count = 0;
+static _Atomic uint64_t mtbdd_refs_gc_net_negative_total_count = 0;
+static _Atomic uint64_t mtbdd_refs_gc_net_positive_total_count = 0;
 
 MDD
 mtbdd_ref(MDD a)
@@ -159,39 +187,160 @@ mtbdd_count_refs_worker(unsigned int worker)
     return refs_count(&mtbdd_refs[worker]);
 }
 
+static inline unsigned int
+mtbdd_protected_worker_id(void)
+{
+    WorkerP *worker = lace_get_worker();
+    unsigned int wid = worker ? worker->worker : 0;
+    unsigned int workers = lace_workers();
+    if (workers == 0) workers = 1;
+    return wid < workers ? wid : 0;
+}
+
 void
 mtbdd_protect(MTBDD *a)
 {
     if (!mtbdd_protected_created) {
-        // In C++, sometimes mtbdd_protect is called before Sylvan is initialized. Just create a table.
-        protect_create(&mtbdd_protected, 4096);
+        // In C++, sometimes mtbdd_protect is called before Sylvan is initialized. Just create tables.
+        mtbdd_protected_workers = lace_workers();
+        if (mtbdd_protected_workers == 0) mtbdd_protected_workers = 1;
+        mtbdd_protected_add = (refs_table_t*)malloc(sizeof(refs_table_t) * mtbdd_protected_workers);
+        mtbdd_protected_del = (refs_table_t*)malloc(sizeof(refs_table_t) * mtbdd_protected_workers);
+        if (!mtbdd_protected_add || !mtbdd_protected_del) {
+            fprintf(stderr, "mtbdd: Unable to allocate protect tables!\n");
+            exit(1);
+        }
+        for (size_t i = 0; i < mtbdd_protected_workers; i++) {
+            protect_create(&mtbdd_protected_add[i], 4096);
+            protect_create(&mtbdd_protected_del[i], 4096);
+        }
         mtbdd_protected_created = 1;
     }
-    protect_up(&mtbdd_protected, (size_t)a);
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    atomic_fetch_add_explicit(&mtbdd_protect_add_total_count, 1, memory_order_relaxed);
+#endif
+    protect_add_insert(&mtbdd_protected_add[mtbdd_protected_worker_id()], (size_t)a);
 }
 
 void
 mtbdd_unprotect(MTBDD *a)
 {
-    if (mtbdd_protected.refs_table != NULL) protect_down(&mtbdd_protected, (size_t)a);
+    if (!mtbdd_protected_created) return;
+    unsigned int wid = mtbdd_protected_worker_id();
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    atomic_fetch_add_explicit(&mtbdd_unprotect_total_count, 1, memory_order_relaxed);
+#endif
+    if (!protect_add_remove_one(&mtbdd_protected_add[wid], (size_t)a)) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        atomic_fetch_add_explicit(&mtbdd_protect_add_remove_miss_total_count, 1, memory_order_relaxed);
+#endif
+        protect_del_insert(&mtbdd_protected_del[wid], (size_t)a);
+        atomic_fetch_add_explicit(&mtbdd_protect_del_only_total_count, 1, memory_order_relaxed);
+    } else {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        atomic_fetch_add_explicit(&mtbdd_protect_add_remove_hit_total_count, 1, memory_order_relaxed);
+#endif
+    }
 }
 
 size_t
 mtbdd_count_protected()
 {
-    return protect_count(&mtbdd_protected);
+    if (!mtbdd_protected_created) return 0;
+    size_t total = 0;
+    for (size_t i = 0; i < mtbdd_protected_workers; i++) {
+        total += protect_count(&mtbdd_protected_add[i]);
+    }
+    return total;
+}
+
+uint64_t
+mtbdd_protect_del_only_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_del_only_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_protect_add_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_add_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_unprotect_total(void)
+{
+    return atomic_load_explicit(&mtbdd_unprotect_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_protect_add_remove_hit_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_add_remove_hit_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_protect_add_remove_miss_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_add_remove_miss_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_protect_gc_merge_add_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_gc_merge_add_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_protect_gc_merge_del_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_gc_merge_del_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_protect_gc_remaining_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_gc_remaining_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_protect_gc_unmatched_total(void)
+{
+    return atomic_load_explicit(&mtbdd_protect_gc_unmatched_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_refs_merge_drop_total(void)
+{
+    return atomic_load_explicit(&mtbdd_refs_merge_drop_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_refs_gc_net_negative_total(void)
+{
+    return atomic_load_explicit(&mtbdd_refs_gc_net_negative_total_count, memory_order_relaxed);
+}
+
+uint64_t
+mtbdd_refs_gc_net_positive_total(void)
+{
+    return atomic_load_explicit(&mtbdd_refs_gc_net_positive_total_count, memory_order_relaxed);
 }
 
 /* Called during garbage collection */
 VOID_TASK_0(mtbdd_gc_mark_external_refs)
 {
     refs_clear(&mtbdd_refs_merge);
+    uint64_t merge_drop = 0;
+    uint64_t net_negative = 0;
+    uint64_t net_positive = 0;
     for (size_t i = 0; i < mtbdd_refs_workers; i++) {
         uint64_t *it = refs_iter(&mtbdd_refs[i], 0, mtbdd_refs[i].refs_size);
         while (it != NULL) {
             int32_t count = 0;
             uint64_t key = refs_next_full(&mtbdd_refs[i], &it, mtbdd_refs[i].refs_size, &count);
-            if (count != 0) refs_set_add(&mtbdd_refs_merge, key, count);
+            if (count != 0 && !refs_set_add(&mtbdd_refs_merge, key, count)) {
+                merge_drop++;
+            }
         }
     }
 
@@ -203,21 +352,80 @@ VOID_TASK_0(mtbdd_gc_mark_external_refs)
         if (net > 0) {
             SPAWN(mtbdd_gc_mark_rec, key);
             count++;
+            net_positive++;
+        } else if (net < 0) {
+            net_negative++;
         }
     }
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    if (merge_drop) {
+        atomic_fetch_add_explicit(&mtbdd_refs_merge_drop_total_count, merge_drop, memory_order_relaxed);
+    }
+    if (net_negative) {
+        atomic_fetch_add_explicit(&mtbdd_refs_gc_net_negative_total_count, net_negative, memory_order_relaxed);
+    }
+    if (net_positive) {
+        atomic_fetch_add_explicit(&mtbdd_refs_gc_net_positive_total_count, net_positive, memory_order_relaxed);
+    }
+#endif
     while (count--) SYNC(mtbdd_gc_mark_rec);
 }
 
 VOID_TASK_0(mtbdd_gc_mark_protected)
 {
-    // iterate through refs hash table, mark all found
-    size_t count=0;
-    uint64_t *it = protect_iter(&mtbdd_protected, 0, mtbdd_protected.refs_size);
+    if (!mtbdd_protected_created) return;
+    if (!mtbdd_protected_merge_created) {
+        protect_create(&mtbdd_protected_merge, SYLVAN_PROTECT_INIT_SIZE);
+        mtbdd_protected_merge_created = 1;
+    }
+
+    refs_clear(&mtbdd_protected_merge);
+    size_t count = 0;
+    uint64_t merged_add = 0;
+    uint64_t merged_del = 0;
+    uint64_t remaining = 0;
+    uint64_t unmatched = 0;
+    for (size_t i = 0; i < mtbdd_protected_workers; i++) {
+        uint64_t *it = protect_iter(&mtbdd_protected_add[i], 0, mtbdd_protected_add[i].refs_size);
+        while (it != NULL) {
+            BDD *to_mark = (BDD*)protect_next(&mtbdd_protected_add[i], &it, mtbdd_protected_add[i].refs_size);
+            protect_add_insert(&mtbdd_protected_merge, (uint64_t)to_mark);
+            merged_add++;
+        }
+    }
+
+    for (size_t i = 0; i < mtbdd_protected_workers; i++) {
+        uint64_t *it = protect_iter(&mtbdd_protected_del[i], 0, mtbdd_protected_del[i].refs_size);
+        while (it != NULL) {
+            BDD *to_remove = (BDD*)protect_next(&mtbdd_protected_del[i], &it, mtbdd_protected_del[i].refs_size);
+            merged_del++;
+            if (!protect_add_remove_one(&mtbdd_protected_merge, (uint64_t)to_remove)) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+                unmatched++;
+#endif
+                fprintf(stderr, "mtbdd: unmatched protect del entry during gc: %p\n", (void*)to_remove);
+                abort();
+            }
+        }
+    }
+
+    uint64_t *it = protect_iter(&mtbdd_protected_merge, 0, mtbdd_protected_merge.refs_size);
     while (it != NULL) {
-        BDD *to_mark = (BDD*)protect_next(&mtbdd_protected, &it, mtbdd_protected.refs_size);
+        BDD *to_mark = (BDD*)protect_next(&mtbdd_protected_merge, &it, mtbdd_protected_merge.refs_size);
         SPAWN(mtbdd_gc_mark_rec, *to_mark);
         count++;
+        remaining++;
     }
+
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    atomic_fetch_add_explicit(&mtbdd_protect_gc_merge_add_total_count, merged_add, memory_order_relaxed);
+    atomic_fetch_add_explicit(&mtbdd_protect_gc_merge_del_total_count, merged_del, memory_order_relaxed);
+    atomic_fetch_add_explicit(&mtbdd_protect_gc_remaining_total_count, remaining, memory_order_relaxed);
+    if (unmatched > 0) {
+        atomic_fetch_add_explicit(&mtbdd_protect_gc_unmatched_total_count, unmatched, memory_order_relaxed);
+    }
+#endif
+
     while (count--) {
         SYNC(mtbdd_gc_mark_rec);
     }
@@ -444,8 +652,20 @@ mtbdd_quit()
     }
 #endif
     if (mtbdd_protected_created) {
-        protect_free(&mtbdd_protected);
+        for (size_t i = 0; i < mtbdd_protected_workers; i++) {
+            protect_free(&mtbdd_protected_add[i]);
+            protect_free(&mtbdd_protected_del[i]);
+        }
+        free(mtbdd_protected_add);
+        free(mtbdd_protected_del);
+        mtbdd_protected_add = NULL;
+        mtbdd_protected_del = NULL;
+        mtbdd_protected_workers = 0;
         mtbdd_protected_created = 0;
+    }
+    if (mtbdd_protected_merge_created) {
+        protect_free(&mtbdd_protected_merge);
+        mtbdd_protected_merge_created = 0;
     }
 
     mtbdd_initialized = 0;
@@ -491,7 +711,18 @@ sylvan_init_mtbdd()
     }
 #endif
     if (!mtbdd_protected_created) {
-        protect_create(&mtbdd_protected, SYLVAN_PROTECT_INIT_SIZE);
+        mtbdd_protected_workers = lace_workers();
+        if (mtbdd_protected_workers == 0) mtbdd_protected_workers = 1;
+        mtbdd_protected_add = (refs_table_t*)malloc(sizeof(refs_table_t) * mtbdd_protected_workers);
+        mtbdd_protected_del = (refs_table_t*)malloc(sizeof(refs_table_t) * mtbdd_protected_workers);
+        if (!mtbdd_protected_add || !mtbdd_protected_del) {
+            fprintf(stderr, "mtbdd: Unable to allocate protect tables!\n");
+            exit(1);
+        }
+        for (size_t i = 0; i < mtbdd_protected_workers; i++) {
+            protect_create(&mtbdd_protected_add[i], SYLVAN_PROTECT_INIT_SIZE);
+            protect_create(&mtbdd_protected_del[i], SYLVAN_PROTECT_INIT_SIZE);
+        }
         mtbdd_protected_created = 1;
     }
 

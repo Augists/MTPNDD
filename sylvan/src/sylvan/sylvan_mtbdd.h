@@ -1040,6 +1040,15 @@ void mtbdd_unprotect(MTBDD* ptr);
  * Compute the number of pointers in the pointers table.
  */
 size_t mtbdd_count_protected(void);
+uint64_t mtbdd_protect_del_only_total(void);
+uint64_t mtbdd_protect_add_total(void);
+uint64_t mtbdd_unprotect_total(void);
+uint64_t mtbdd_protect_add_remove_hit_total(void);
+uint64_t mtbdd_protect_add_remove_miss_total(void);
+uint64_t mtbdd_protect_gc_merge_add_total(void);
+uint64_t mtbdd_protect_gc_merge_del_total(void);
+uint64_t mtbdd_protect_gc_remaining_total(void);
+uint64_t mtbdd_protect_gc_unmatched_total(void);
 
 /**
  * Store the MTBDD <dd> in the values table.
@@ -1056,6 +1065,9 @@ void mtbdd_deref(MTBDD dd);
  */
 size_t mtbdd_count_refs(void);
 size_t mtbdd_count_refs_worker(unsigned int worker);
+uint64_t mtbdd_refs_merge_drop_total(void);
+uint64_t mtbdd_refs_gc_net_negative_total(void);
+uint64_t mtbdd_refs_gc_net_positive_total(void);
 
 /**
  * Infrastructure for internal references.

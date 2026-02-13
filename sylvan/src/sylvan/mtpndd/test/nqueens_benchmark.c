@@ -1,5 +1,7 @@
 #include "mtpndd.h"
 #include "mtpndd_common.h"
+#include "sylvan_mtbdd.h"
+#include "sylvan_refs.h"
 
 #include <inttypes.h>
 #include <math.h>
@@ -323,6 +325,27 @@ static bool run_benchmark(size_t n) {
                stats->nodetable_edge_compare_entries,
                nodetable_avg_steps,
                stats->nodetable_edge_compare_max_steps);
+        printf(".. stats: temp_refs grow_total=%" PRIu64 " peak_capacity=%" PRIu64 "\n",
+               mtpndd_temp_refs_grow_total(),
+               mtpndd_temp_refs_peak_capacity());
+        printf(".. stats: resize refs/protect=%" PRIu64 "/%" PRIu64 "\n",
+               refs_resize_total(),
+               protect_resize_total());
+        printf(".. stats: refs_gc merge_drop=%" PRIu64 " net_positive=%" PRIu64 " net_negative=%" PRIu64 "\n",
+               mtbdd_refs_merge_drop_total(),
+               mtbdd_refs_gc_net_positive_total(),
+               mtbdd_refs_gc_net_negative_total());
+        printf(".. stats: protect add/unprotect=%" PRIu64 "/%" PRIu64 " hit/miss=%" PRIu64 "/%" PRIu64 " del_only=%" PRIu64 "\n",
+               mtbdd_protect_add_total(),
+               mtbdd_unprotect_total(),
+               mtbdd_protect_add_remove_hit_total(),
+               mtbdd_protect_add_remove_miss_total(),
+               mtbdd_protect_del_only_total());
+        printf(".. stats: protect_gc merge_add/del/remaining/unmatched=%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "\n",
+               mtbdd_protect_gc_merge_add_total(),
+               mtbdd_protect_gc_merge_del_total(),
+               mtbdd_protect_gc_remaining_total(),
+               mtbdd_protect_gc_unmatched_total());
     }
 #endif
 

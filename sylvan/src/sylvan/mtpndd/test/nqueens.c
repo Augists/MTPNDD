@@ -283,7 +283,7 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
     }
 
     mtpndd_pal_config_t config = {
-        .n_workers = 0,  // Use single worker for new Lace (n=0 means auto-detect)
+        .n_workers = 0,  // Auto worker count (Lace decides), not single-worker mode.
         .lace_dqsize = 1 << 20,
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,

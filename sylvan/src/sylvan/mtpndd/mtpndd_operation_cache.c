@@ -8,8 +8,23 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdint.h>
 
 static const size_t kMtpnddOpCacheMinSize = 1024;
+static mtpndd_node_t *const kMtpnddOpCacheWriteLock = (mtpndd_node_t *)(uintptr_t)1;
+
+static inline void mtpndd_op_cache_lock_entry(mtpndd_op_cache_entry_t *entry) {
+    mtpndd_node_t *expected;
+    for (;;) {
+        expected = atomic_load_explicit(&entry->result, memory_order_acquire);
+        if (expected == kMtpnddOpCacheWriteLock) continue;
+        if (atomic_compare_exchange_weak_explicit(
+                &entry->result, &expected, kMtpnddOpCacheWriteLock,
+                memory_order_acq_rel, memory_order_acquire)) {
+            return;
+        }
+    }
+}
 
 static size_t mtpndd_op_cache_adjust_size(size_t requested) {
     size_t capacity = 1;
@@ -112,9 +127,10 @@ void mtpndd_op_cache_clear(mtpndd_op_cache_t *cache) {
     }
     // Use atomic stores to clear entries
     for (size_t i = 0; i < cache->capacity; ++i) {
+        mtpndd_op_cache_lock_entry(&cache->entries[i]);
         atomic_store_explicit(&cache->entries[i].operands[0], NULL, memory_order_relaxed);
         atomic_store_explicit(&cache->entries[i].operands[1], NULL, memory_order_relaxed);
-        atomic_store_explicit(&cache->entries[i].result, NULL, memory_order_relaxed);
+        atomic_store_explicit(&cache->entries[i].result, NULL, memory_order_release);
     }
 }
 
@@ -125,12 +141,26 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
     size_t idx = mtpndd_op_cache_hash_binary_index(cache, lhs, rhs);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
 
-    // Lock-free read using atomic loads with acquire semantics
-    mtpndd_node_t *op0 = atomic_load_explicit(&entry->operands[0], memory_order_acquire);
-    mtpndd_node_t *op1 = atomic_load_explicit(&entry->operands[1], memory_order_acquire);
-    mtpndd_node_t *res = atomic_load_explicit(&entry->result, memory_order_acquire);
+    // Seqlock-style read: result -> operands -> result.
+    // If result changes during the read, treat as miss to avoid torn key/value observations.
+    mtpndd_node_t *res_before = atomic_load_explicit(&entry->result, memory_order_acquire);
+    if (!res_before || res_before == kMtpnddOpCacheWriteLock) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+#endif
+        return NULL;
+    }
+    mtpndd_node_t *op0 = atomic_load_explicit(&entry->operands[0], memory_order_relaxed);
+    mtpndd_node_t *op1 = atomic_load_explicit(&entry->operands[1], memory_order_relaxed);
+    mtpndd_node_t *res_after = atomic_load_explicit(&entry->result, memory_order_acquire);
+    if (res_before != res_after || !res_after || res_after == kMtpnddOpCacheWriteLock) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+#endif
+        return NULL;
+    }
 
-    bool hit = (op0 == lhs && op1 == rhs && res != NULL);
+    bool hit = (op0 == lhs && op1 == rhs);
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     if (hit) {
         __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
@@ -138,7 +168,7 @@ mtpndd_node_t *mtpndd_op_cache_lookup_binary(mtpndd_op_cache_t *cache, mtpndd_no
         __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
     }
 #endif
-    return hit ? res : NULL;
+    return hit ? res_after : NULL;
 }
 
 void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, mtpndd_node_t *rhs, mtpndd_node_t *result) {
@@ -155,7 +185,7 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, 
     __atomic_add_fetch(&g_mtpndd_stats.cache_store_total, 1, __ATOMIC_RELAXED);
     // Check if we're overwriting a valid entry with different operands
     mtpndd_node_t *old_res = atomic_load_explicit(&entry->result, memory_order_relaxed);
-    if (old_res != NULL) {
+    if (old_res != NULL && old_res != kMtpnddOpCacheWriteLock) {
         mtpndd_node_t *old_op0 = atomic_load_explicit(&entry->operands[0], memory_order_relaxed);
         mtpndd_node_t *old_op1 = atomic_load_explicit(&entry->operands[1], memory_order_relaxed);
         if (old_op0 != lhs || old_op1 != rhs) {
@@ -164,8 +194,8 @@ void mtpndd_op_cache_store_binary(mtpndd_op_cache_t *cache, mtpndd_node_t *lhs, 
     }
 #endif
 
-    // Lock-free write using atomic stores with release semantics
-    // Store operands first, then result (result acts as validity flag)
+    // Serialize writers per slot to avoid torn (operands/result) publications.
+    mtpndd_op_cache_lock_entry(entry);
     atomic_store_explicit(&entry->operands[0], lhs, memory_order_relaxed);
     atomic_store_explicit(&entry->operands[1], rhs, memory_order_relaxed);
     atomic_store_explicit(&entry->result, result, memory_order_release);
@@ -178,11 +208,23 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
 
-    // Lock-free read using atomic loads with acquire semantics
-    mtpndd_node_t *op0 = atomic_load_explicit(&entry->operands[0], memory_order_acquire);
-    mtpndd_node_t *res = atomic_load_explicit(&entry->result, memory_order_acquire);
+    mtpndd_node_t *res_before = atomic_load_explicit(&entry->result, memory_order_acquire);
+    if (!res_before || res_before == kMtpnddOpCacheWriteLock) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+#endif
+        return NULL;
+    }
+    mtpndd_node_t *op0 = atomic_load_explicit(&entry->operands[0], memory_order_relaxed);
+    mtpndd_node_t *res_after = atomic_load_explicit(&entry->result, memory_order_acquire);
+    if (res_before != res_after || !res_after || res_after == kMtpnddOpCacheWriteLock) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
+#endif
+        return NULL;
+    }
 
-    bool hit = (op0 == operand && res != NULL);
+    bool hit = (op0 == operand);
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     if (hit) {
         __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_hits, 1, __ATOMIC_RELAXED);
@@ -190,7 +232,7 @@ mtpndd_node_t *mtpndd_op_cache_lookup_unary(mtpndd_op_cache_t *cache, mtpndd_nod
         __atomic_add_fetch(&g_mtpndd_stats.cache_lookup_misses, 1, __ATOMIC_RELAXED);
     }
 #endif
-    return hit ? res : NULL;
+    return hit ? res_after : NULL;
 }
 
 void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operand, mtpndd_node_t *result) {
@@ -203,7 +245,7 @@ void mtpndd_op_cache_store_unary(mtpndd_op_cache_t *cache, mtpndd_node_t *operan
     size_t idx = mtpndd_op_cache_hash_unary_index(cache, operand);
     mtpndd_op_cache_entry_t *entry = &cache->entries[idx];
 
-    // Lock-free write using atomic stores with release semantics
+    mtpndd_op_cache_lock_entry(entry);
     atomic_store_explicit(&entry->operands[0], operand, memory_order_relaxed);
     atomic_store_explicit(&entry->operands[1], NULL, memory_order_relaxed);
     atomic_store_explicit(&entry->result, result, memory_order_release);

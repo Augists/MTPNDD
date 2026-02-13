@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <math.h>
+#include <lace.h>
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 #include <time.h>
 #endif
@@ -75,57 +76,129 @@ typedef struct {
     mtpndd_t **items;
     size_t count;
     size_t capacity;
+    mtpndd_t *inline_items[32];
+} mtpndd_temp_ref_pool_t;
+
+typedef struct {
+    mtpndd_temp_ref_pool_t *pool;
+    size_t frame_base;
 } mtpndd_temp_ref_list_t;
 
-static void mtpndd_temp_refs_init(mtpndd_temp_ref_list_t *list) {
-    list->items = NULL;
-    list->count = 0;
-    list->capacity = 0;
+static mtpndd_temp_ref_pool_t *g_mtpndd_temp_ref_pools = NULL;
+static size_t g_mtpndd_temp_ref_pool_count = 0;
+static __thread mtpndd_temp_ref_pool_t g_mtpndd_temp_ref_tls_pool = {0};
+static __thread bool g_mtpndd_temp_ref_tls_pool_initialized = false;
+
+static _Atomic uint64_t g_mtpndd_temp_refs_grow_total = 0;
+static _Atomic uint64_t g_mtpndd_temp_refs_peak_capacity = 0;
+
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+static inline void mtpndd_temp_refs_record_capacity(size_t capacity) {
+    uint64_t observed = atomic_load_explicit(&g_mtpndd_temp_refs_peak_capacity, memory_order_relaxed);
+    uint64_t candidate = (uint64_t)capacity;
+    while (candidate > observed &&
+           !atomic_compare_exchange_weak_explicit(&g_mtpndd_temp_refs_peak_capacity, &observed, candidate,
+                                                  memory_order_relaxed, memory_order_relaxed)) {
+        /* retry with updated observed */
+    }
 }
 
-static bool mtpndd_temp_refs_push(mtpndd_temp_ref_list_t *list, mtpndd_t *node) {
-    if (!list) return false;
-    if (!node) return true;
-    if (list->count == list->capacity) {
-        size_t new_cap = list->capacity ? list->capacity * 2 : 32;
-        mtpndd_t **next = (mtpndd_t **)realloc(list->items, new_cap * sizeof(mtpndd_t *));
+static inline void mtpndd_temp_refs_record_growth(size_t new_cap) {
+    atomic_fetch_add_explicit(&g_mtpndd_temp_refs_grow_total, 1, memory_order_relaxed);
+    mtpndd_temp_refs_record_capacity(new_cap);
+}
+#endif
+
+static inline unsigned int mtpndd_temp_refs_worker_id(void) {
+    WorkerP *worker = lace_get_worker();
+    return worker ? worker->worker : UINT32_MAX;
+}
+
+static inline void mtpndd_temp_ref_pool_init(mtpndd_temp_ref_pool_t *pool) {
+    pool->items = pool->inline_items;
+    pool->count = 0;
+    pool->capacity = sizeof(pool->inline_items) / sizeof(pool->inline_items[0]);
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    mtpndd_temp_refs_record_capacity(pool->capacity);
+#endif
+}
+
+static inline mtpndd_temp_ref_pool_t *mtpndd_temp_ref_tls_pool_get(void) {
+    if (!g_mtpndd_temp_ref_tls_pool_initialized) {
+        mtpndd_temp_ref_pool_init(&g_mtpndd_temp_ref_tls_pool);
+        g_mtpndd_temp_ref_tls_pool_initialized = true;
+    }
+    return &g_mtpndd_temp_ref_tls_pool;
+}
+
+static inline mtpndd_temp_ref_pool_t *mtpndd_temp_ref_pool_get(void) {
+    unsigned int wid = mtpndd_temp_refs_worker_id();
+    if (g_mtpndd_temp_ref_pools && wid < g_mtpndd_temp_ref_pool_count) {
+        return &g_mtpndd_temp_ref_pools[wid];
+    }
+    return mtpndd_temp_ref_tls_pool_get();
+}
+
+static void mtpndd_temp_refs_init(mtpndd_temp_ref_list_t *list) {
+    if (!list) return;
+    list->pool = mtpndd_temp_ref_pool_get();
+    list->frame_base = list->pool ? list->pool->count : 0;
+}
+
+static bool mtpndd_temp_refs_reserve_slot(mtpndd_temp_ref_list_t *list) {
+    if (!list || !list->pool) return false;
+    mtpndd_temp_ref_pool_t *pool = list->pool;
+    if (pool->count == pool->capacity) {
+        size_t new_cap = pool->capacity ? pool->capacity * 2 : 64;
+        mtpndd_t **next = NULL;
+        if (pool->items == pool->inline_items) {
+            next = (mtpndd_t **)malloc(new_cap * sizeof(mtpndd_t *));
+            if (next) {
+                memcpy(next, pool->inline_items, pool->count * sizeof(mtpndd_t *));
+            }
+        } else {
+            next = (mtpndd_t **)realloc(pool->items, new_cap * sizeof(mtpndd_t *));
+        }
         if (!next) {
             return false;
         }
-        list->items = next;
-        list->capacity = new_cap;
+        pool->items = next;
+        pool->capacity = new_cap;
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        mtpndd_temp_refs_record_growth(new_cap);
+#endif
     }
+    return true;
+}
+
+static bool mtpndd_temp_refs_push(mtpndd_temp_ref_list_t *list, mtpndd_t *node) {
+    if (!list || !list->pool) return false;
+    if (!node) return true;
+    if (!mtpndd_temp_refs_reserve_slot(list)) return false;
+    mtpndd_temp_ref_pool_t *pool = list->pool;
     mtpndd_ref(node);
-    list->items[list->count++] = node;
+    pool->items[pool->count++] = node;
     return true;
 }
 
 // Push a node that is already ref'd (+1). Used for parallel tasks that return an owned ref.
 static bool mtpndd_temp_refs_push_owned(mtpndd_temp_ref_list_t *list, mtpndd_t *node) {
-    if (!list) return false;
+    if (!list || !list->pool) return false;
     if (!node) return true;
-    if (list->count == list->capacity) {
-        size_t new_cap = list->capacity ? list->capacity * 2 : 32;
-        mtpndd_t **next = (mtpndd_t **)realloc(list->items, new_cap * sizeof(mtpndd_t *));
-        if (!next) {
-            return false;
-        }
-        list->items = next;
-        list->capacity = new_cap;
-    }
-    list->items[list->count++] = node;
+    if (!mtpndd_temp_refs_reserve_slot(list)) return false;
+    mtpndd_temp_ref_pool_t *pool = list->pool;
+    pool->items[pool->count++] = node;
     return true;
 }
 
 static void mtpndd_temp_refs_release(mtpndd_temp_ref_list_t *list) {
-    if (!list || !list->items) return;
-    for (size_t i = 0; i < list->count; ++i) {
-        mtpndd_deref(list->items[i]);
+    if (!list || !list->pool) return;
+    mtpndd_temp_ref_pool_t *pool = list->pool;
+    while (pool->count > list->frame_base) {
+        mtpndd_deref(pool->items[--pool->count]);
     }
-    free(list->items);
-    list->items = NULL;
-    list->count = 0;
-    list->capacity = 0;
+    list->pool = NULL;
+    list->frame_base = 0;
 }
 
 void mtpndd_edge_map_init(mtpndd_edge_t *edges) {
@@ -409,10 +482,7 @@ mtpndd_error_t mtpndd_add_edge(mtpndd_edge_t *edges, mtpndd_t *descendant, mtpnd
     }
 #endif
 unlock_and_return:
-    if (status != MTPNDD_SUCCESS) {
-        return status;
-    }
-    return MTPNDD_SUCCESS;
+    return status;
 }
 
 bool mtpndd_is_true(mtpndd_t *ndd) {
@@ -2171,4 +2241,70 @@ void mtpndd_print_dot(mtpndd_t *root, const char *path) {
     if (file) {
         fclose(file);
     }
+}
+
+mtpndd_error_t mtpndd_temp_refs_runtime_init(void) {
+    if (g_mtpndd_temp_ref_pools) {
+        return MTPNDD_SUCCESS;
+    }
+
+    size_t worker_count = lace_workers();
+    if (worker_count == 0) {
+        worker_count = 1;
+    }
+
+    mtpndd_temp_ref_pool_t *pools =
+            (mtpndd_temp_ref_pool_t *)calloc(worker_count, sizeof(mtpndd_temp_ref_pool_t));
+    if (!pools) {
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        return MTPNDD_ERROR_OUT_OF_MEMORY;
+    }
+
+    for (size_t i = 0; i < worker_count; ++i) {
+        mtpndd_temp_ref_pool_init(&pools[i]);
+    }
+
+    g_mtpndd_temp_ref_pools = pools;
+    g_mtpndd_temp_ref_pool_count = worker_count;
+    return MTPNDD_SUCCESS;
+}
+
+void mtpndd_temp_refs_runtime_shutdown(void) {
+    if (g_mtpndd_temp_ref_pools) {
+        for (size_t i = 0; i < g_mtpndd_temp_ref_pool_count; ++i) {
+            mtpndd_temp_ref_pool_t *pool = &g_mtpndd_temp_ref_pools[i];
+            while (pool->count > 0) {
+                mtpndd_deref(pool->items[--pool->count]);
+            }
+            if (pool->items && pool->items != pool->inline_items) {
+                free(pool->items);
+            }
+            pool->items = NULL;
+            pool->capacity = 0;
+        }
+        free(g_mtpndd_temp_ref_pools);
+        g_mtpndd_temp_ref_pools = NULL;
+        g_mtpndd_temp_ref_pool_count = 0;
+    }
+
+    if (g_mtpndd_temp_ref_tls_pool_initialized) {
+        while (g_mtpndd_temp_ref_tls_pool.count > 0) {
+            mtpndd_deref(g_mtpndd_temp_ref_tls_pool.items[--g_mtpndd_temp_ref_tls_pool.count]);
+        }
+        if (g_mtpndd_temp_ref_tls_pool.items &&
+                g_mtpndd_temp_ref_tls_pool.items != g_mtpndd_temp_ref_tls_pool.inline_items) {
+            free(g_mtpndd_temp_ref_tls_pool.items);
+        }
+        g_mtpndd_temp_ref_tls_pool.items = NULL;
+        g_mtpndd_temp_ref_tls_pool.capacity = 0;
+        g_mtpndd_temp_ref_tls_pool_initialized = false;
+    }
+}
+
+uint64_t mtpndd_temp_refs_grow_total(void) {
+    return atomic_load_explicit(&g_mtpndd_temp_refs_grow_total, memory_order_relaxed);
+}
+
+uint64_t mtpndd_temp_refs_peak_capacity(void) {
+    return atomic_load_explicit(&g_mtpndd_temp_refs_peak_capacity, memory_order_relaxed);
 }
