@@ -46,7 +46,6 @@ public final class ManualNativeCheck {
                 .operationCacheSize(1 << 18)
                 .edgeBucketCount(64)
                 .nodetableBucketCount(1 << 15)
-                .gcBucketCount(1 << 15)
                 .nodeSlabCapacity(1024)
                 .edgeEntrySlabCapacity(2048)
                 .nodetableEntrySlabCapacity(1024)
@@ -65,6 +64,7 @@ public final class ManualNativeCheck {
 
         try {
             int fieldId = MTPNDDEngine.declareField(1);
+            MTPNDDEngine.generateFields();
             MTPNDD var = MTPNDD.getVar(fieldId, 0);
             MTPNDD notVar = MTPNDD.getNotVar(fieldId, 0);
             MTPNDD andResult = var.and(var);
@@ -108,4 +108,5 @@ public final class ManualNativeCheck {
         }
         System.out.printf("NQueens n=%d -> %d solutions in %.3fs%n", nQueens.n, nQueens.solutions, nQueens.seconds);
     }
+
 }

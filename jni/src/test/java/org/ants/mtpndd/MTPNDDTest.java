@@ -50,7 +50,6 @@ class MTPNDDTest {
                 .operationCacheSize(1 << 18)
                 .edgeBucketCount(64)
                 .nodetableBucketCount(1 << 15)
-                .gcBucketCount(1 << 15)
                 .nodeSlabCapacity(1024)
                 .edgeEntrySlabCapacity(2048)
                 .nodetableEntrySlabCapacity(1024)
@@ -70,6 +69,7 @@ class MTPNDDTest {
     void basicApiFlow() {
         int fieldId = MTPNDDEngine.declareField(1);
         assertEquals(1, fieldId);
+        MTPNDDEngine.generateFields();
         MTPNDDFieldInfo info = MTPNDDEngine.getFieldInfo(fieldId);
         assertNotNull(info);
         assertEquals(1, info.bitWidth());

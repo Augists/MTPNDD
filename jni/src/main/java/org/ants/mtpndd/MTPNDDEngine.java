@@ -43,7 +43,6 @@ public final class MTPNDDEngine {
                 Double.isNaN(quickGrowth) ? -1.0d : quickGrowth,
                 config.edgeBucketCount(),
                 config.nodetableBucketCount(),
-                config.gcBucketCount(),
                 config.nodeSlabCapacity(),
                 config.edgeEntrySlabCapacity(),
                 config.nodetableEntrySlabCapacity(),
@@ -60,6 +59,10 @@ public final class MTPNDDEngine {
 
     public static synchronized int declareField(int bitWidth) {
         return declareFieldNative(bitWidth);
+    }
+
+    public static synchronized void generateFields() {
+        generateFieldsNative();
     }
 
     public static synchronized MTPNDDFieldInfo getFieldInfo(int fieldId) {
@@ -196,7 +199,6 @@ public final class MTPNDDEngine {
                                           double quickGrowthThreshold,
                                           long edgeBucketCount,
                                           long nodetableBucketCount,
-                                          long gcBucketCount,
                                           long nodeSlabCapacity,
                                           long edgeEntrySlabCapacity,
                                           long nodetableEntrySlabCapacity,
@@ -207,6 +209,7 @@ public final class MTPNDDEngine {
     private static native boolean isInitializedNative();
 
     private static native int declareFieldNative(int bitWidth);
+    private static native void generateFieldsNative();
 
     private static native MTPNDDFieldInfo getFieldInfoNative(int fieldId);
 

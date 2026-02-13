@@ -14,7 +14,6 @@ public final class MTPNDDConfig {
     private final double quickGrowthThreshold;
     private final long edgeBucketCount;
     private final long nodetableBucketCount;
-    private final long gcBucketCount;
     private final long nodeSlabCapacity;
     private final long edgeEntrySlabCapacity;
     private final long nodetableEntrySlabCapacity;
@@ -29,7 +28,6 @@ public final class MTPNDDConfig {
         this.quickGrowthThreshold = builder.quickGrowthThreshold;
         this.edgeBucketCount = builder.edgeBucketCount;
         this.nodetableBucketCount = builder.nodetableBucketCount;
-        this.gcBucketCount = builder.gcBucketCount;
         this.nodeSlabCapacity = builder.nodeSlabCapacity;
         this.edgeEntrySlabCapacity = builder.edgeEntrySlabCapacity;
         this.nodetableEntrySlabCapacity = builder.nodetableEntrySlabCapacity;
@@ -67,11 +65,6 @@ public final class MTPNDDConfig {
     public long nodetableBucketCount() {
         return nodetableBucketCount;
     }
-
-    public long gcBucketCount() {
-        return gcBucketCount;
-    }
-
     public long nodeSlabCapacity() {
         return nodeSlabCapacity;
     }
@@ -105,7 +98,6 @@ public final class MTPNDDConfig {
         private double quickGrowthThreshold = Double.NaN;
         private long edgeBucketCount = -1;
         private long nodetableBucketCount = -1;
-        private long gcBucketCount = -1;
         private long nodeSlabCapacity = -1;
         private long edgeEntrySlabCapacity = -1;
         private long nodetableEntrySlabCapacity = -1;
@@ -161,12 +153,6 @@ public final class MTPNDDConfig {
             this.nodetableBucketCount = validateNonNegative(count, "nodetableBucketCount");
             return this;
         }
-
-        public Builder gcBucketCount(long count) {
-            this.gcBucketCount = validateNonNegative(count, "gcBucketCount");
-            return this;
-        }
-
         public Builder nodeSlabCapacity(long capacity) {
             this.nodeSlabCapacity = validateNonNegative(capacity, "nodeSlabCapacity");
             return this;
@@ -217,7 +203,6 @@ public final class MTPNDDConfig {
                 ", quickGrowthThreshold=" + quickGrowthThreshold +
                 ", edgeBucketCount=" + edgeBucketCount +
                 ", nodetableBucketCount=" + nodetableBucketCount +
-                ", gcBucketCount=" + gcBucketCount +
                 ", nodeSlabCapacity=" + nodeSlabCapacity +
                 ", edgeEntrySlabCapacity=" + edgeEntrySlabCapacity +
                 ", nodetableEntrySlabCapacity=" + nodetableEntrySlabCapacity +
@@ -242,7 +227,6 @@ public final class MTPNDDConfig {
                 && Double.compare(that.quickGrowthThreshold, quickGrowthThreshold) == 0
                 && edgeBucketCount == that.edgeBucketCount
                 && nodetableBucketCount == that.nodetableBucketCount
-                && gcBucketCount == that.gcBucketCount
                 && nodeSlabCapacity == that.nodeSlabCapacity
                 && edgeEntrySlabCapacity == that.edgeEntrySlabCapacity
                 && nodetableEntrySlabCapacity == that.nodetableEntrySlabCapacity
@@ -253,7 +237,7 @@ public final class MTPNDDConfig {
     public int hashCode() {
         return Objects.hash(workers, laceDequeSize, bddNodeTableSize, mtpnddNodeTableSize,
                 operationCacheSize, quickGrowthThreshold, edgeBucketCount, nodetableBucketCount,
-                gcBucketCount, nodeSlabCapacity, edgeEntrySlabCapacity, nodetableEntrySlabCapacity,
+                nodeSlabCapacity, edgeEntrySlabCapacity, nodetableEntrySlabCapacity,
                 edgeMapSlabCapacity);
     }
 }

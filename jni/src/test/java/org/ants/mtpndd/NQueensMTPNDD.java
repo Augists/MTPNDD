@@ -28,14 +28,6 @@ public final class NQueensMTPNDD {
     }
 
     public static Result solve(int n, int workers) {
-        return solveOneHot(n, workers);
-    }
-
-    public static Result solveOneHot(int n) {
-        return solveOneHot(n, 1);
-    }
-
-    public static Result solveOneHot(int n, int workers) {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be positive");
         }
@@ -54,6 +46,7 @@ public final class NQueensMTPNDD {
             for (int i = 0; i < n; i++) {
                 fieldIds[i] = MTPNDDEngine.declareField(n);
             }
+            MTPNDDEngine.generateFields();
             timings.mark("declare");
 
             MTPNDD[][] vars = new MTPNDD[n][n];
@@ -64,6 +57,7 @@ public final class NQueensMTPNDD {
                     notVars[row][col] = MTPNDD.getNotVar(fieldIds[row], col);
                 }
             }
+            timings.mark("vars");
 
             MTPNDD[] rowRequirements = new MTPNDD[n];
             for (int row = 0; row < n; row++) {
@@ -73,6 +67,7 @@ public final class NQueensMTPNDD {
                 }
                 rowRequirements[row] = clause;
             }
+            timings.mark("rows");
 
             MTPNDD[][] cellConstraints = new MTPNDD[n][n];
             for (int row = 0; row < n; row++) {
@@ -80,7 +75,7 @@ public final class NQueensMTPNDD {
                     cellConstraints[row][col] = buildCellConstraints(row, col, n, vars, notVars);
                 }
             }
-            timings.mark("cache");
+            timings.mark("constraints");
 
             MTPNDD formula = MTPNDD.terminalTrue().ref();
             for (MTPNDD requirement : rowRequirements) {
@@ -91,14 +86,15 @@ public final class NQueensMTPNDD {
                     formula = andRelease(formula, cellConstraints[row][col].ref());
                 }
             }
+            timings.mark("formula");
 
             double solutions = formula.satCount();
+            timings.mark("satcount");
             formula.deref();
             releaseCache(cellConstraints);
             releaseArray(rowRequirements);
-            timings.mark("satcount");
-            printStats("onehot", n);
-            logTimings("onehot", n, timings);
+            printStats("nqueens", n);
+            logTimings("nqueens", n, timings);
             return new Result(n, timings.elapsedSeconds(), Math.round(solutions));
         } finally {
             MTPNDDEngine.shutdown();
@@ -111,7 +107,6 @@ public final class NQueensMTPNDD {
         long cacheSize = 1L << 19;
         long edgeBuckets = 16;
         long nodetableBuckets = nddSize;
-        long gcBuckets = 2048;
         long nodeSlab = 1536;
         long edgeEntrySlab = 3072;
         long nodetableEntrySlab = 1536;
@@ -123,7 +118,6 @@ public final class NQueensMTPNDD {
             cacheSize = 1L << 20;
             edgeBuckets = 16;
             nodetableBuckets = nddSize;
-            gcBuckets = 4096;
             nodeSlab = 2048;
             edgeEntrySlab = 4096;
             nodetableEntrySlab = 2048;
@@ -134,7 +128,6 @@ public final class NQueensMTPNDD {
             cacheSize = 1L << 20;
             edgeBuckets = 16;
             nodetableBuckets = 1L << 19;
-            gcBuckets = 8192;
             nodeSlab = 3072;
             edgeEntrySlab = 6144;
             nodetableEntrySlab = 3072;
@@ -150,7 +143,6 @@ public final class NQueensMTPNDD {
                 .quickGrowthThreshold(0.1d)
                 .edgeBucketCount(edgeBuckets)
                 .nodetableBucketCount(nodetableBuckets)
-                .gcBucketCount(gcBuckets)
                 .nodeSlabCapacity(nodeSlab)
                 .edgeEntrySlabCapacity(edgeEntrySlab)
                 .nodetableEntrySlabCapacity(nodetableEntrySlab)
@@ -159,12 +151,15 @@ public final class NQueensMTPNDD {
     }
 
     private static void logTimings(String label, int n, Timings timings) {
-        System.out.printf("[%s n=%d] timings (s): init=%.3f declare=%.3f cache=%.3f satcount=%.3f total=%.3f%n",
+        System.out.printf("[%s n=%d] timings (s): init=%.3f declare=%.3f vars=%.3f rows=%.3f constraints=%.3f formula=%.3f satcount=%.3f total=%.3f%n",
                 label, n,
                 timings.duration("start", "init"),
                 timings.duration("init", "declare"),
-                timings.duration("declare", "cache"),
-                timings.duration("cache", "satcount"),
+                timings.duration("declare", "vars"),
+                timings.duration("vars", "rows"),
+                timings.duration("rows", "constraints"),
+                timings.duration("constraints", "formula"),
+                timings.duration("formula", "satcount"),
                 timings.elapsedSeconds());
     }
 
@@ -273,7 +268,7 @@ public final class NQueensMTPNDD {
     public static void main(String[] args) {
         int n = args.length > 0 ? Integer.parseInt(args[0]) : 8;
         int workers = args.length > 1 ? Integer.parseInt(args[1]) : 1;
-        Result result = solveOneHot(n, workers);
+        Result result = solve(n, workers);
         System.out.printf("n=%d solutions=%d time=%.3fs%n", result.n, result.solutions, result.seconds);
     }
 

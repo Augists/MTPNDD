@@ -51,11 +51,22 @@ static mtpndd_t *mtpndd_node_from_jlong(jlong value) {
     return (mtpndd_t *)mtpndd_jlong_to_ptr(value);
 }
 
-static mtpndd_error_t mtpndd_ensure_fields_generated(void) {
-    if (g_mtpndd_config.fields_generated || g_mtpndd_config.pending_field_count == 0) {
-        return MTPNDD_SUCCESS;
+static bool mtpndd_require_fields_generated(JNIEnv *env) {
+    if (g_mtpndd_config.fields_generated) {
+        return true;
     }
-    return mtpndd_generate_fields();
+    if (g_mtpndd_config.pending_field_count > 0) {
+        mtpndd_throw_exception(
+                env,
+                "org/ants/mtpndd/MTPNDDException",
+                "Fields declared but not generated. Call MTPNDDEngine.generateFields() after declareField().");
+        return false;
+    }
+    mtpndd_throw_exception(
+            env,
+            "org/ants/mtpndd/MTPNDDException",
+            "No fields declared. Call MTPNDDEngine.declareField() first.");
+    return false;
 }
 
 JNIEXPORT void JNICALL
@@ -68,14 +79,12 @@ Java_org_ants_mtpndd_MTPNDDEngine_initNative(JNIEnv *env, jclass clazz,
                                              jdouble quickGrowth,
                                              jlong edgeBuckets,
                                              jlong nodeBuckets,
-                                             jlong gcBuckets,
                                              jlong nodeSlabCap,
                                              jlong edgeEntrySlabCap,
                                              jlong nodetableEntrySlabCap,
                                              jlong edgeMapSlabCap)
 {
     (void)clazz;
-    (void)gcBuckets;
     mtpndd_pal_config_t config = {0};
     config.n_workers = (int32_t)nWorkers;
     config.lace_dqsize = (size_t)laceDQSize;
@@ -135,19 +144,27 @@ Java_org_ants_mtpndd_MTPNDDEngine_declareFieldNative(JNIEnv *env, jclass clazz, 
     (void)clazz;
     mtpndd_error_t err = mtpndd_declare_field((uint32_t)bitWidth);
     if (err != MTPNDD_SUCCESS) {
-        mtpndd_throw_error(env, err);
+        mtpndd_throw_last_error(env);
         return 0;
     }
     return (jint)g_mtpndd_config.pending_field_count;
+}
+
+JNIEXPORT void JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_generateFieldsNative(JNIEnv *env, jclass clazz)
+{
+    (void)clazz;
+    mtpndd_error_t err = mtpndd_generate_fields();
+    if (err != MTPNDD_SUCCESS) {
+        mtpndd_throw_last_error(env);
+    }
 }
 
 JNIEXPORT jobject JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getFieldInfoNative(JNIEnv *env, jclass clazz, jint fieldId)
 {
     (void)clazz;
-    mtpndd_error_t err = mtpndd_ensure_fields_generated();
-    if (err != MTPNDD_SUCCESS) {
-        mtpndd_throw_error(env, err);
+    if (!mtpndd_require_fields_generated(env)) {
         return NULL;
     }
     mtpndd_field_info_t *info = mtpndd_get_field_info((uint32_t)fieldId);
@@ -181,9 +198,7 @@ JNIEXPORT jlong JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getVarNative(JNIEnv *env, jclass clazz, jint fieldId, jint index)
 {
     (void)clazz;
-    mtpndd_error_t err = mtpndd_ensure_fields_generated();
-    if (err != MTPNDD_SUCCESS) {
-        mtpndd_throw_error(env, err);
+    if (!mtpndd_require_fields_generated(env)) {
         return 0;
     }
     mtpndd_clear_error();
@@ -195,9 +210,7 @@ JNIEXPORT jlong JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getNotVarNative(JNIEnv *env, jclass clazz, jint fieldId, jint index)
 {
     (void)clazz;
-    mtpndd_error_t err = mtpndd_ensure_fields_generated();
-    if (err != MTPNDD_SUCCESS) {
-        mtpndd_throw_error(env, err);
+    if (!mtpndd_require_fields_generated(env)) {
         return 0;
     }
     mtpndd_clear_error();
@@ -296,9 +309,7 @@ JNIEXPORT jlong JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getBddVarNative(JNIEnv *env, jclass clazz, jint fieldId, jint index)
 {
     (void)clazz;
-    mtpndd_error_t err = mtpndd_ensure_fields_generated();
-    if (err != MTPNDD_SUCCESS) {
-        mtpndd_throw_error(env, err);
+    if (!mtpndd_require_fields_generated(env)) {
         return 0;
     }
     mtpndd_clear_error();
@@ -316,9 +327,7 @@ JNIEXPORT jlong JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getBddNotVarNative(JNIEnv *env, jclass clazz, jint fieldId, jint index)
 {
     (void)clazz;
-    mtpndd_error_t err = mtpndd_ensure_fields_generated();
-    if (err != MTPNDD_SUCCESS) {
-        mtpndd_throw_error(env, err);
+    if (!mtpndd_require_fields_generated(env)) {
         return 0;
     }
     mtpndd_clear_error();
@@ -394,7 +403,7 @@ Java_org_ants_mtpndd_MTPNDDEngine_fromMtbddNative(JNIEnv *env, jclass clazz, jlo
     mtpndd_t *node = NULL;
     mtpndd_error_t err = mtbdd_to_mtpndd((mtpndd_bdd_t)handle, &node);
     if (err != MTPNDD_SUCCESS) {
-        mtpndd_throw_error(env, err);
+        mtpndd_throw_last_error(env);
         return 0;
     }
     return mtpndd_wrap_node(env, node);
