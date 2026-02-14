@@ -27,6 +27,8 @@ static size_t mtpndd_round_up_pow2(size_t v);
 static void gcOrGrow(void);
 static size_t mtpndd_gc_sweep(void);
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node);
+static void mtpndd_gc_lock_all_tables(void);
+static void mtpndd_gc_unlock_all_tables(void);
 
 static _Atomic bool g_mtpndd_gc_running = false;
 
@@ -501,14 +503,11 @@ static void gcOrGrow(void) {
     mtpndd_log_memory_pools("pre-gc");
 #endif
 
-    bool suspended_workers = false;
-    if (lace_workers() > 0) {
-        lace_suspend();
-        suspended_workers = true;
+    // Ensure only one thread executes MTPNDD GC/grow at a time.
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&g_mtpndd_gc_running, &expected, true)) {
+        return;
     }
-
-    // 设置 GC 运行标志（原子操作）
-    atomic_store(&g_mtpndd_gc_running, true);
 
     gc_internal();
 
@@ -524,10 +523,6 @@ static void gcOrGrow(void) {
     mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
     mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
     mtpndd_op_cache_clear(g_mtpndd_config.not_cache);
-
-    if (suspended_workers) {
-        lace_resume();
-    }
 
     sylvan_gc();
 
@@ -553,7 +548,11 @@ static void gc_internal(void) {
 #endif
     mtpndd_gc_run_prehooks();
 
+    // Quiesce nodetable mutations by taking all table locks.
+    // This avoids suspending workers while they may hold spin locks.
+    mtpndd_gc_lock_all_tables();
     size_t reclaimed = mtpndd_gc_sweep();
+    mtpndd_gc_unlock_all_tables();
 
     if (reclaimed > 0) {
         __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
@@ -564,6 +563,25 @@ static void gc_internal(void) {
     }
 
     mtpndd_gc_run_posthooks();
+}
+
+static void mtpndd_gc_lock_all_tables(void) {
+    for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
+        mtpndd_nodetable_t *table = g_mtpndd_config.node_tables_by_field[field];
+        if (!table) continue;
+        // Follow the same lock order used by rehash paths: mutex -> bucket locks.
+        pthread_mutex_lock(&table->rehash_mutex);
+        mtpndd_nodetable_lock_all(table);
+    }
+}
+
+static void mtpndd_gc_unlock_all_tables(void) {
+    for (uint32_t field = g_mtpndd_config.field_count; field >= 1; --field) {
+        mtpndd_nodetable_t *table = g_mtpndd_config.node_tables_by_field[field];
+        if (!table) continue;
+        mtpndd_nodetable_unlock_all(table);
+        pthread_mutex_unlock(&table->rehash_mutex);
+    }
 }
 
 static void mtpndd_release_node(mtpndd_nodetable_t *table, size_t bucket_idx, mtpndd_nodetable_bucket_entry_t *entry, mtpndd_node_t *node) {
