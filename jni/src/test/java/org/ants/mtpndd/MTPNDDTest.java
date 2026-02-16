@@ -85,16 +85,16 @@ class MTPNDDTest {
         MTPNDD orResult = var.or(notVar);
         assertFalse(orResult.isFalse());
         MTPNDD diffResult = var.diff(var);
-        assertEquals(MTPNDD.terminalFalse(), diffResult);
-        MTPNDD notResult = MTPNDD.terminalFalse().not();
-        assertEquals(MTPNDD.terminalTrue(), notResult);
+        assertEquals(MTPNDD.getFalse(), diffResult);
+        MTPNDD notResult = MTPNDD.getFalse().not();
+        assertEquals(MTPNDD.getTrue(), notResult);
 
         MTPNDD existResult = var.exist(fieldId);
         assertFalse(existResult.isFalse());
 
-        double satTrue = MTPNDD.terminalTrue().satCount();
+        double satTrue = MTPNDD.getTrue().satCount();
         assertTrue(satTrue >= 1.0);
-        double satFalse = MTPNDD.terminalFalse().satCount();
+        double satFalse = MTPNDD.getFalse().satCount();
         assertEquals(0.0, satFalse);
 
         MTPNDDStats stats = MTPNDDEngine.stats();

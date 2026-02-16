@@ -387,7 +387,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_GC_OR_GROW);
 #endif
-    if (g_mtpndd_stats.node_count > g_mtpndd_pal_config.mtpndd_nodetable_size) {
+    if (g_mtpndd_stats.node_count >= g_mtpndd_pal_config.mtpndd_nodetable_size) {
         gcOrGrow();
     }
     // 3. create new node

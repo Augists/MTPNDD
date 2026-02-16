@@ -35,15 +35,64 @@ public final class MTPNDD {
     /**
      * Global constant for the logical {@code true}.
      */
-    public static MTPNDD terminalTrue() {
-        return MTPNDDEngine.terminalTrue();
+    public static MTPNDD getTrue() {
+        return MTPNDDEngine.getTrue();
     }
 
     /**
      * Global constant for the logical {@code false}.
      */
-    public static MTPNDD terminalFalse() {
-        return MTPNDDEngine.terminalFalse();
+    public static MTPNDD getFalse() {
+        return MTPNDDEngine.getFalse();
+    }
+
+    public static MTPNDD ref(MTPNDD node) {
+        if (node == null) {
+            return null;
+        }
+        return node.ref();
+    }
+
+    public static void deref(MTPNDD node) {
+        if (node != null) {
+            node.deref();
+        }
+    }
+
+    public static MTPNDD and(MTPNDD left, MTPNDD right) {
+        return left.and(right);
+    }
+
+    public static MTPNDD or(MTPNDD left, MTPNDD right) {
+        return left.or(right);
+    }
+
+    public static MTPNDD not(MTPNDD value) {
+        return value.not();
+    }
+
+    public static MTPNDD diff(MTPNDD left, MTPNDD right) {
+        return left.diff(right);
+    }
+
+    public static MTPNDD andTo(MTPNDD left, MTPNDD right) {
+        MTPNDD result = left.and(right).ref();
+        left.deref();
+        return result;
+    }
+
+    public static MTPNDD orTo(MTPNDD left, MTPNDD right) {
+        MTPNDD result = left.or(right).ref();
+        left.deref();
+        return result;
+    }
+
+    public static double satCount(MTPNDD node) {
+        return node.satCount();
+    }
+
+    public static int toZero(MTPNDD node) {
+        return node.minZeros();
     }
 
     public MTPNDD and(MTPNDD other) {
@@ -70,6 +119,10 @@ public final class MTPNDD {
         return MTPNDDEngine.satCount(this);
     }
 
+    public int minZeros() {
+        return MTPNDDEngine.minZeros(this);
+    }
+
     public boolean isTrue() {
         return MTPNDDEngine.isTrue(this);
     }
@@ -80,6 +133,14 @@ public final class MTPNDD {
 
     public boolean isTerminal() {
         return MTPNDDEngine.isTerminal(this);
+    }
+
+    public int getFieldId() {
+        return MTPNDDEngine.getFieldId(this);
+    }
+
+    public MTPNDDEdges getEdges() {
+        return MTPNDDEngine.getEdges(this);
     }
 
     /**

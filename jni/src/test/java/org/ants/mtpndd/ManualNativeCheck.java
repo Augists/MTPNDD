@@ -76,18 +76,18 @@ public final class ManualNativeCheck {
                 throw new AssertionError("OR of literal and negation should not be false");
             }
             MTPNDD diffResult = var.diff(var);
-            if (!diffResult.equals(MTPNDD.terminalFalse())) {
+            if (!diffResult.equals(MTPNDD.getFalse())) {
                 throw new AssertionError("Difference with self should be false");
             }
-            MTPNDD notResult = MTPNDD.terminalFalse().not();
-            if (!notResult.equals(MTPNDD.terminalTrue())) {
+            MTPNDD notResult = MTPNDD.getFalse().not();
+            if (!notResult.equals(MTPNDD.getTrue())) {
                 throw new AssertionError("NOT false should equal true");
             }
             MTPNDD existResult = var.exist(fieldId);
             if (existResult.isFalse()) {
                 throw new AssertionError("Existential abstraction should not be false");
             }
-            double count = MTPNDD.terminalFalse().satCount();
+            double count = MTPNDD.getFalse().satCount();
             if (count != 0.0) {
                 throw new AssertionError("Expected zero satcount");
             }

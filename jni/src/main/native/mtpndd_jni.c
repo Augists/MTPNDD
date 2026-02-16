@@ -2,12 +2,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <limits.h>
 
 #include "mtpndd.h"
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
 #include "mtpndd_nodetable.h"
 #include "sylvan.h"
+#include "sylvan_cache.h"
 #include "sylvan_bdd.h"
 #include "sylvan_mtbdd.h"
 
@@ -51,6 +55,88 @@ static mtpndd_t *mtpndd_node_from_jlong(jlong value) {
     return (mtpndd_t *)mtpndd_jlong_to_ptr(value);
 }
 
+static void mtpndd_jni_log_init_request(
+        jint nWorkers,
+        jlong laceDQSize,
+        jlong bddSize,
+        jlong mtpnddSize,
+        jlong opCacheSize,
+        jdouble quickGrowth,
+        jlong edgeBuckets,
+        jlong nodeBuckets,
+        jlong nodeSlabCap,
+        jlong edgeEntrySlabCap,
+        jlong nodetableEntrySlabCap,
+        jlong edgeMapSlabCap)
+{
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
+    MTPNDD_LOG_INFO(
+            "[MTPNDD JNI] init request workers=%d dq=%lld bdd_nodes=%lld mtpndd_nodes=%lld cache=%lld quick_growth=%.3f\n",
+            (int)nWorkers,
+            (long long)laceDQSize,
+            (long long)bddSize,
+            (long long)mtpnddSize,
+            (long long)opCacheSize,
+            (double)quickGrowth);
+    MTPNDD_LOG_INFO(
+            "[MTPNDD JNI] init request edge_buckets=%lld nodetable_buckets=%lld slabs(node/edge/nodetable/emap)=%lld/%lld/%lld/%lld\n",
+            (long long)edgeBuckets,
+            (long long)nodeBuckets,
+            (long long)nodeSlabCap,
+            (long long)edgeEntrySlabCap,
+            (long long)nodetableEntrySlabCap,
+            (long long)edgeMapSlabCap);
+#endif
+}
+
+static void mtpndd_jni_log_init_effective(void) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
+    MTPNDD_LOG_INFO(
+            "[MTPNDD JNI] init effective workers=%d dq=%zu bdd_nodes=%zu mtpndd_nodes=%zu cache=%zu quick_growth=%.3f\n",
+            (int)lace_workers(),
+            g_mtpndd_pal_config.lace_dqsize,
+            g_mtpndd_pal_config.bdd_nodetable_size,
+            g_mtpndd_pal_config.mtpndd_nodetable_size,
+            g_mtpndd_pal_config.op_cache_size,
+            g_mtpndd_pal_config.quick_growth_threshold);
+    MTPNDD_LOG_INFO(
+            "[MTPNDD JNI] init effective edge_buckets=%zu nodetable_buckets=%zu slabs(node/edge/nodetable/emap)=%zu/%zu/%zu/%zu\n",
+            g_mtpndd_pal_config.edge_bucket_count,
+            g_mtpndd_pal_config.nodetable_bucket_count,
+            g_mtpndd_pal_config.node_slab_capacity,
+            g_mtpndd_pal_config.edge_entry_slab_capacity,
+            g_mtpndd_pal_config.nodetable_entry_slab_capacity,
+            g_mtpndd_pal_config.edge_map_slab_capacity);
+#endif
+}
+
+static int mtpndd_min_zeros_rec(BDD node) {
+    static const uint64_t cache_id = 0x4d54504e44445a30ULL;  // "MTPNDDZ0"
+    if (node == sylvan_true) {
+        return 0;
+    }
+    if (node == sylvan_false) {
+        return INT_MAX / 4;
+    }
+
+    uint64_t cached = 0;
+    if (cache_get3(cache_id, (uint64_t)node, 0, 0, &cached)) {
+        return (int)cached;
+    }
+
+    BDD low = sylvan_low(node);
+    BDD high = sylvan_high(node);
+    int low_cost = mtpndd_min_zeros_rec(low);
+    int high_cost = mtpndd_min_zeros_rec(high);
+    int result = high_cost;
+    if (low_cost < INT_MAX / 4 && (low_cost + 1) < result) {
+        result = low_cost + 1;
+    }
+
+    cache_put3(cache_id, (uint64_t)node, 0, 0, (uint64_t)result);
+    return result;
+}
+
 static bool mtpndd_require_fields_generated(JNIEnv *env) {
     if (g_mtpndd_config.fields_generated) {
         return true;
@@ -85,7 +171,12 @@ Java_org_ants_mtpndd_MTPNDDEngine_initNative(JNIEnv *env, jclass clazz,
                                              jlong edgeMapSlabCap)
 {
     (void)clazz;
+    mtpndd_jni_log_init_request(
+            nWorkers, laceDQSize, bddSize, mtpnddSize, opCacheSize, quickGrowth,
+            edgeBuckets, nodeBuckets, nodeSlabCap, edgeEntrySlabCap, nodetableEntrySlabCap, edgeMapSlabCap);
     mtpndd_pal_config_t config = {0};
+    // -1 means "use native default" for quick growth threshold.
+    config.quick_growth_threshold = -1.0;
     config.n_workers = (int32_t)nWorkers;
     config.lace_dqsize = (size_t)laceDQSize;
     config.bdd_nodetable_size = (size_t)bddSize;
@@ -116,7 +207,9 @@ Java_org_ants_mtpndd_MTPNDDEngine_initNative(JNIEnv *env, jclass clazz,
     mtpndd_error_t err = mtpndd_init(&config);
     if (err != MTPNDD_SUCCESS) {
         mtpndd_throw_error(env, err);
+        return;
     }
+    mtpndd_jni_log_init_effective();
 }
 
 JNIEXPORT void JNICALL
@@ -218,6 +311,56 @@ Java_org_ants_mtpndd_MTPNDDEngine_getNotVarNative(JNIEnv *env, jclass clazz, jin
     return mtpndd_wrap_node(env, node);
 }
 
+JNIEXPORT jint JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getFieldIdNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    mtpndd_t *node = mtpndd_node_from_jlong(handle);
+    if (!node) {
+        return 0;
+    }
+    return (jint)node->field_id;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getEdgesNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    mtpndd_t *node = mtpndd_node_from_jlong(handle);
+    if (!node || mtpndd_is_terminal(node) || node->edges == NULL || node->edges->edge_count == 0) {
+        return (*env)->NewLongArray(env, 0);
+    }
+
+    size_t edge_count = node->edges->edge_count;
+    jsize length = (jsize)(edge_count * 2);
+    jlongArray result = (*env)->NewLongArray(env, length);
+    if (result == NULL) {
+        return NULL;
+    }
+
+    jlong *buffer = (jlong *)malloc(sizeof(jlong) * (size_t)length);
+    if (!buffer) {
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "Unable to allocate edge buffer");
+        return NULL;
+    }
+
+    size_t idx = 0;
+    edge_bucket_entry_t *entry = NULL;
+    FOR_EACH_ENTRY_IN_ALL_BUCKETS(node->edges, entry) {
+        if (idx + 1 >= (size_t)length) {
+            break;
+        }
+        mtpndd_bdd_t label = atomic_load_explicit(&entry->label, memory_order_relaxed);
+        buffer[idx++] = mtpndd_ptr_to_jlong(entry->child);
+        buffer[idx++] = (jlong)label;
+    }
+
+    (*env)->SetLongArrayRegion(env, result, 0, (jsize)idx, buffer);
+    free(buffer);
+    return result;
+}
+
 JNIEXPORT jlong JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_andNative(JNIEnv *env, jclass clazz, jlong left, jlong right)
 {
@@ -303,6 +446,25 @@ Java_org_ants_mtpndd_MTPNDDEngine_satCountNative(JNIEnv *env, jclass clazz, jlon
         return 0.0;
     }
     return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_minZerosNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    mtpndd_t *node = mtpndd_node_from_jlong(handle);
+    if (!node) {
+        return 0;
+    }
+    mtpndd_bdd_t bdd = sylvan_false;
+    mtpndd_error_t err = mtpndd_to_mtbdd(node, &bdd);
+    if (err != MTPNDD_SUCCESS) {
+        mtpndd_throw_error(env, err);
+        return 0;
+    }
+    int result = mtpndd_min_zeros_rec((BDD)bdd);
+    sylvan_deref((BDD)bdd);
+    return (jint)result;
 }
 
 JNIEXPORT jlong JNICALL
@@ -394,6 +556,69 @@ JNIEXPORT jlong JNICALL Java_org_ants_mtpndd_MTPNDDEngine_bddNotNative(JNIEnv *e
     BDD result = sylvan_not((BDD)value);
     sylvan_ref(result);
     return (jlong)result;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddIsTrueNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    return ((BDD)handle == sylvan_true) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddIsFalseNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env;
+    (void)clazz;
+    return ((BDD)handle == sylvan_false) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddVarNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    if (handle == 0) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "Null BDD handle");
+        return -1;
+    }
+    BDD bdd = (BDD)handle;
+    if (bdd == sylvan_true || bdd == sylvan_false) {
+        return -1;
+    }
+    return (jint)sylvan_var(bdd);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddLowNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    if (handle == 0) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "Null BDD handle");
+        return 0;
+    }
+    BDD bdd = (BDD)handle;
+    if (bdd == sylvan_true || bdd == sylvan_false) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "bddLow is undefined on terminal BDD");
+        return 0;
+    }
+    return (jlong)sylvan_low(bdd);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_bddHighNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    if (handle == 0) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "Null BDD handle");
+        return 0;
+    }
+    BDD bdd = (BDD)handle;
+    if (bdd == sylvan_true || bdd == sylvan_false) {
+        mtpndd_throw_exception(env, "org/ants/mtpndd/MTPNDDException", "bddHigh is undefined on terminal BDD");
+        return 0;
+    }
+    return (jlong)sylvan_high(bdd);
 }
 
 JNIEXPORT jlong JNICALL

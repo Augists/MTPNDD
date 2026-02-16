@@ -49,6 +49,7 @@ static void mtpndd_gc_hook_sylvan_pre(WorkerP *worker, Task *task);
 static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task);
 static void mtpndd_gc_hook_mtpndd_pre(void);
 static void mtpndd_gc_hook_mtpndd_post(void);
+static void mtpndd_log_init_config(const mtpndd_pal_config_t *requested);
 
 static void mtpndd_field_info_free(mtpndd_field_info_t *field) {
     if (!field) {
@@ -575,7 +576,10 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     g_mtpndd_pal_config.bdd_nodetable_size = config->bdd_nodetable_size;
     g_mtpndd_pal_config.mtpndd_nodetable_size = config->mtpndd_nodetable_size;
     g_mtpndd_pal_config.op_cache_size = config->op_cache_size;
-    g_mtpndd_pal_config.quick_growth_threshold = DEFAULT_QUICK_GROWTH_THRESHOLD;
+    g_mtpndd_pal_config.quick_growth_threshold =
+            (config->quick_growth_threshold >= 0.0)
+                    ? config->quick_growth_threshold
+                    : DEFAULT_QUICK_GROWTH_THRESHOLD;
     g_mtpndd_pal_config.edge_bucket_count = config->edge_bucket_count;
     g_mtpndd_pal_config.nodetable_bucket_count = config->nodetable_bucket_count;
     g_mtpndd_pal_config.node_slab_capacity = config->node_slab_capacity;
@@ -639,6 +643,8 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
         MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INITIALIZE_FAILED);
     }
 
+    mtpndd_log_init_config(config);
+
     mtpndd_memory_pools_init();
 
     // Attach GC logging hooks for both Sylvan and MTPNDD
@@ -652,6 +658,32 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
 #endif
     
     return MTPNDD_SUCCESS;
+}
+
+static void mtpndd_log_init_config(const mtpndd_pal_config_t *requested) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
+    int32_t requested_workers = requested ? requested->n_workers : g_mtpndd_pal_config.n_workers;
+    int32_t actual_workers = (int32_t)lace_workers();
+    MTPNDD_LOG_INFO(
+            "[MTPNDD INIT] workers requested=%d actual=%d dq=%zu bdd_nodes=%zu mtpndd_nodes=%zu cache=%zu\n",
+            requested_workers,
+            actual_workers,
+            g_mtpndd_pal_config.lace_dqsize,
+            g_mtpndd_pal_config.bdd_nodetable_size,
+            g_mtpndd_pal_config.mtpndd_nodetable_size,
+            g_mtpndd_pal_config.op_cache_size);
+    MTPNDD_LOG_INFO(
+            "[MTPNDD INIT] quick_growth=%.3f edge_buckets=%zu nodetable_buckets=%zu slabs(node/edge/nodetable/emap)=%zu/%zu/%zu/%zu\n",
+            g_mtpndd_pal_config.quick_growth_threshold,
+            g_mtpndd_pal_config.edge_bucket_count,
+            g_mtpndd_pal_config.nodetable_bucket_count,
+            g_mtpndd_pal_config.node_slab_capacity,
+            g_mtpndd_pal_config.edge_entry_slab_capacity,
+            g_mtpndd_pal_config.nodetable_entry_slab_capacity,
+            g_mtpndd_pal_config.edge_map_slab_capacity);
+#else
+    (void)requested;
+#endif
 }
 
 static bool mtpndd_lace_init(void) {

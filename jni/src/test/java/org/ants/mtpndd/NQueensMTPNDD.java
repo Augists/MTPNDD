@@ -61,7 +61,7 @@ public final class NQueensMTPNDD {
 
             MTPNDD[] rowRequirements = new MTPNDD[n];
             for (int row = 0; row < n; row++) {
-                MTPNDD clause = MTPNDD.terminalFalse().ref();
+                MTPNDD clause = MTPNDD.getFalse().ref();
                 for (int col = 0; col < n; col++) {
                     clause = orRelease(clause, vars[row][col].ref());
                 }
@@ -77,7 +77,7 @@ public final class NQueensMTPNDD {
             }
             timings.mark("constraints");
 
-            MTPNDD formula = MTPNDD.terminalTrue().ref();
+            MTPNDD formula = MTPNDD.getTrue().ref();
             for (MTPNDD requirement : rowRequirements) {
                 formula = andRelease(formula, requirement.ref());
             }
@@ -188,7 +188,7 @@ public final class NQueensMTPNDD {
                                                MTPNDD[][] vars,
                                                MTPNDD[][] notVars) {
         MTPNDD guard = vars[row][col].ref();
-        MTPNDD constraints = MTPNDD.terminalTrue();
+        MTPNDD constraints = MTPNDD.getTrue();
 
         for (int otherCol = 0; otherCol < n; otherCol++) {
             if (otherCol != col) {
