@@ -45,6 +45,9 @@ static _Atomic size_t g_mtpndd_gc_posthook_count = 0;
  ********************************/
 static bool mtpndd_lace_init(void);
 static void mtpndd_gc_run_hooks(mtpndd_gc_hook_t *hooks, size_t count);
+
+mtpndd_error_t mtpndd_temp_refs_runtime_init(void);
+void mtpndd_temp_refs_runtime_shutdown(void);
 static void mtpndd_gc_hook_sylvan_pre(WorkerP *worker, Task *task);
 static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task);
 static void mtpndd_gc_hook_mtpndd_pre(void);
@@ -111,10 +114,8 @@ const char* mtpndd_error_messages[] = {
     "Out of memory",
     "Invalid field ID",
     "Null pointer",
-    "Capacity exceeded",
     "Parallel initialization failed",
     "BDD operation failed",
-    "Thread safety error",
 
     "Unknown error"
 };

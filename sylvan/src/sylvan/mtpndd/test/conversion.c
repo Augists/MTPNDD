@@ -27,7 +27,7 @@ static mtpndd_t *checked_node(mtpndd_t *node) {
     return node;
 }
 
-// 生成合法的 IPv4 地址，每个 octet 取值 0-255
+// Generate a random IPv4 address with each octet in range 0-255.
 static uint32_t generate_random_ip(void) {
     uint32_t ip = 0;
     for (int i = 0; i < 4; ++i) {
@@ -57,7 +57,7 @@ static void print_ip_list(const char *label, const uint32_t *ips, size_t count) 
 }
 
 static mtpndd_bdd_t build_octet_bdd(uint32_t field_id, uint8_t octet) {
-    // 对单个 8bit 字段生成精确匹配的 BDD
+    // Build an exact-match BDD for a single 8-bit field.
     mtpndd_bdd_t acc = sylvan_ref(sylvan_true);
     for (uint32_t bit = 0; bit < 8; ++bit) {
         mtpndd_bdd_t literal = (octet & (1u << bit))
@@ -72,7 +72,7 @@ static mtpndd_bdd_t build_octet_bdd(uint32_t field_id, uint8_t octet) {
 }
 
 static mtpndd_bdd_t build_ip_exact_bdd(const uint32_t field_ids[4], uint32_t ip) {
-    // 将 32 位 IP 拆成 4 个 8bit 字段并组合成一个完整的 BDD
+    // Split a 32-bit IP into four 8-bit fields and combine into a single BDD.
     mtpndd_bdd_t acc = sylvan_ref(sylvan_true);
     for (int i = 0; i < 4; ++i) {
         uint8_t octet = (ip >> (8 * i)) & 0xFFu;
@@ -86,7 +86,7 @@ static mtpndd_bdd_t build_ip_exact_bdd(const uint32_t field_ids[4], uint32_t ip)
 }
 
 static mtpndd_bdd_t build_ip_set_bdd(const uint32_t field_ids[4], const uint32_t *ips, size_t count) {
-    // 按照 IP 集合逐个构造精确匹配的 BDD，然后通过 OR 叠加为一个集合
+    // Build an exact-match BDD for each IP and OR them into a set BDD.
     mtpndd_bdd_t acc = sylvan_ref(sylvan_false);
     for (size_t i = 0; i < count; ++i) {
         mtpndd_bdd_t single = build_ip_exact_bdd(field_ids, ips[i]);
@@ -119,7 +119,6 @@ static void print_recording_stats(void) {
 #endif
 
 int main(void) {
-    // 初始化 MTPNDD 运行时
     mtpndd_pal_config_t config = {
         .n_workers = 0,
         .lace_dqsize = 1 << 18,
@@ -136,7 +135,6 @@ int main(void) {
     assert_success(mtpndd_init(&config));
     printf(">> mtpndd_init succeeded\n");
 
-    // 为 IP 的四个 octet 分别声明 8bit 字段
     uint32_t ip_field_ids[4];
     for (int i = 0; i < 4; ++i) {
         assert_success(mtpndd_declare_field(8));
@@ -148,7 +146,6 @@ int main(void) {
     uint32_t ip_set_a[ip_set_size];
     uint32_t ip_set_b[ip_set_size];
 
-    // 生成两组随机 IP 集合，用于模拟业务场景中的地址列表
     for (size_t i = 0; i < ip_set_size; ++i) {
         ip_set_a[i] = generate_random_ip();
         ip_set_b[i] = generate_random_ip();
@@ -157,7 +154,6 @@ int main(void) {
     print_ip_list("IP group A", ip_set_a, ip_set_size);
     print_ip_list("IP group B", ip_set_b, ip_set_size);
 
-    // 将 IP 集合转换为 Sylvan 的 BDD 表示，后续可直接进行布尔运算
     mtpndd_bdd_t ip_a_bdd = build_ip_set_bdd(ip_field_ids, ip_set_a, ip_set_size);
     mtpndd_bdd_t ip_b_bdd = build_ip_set_bdd(ip_field_ids, ip_set_b, ip_set_size);
 
@@ -165,9 +161,8 @@ int main(void) {
     mtpndd_t *ip_b_node = NULL;
     assert_success(mtbdd_to_mtpndd(ip_a_bdd, &ip_a_node));
     assert_success(mtbdd_to_mtpndd(ip_b_bdd, &ip_b_node));
-    // TODO: 需要实现mtpndd的printDot来验证mtpndd结果的正确性
 
-    // 对集合完成 roundtrip 检查，确保转换流程无信息丢失
+    // Roundtrip check: converting back to MTBDD must yield the original BDD.
     mtpndd_bdd_t ip_a_back = sylvan_false;
     mtpndd_bdd_t ip_b_back = sylvan_false;
     assert_success(mtpndd_to_mtbdd(ip_a_node, &ip_a_back));

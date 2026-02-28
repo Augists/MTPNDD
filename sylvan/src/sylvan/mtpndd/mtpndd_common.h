@@ -62,6 +62,21 @@ static inline size_t mtpndd_hash_u64(uint64_t key) {
     return (size_t)value;
 }
 
+static inline size_t mtpndd_round_up_pow2(size_t v) {
+    if (v == 0) return 1;
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    if (sizeof(size_t) == 8) {
+        v |= v >> 32;
+    }
+    v++;
+    return v;
+}
+
 /********************************
  * Error handling system
  ********************************/
@@ -74,10 +89,8 @@ typedef enum mtpndd_error_e {
     MTPNDD_ERROR_OUT_OF_MEMORY,     // Out of memory
     MTPNDD_ERROR_INVALID_FIELD,     // Invalid field
     MTPNDD_ERROR_NULL_POINTER,      // Null pointer
-    MTPNDD_ERROR_CAPACITY_EXCEEDED, // Capacity exceeded
     MTPNDD_ERROR_PARALLEL_INIT,     // Parallel initialization failed
     MTPNDD_ERROR_BDD_OPERATION,     // BDD operation failed
-    MTPNDD_ERROR_THREAD_SAFETY,     // Thread safety error
 
     MTPNDD_ERROR_UNKNOWN            // Unknown error
 } mtpndd_error_t;
@@ -341,7 +354,5 @@ mtpndd_error_t mtpndd_quit();
 typedef void (*mtpndd_gc_hook_t)(void);
 void mtpndd_gc_hook_pregc(mtpndd_gc_hook_t hook);
 void mtpndd_gc_hook_postgc(mtpndd_gc_hook_t hook);
-void mtpndd_gc_run_prehooks(void);
-void mtpndd_gc_run_posthooks(void);
 
 #endif // MTPNDD_COMMON_H

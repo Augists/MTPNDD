@@ -22,7 +22,9 @@ static void gc_internal(void);
 static void grow_internal(void);
 static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket_count);
 static void mtpndd_nodetable_maybe_rehash(mtpndd_nodetable_t *table);
-static size_t mtpndd_round_up_pow2(size_t v);
+
+void mtpndd_gc_run_prehooks(void);
+void mtpndd_gc_run_posthooks(void);
 
 static void gcOrGrow(void);
 static size_t mtpndd_gc_sweep(void);
@@ -173,12 +175,6 @@ mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge
         if (!entry_edges) {
             continue;
         }
-        if (entry_edges->cached_hash != edges->cached_hash) {
-            continue;
-        }
-        if (entry_edges->edge_count != edges->edge_count) {
-            continue;
-        }
         if (nodetable_edges_equal(entry_edges, edges)) {
             found = entry->node;
             break;
@@ -224,23 +220,6 @@ mtpndd_error_t mtpndd_deref(mtpndd_t *node) {
         return MTPNDD_SUCCESS;
     }
     atomic_fetch_sub(&node->ref_count, 1);
-    /**
-     * lazy free when gc
-     */
-    // uint64_t new_ref_count = __atomic_fetch_sub(&node->ref_count, 1, __ATOMIC_SEQ_CST) - 1;
-    // if (new_ref_count == 0) {
-    //     // Free edges
-    //     if (node->edges) {
-    //         FOR_EACH_ENTRY_IN_ALL_BUCKETS(node->edges, entry) {
-    //             mtpndd_deref(entry->child);
-    //             free(entry);
-    //         }
-    //         free(node->edges->buckets);
-    //         free(node->edges);
-    //     }
-    //     // Free node
-    //     free(node);
-    // }
     return MTPNDD_SUCCESS;
 }
 
@@ -455,8 +434,6 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
         if (bucket_had_entries) {
             MTPNDD_STAT_ADD(nodetable_collision_total, 1);
         }
-        // 删除这里的 reused 统计，避免重复计数（已在 find_node_in_nodetable 中统计）
-        // MTPNDD_STAT_ADD(nodes_reused_total, 1);
         MTPNDD_MK_FINISH();
 #endif
         *result = existing_node;
@@ -499,7 +476,6 @@ static void gcOrGrow(void) {
             (size_t)g_mtpndd_stats.node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size,
             g_mtpndd_pal_config.quick_growth_threshold);
-    // ← 删除这里的 prehooks 调用（移到 gc_internal() 中）
     mtpndd_log_memory_pools("pre-gc");
 #endif
 
@@ -526,11 +502,9 @@ static void gcOrGrow(void) {
 
     sylvan_gc();
 
-    // 清除 GC 运行标志（原子操作）
     atomic_store(&g_mtpndd_gc_running, false);
 
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
-    // ← 删除这里的 posthooks 调用（移到 gc_internal() 中）
     mtpndd_log_memory_pools("post-gc");
     MTPNDD_LOG_DEBUG("[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
             (size_t)g_mtpndd_stats.node_count,
@@ -711,21 +685,6 @@ static void mtpndd_nodetable_maybe_rehash(mtpndd_nodetable_t *table) {
         }
         pthread_mutex_unlock(&table->rehash_mutex);
     }
-}
-
-static size_t mtpndd_round_up_pow2(size_t v) {
-    if (v == 0) return 1;
-    v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    if (sizeof(size_t) == 8) {
-        v |= v >> 32;
-    }
-    v++;
-    return v;
 }
 
 static void grow_internal(void) {

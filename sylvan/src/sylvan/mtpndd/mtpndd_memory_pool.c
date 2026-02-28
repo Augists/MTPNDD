@@ -290,18 +290,7 @@ void mtpndd_memory_pools_init(void) {
         g_edge_bucket_count = MTPNDD_DEFAULT_EDGE_BUCKET_COUNT;
     }
     // round up to power of two (keep default at 8)
-    size_t _tmp = g_edge_bucket_count;
-    _tmp--;
-    _tmp |= _tmp >> 1;
-    _tmp |= _tmp >> 2;
-    _tmp |= _tmp >> 4;
-    _tmp |= _tmp >> 8;
-    _tmp |= _tmp >> 16;
-    if (sizeof(size_t) == 8) {
-        _tmp |= _tmp >> 32;
-    }
-    _tmp++;
-    g_edge_bucket_count = _tmp;
+    g_edge_bucket_count = mtpndd_round_up_pow2(g_edge_bucket_count);
     g_mtpndd_pal_config.edge_bucket_count = g_edge_bucket_count;
 
     size_t offset = sizeof(mtpndd_edge_t);

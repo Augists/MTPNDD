@@ -31,7 +31,6 @@ static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mt
 static void mtpndd_edge_map_reset(mtpndd_edge_t *edges);
 void mtpndd_edge_map_free(mtpndd_edge_t *edges);
 static void mtpndd_edge_map_maybe_rehash(mtpndd_edge_t *edges);
-static size_t mtpndd_round_up_pow2(size_t v);
 static bool mtpndd_edge_map_rehash(mtpndd_edge_t *edges, size_t new_bucket_count);
 
 // TASK declaration for parallel mtpndd_and_rec
@@ -89,10 +88,10 @@ static size_t g_mtpndd_temp_ref_pool_count = 0;
 static __thread mtpndd_temp_ref_pool_t g_mtpndd_temp_ref_tls_pool = {0};
 static __thread bool g_mtpndd_temp_ref_tls_pool_initialized = false;
 
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 static _Atomic uint64_t g_mtpndd_temp_refs_grow_total = 0;
 static _Atomic uint64_t g_mtpndd_temp_refs_peak_capacity = 0;
 
-#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 static inline void mtpndd_temp_refs_record_capacity(size_t capacity) {
     uint64_t observed = atomic_load_explicit(&g_mtpndd_temp_refs_peak_capacity, memory_order_relaxed);
     uint64_t candidate = (uint64_t)capacity;
@@ -369,21 +368,6 @@ static void mtpndd_edge_map_maybe_rehash(mtpndd_edge_t *edges) {
         size_t target = edges->bucket_count ? edges->bucket_count * 2 : (g_mtpndd_pal_config.edge_bucket_count ? g_mtpndd_pal_config.edge_bucket_count * 2 : 16);
         mtpndd_edge_map_rehash(edges, target);
     }
-}
-
-static size_t mtpndd_round_up_pow2(size_t v) {
-    if (v == 0) return 1;
-    v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    if (sizeof(size_t) == 8) {
-        v |= v >> 32;
-    }
-    v++;
-    return v;
 }
 
 /**
@@ -2301,6 +2285,7 @@ void mtpndd_temp_refs_runtime_shutdown(void) {
     }
 }
 
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 uint64_t mtpndd_temp_refs_grow_total(void) {
     return atomic_load_explicit(&g_mtpndd_temp_refs_grow_total, memory_order_relaxed);
 }
@@ -2308,3 +2293,4 @@ uint64_t mtpndd_temp_refs_grow_total(void) {
 uint64_t mtpndd_temp_refs_peak_capacity(void) {
     return atomic_load_explicit(&g_mtpndd_temp_refs_peak_capacity, memory_order_relaxed);
 }
+#endif
