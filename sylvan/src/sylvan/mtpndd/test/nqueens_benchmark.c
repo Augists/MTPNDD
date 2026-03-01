@@ -172,7 +172,6 @@ static bool run_benchmark(size_t n) {
     size_t bdd_cache = 320000;
     size_t ndd_size = 100000000;
 
-    // Sylvan requires power-of-two table sizes
     bdd_size = next_pow2(bdd_size);
     bdd_cache = next_pow2(bdd_cache);
     ndd_size = next_pow2(ndd_size);
@@ -208,7 +207,6 @@ static bool run_benchmark(size_t n) {
         fprintf(stderr, "allocation failed\n");
         free(or_batch);
         free(imp_batch);
-        mtpndd_quit();
         return false;
     }
 
@@ -382,7 +380,6 @@ int main(int argc, char **argv) {
     }
     size_t n = (size_t)parsed;
 
-    // Parse optional workers parameter
     if (argc == 3) {
         long workers_parsed = strtol(argv[2], &endptr, 10);
         if (*argv[2] == '\0' || (endptr && *endptr != '\0') || workers_parsed < 0) {

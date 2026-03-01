@@ -141,6 +141,14 @@ void mtpndd_clear_error();
 #define MTPNDD_AND_PENDING_FLUSH_THRESHOLD 256
 #endif
 
+// Spawn granularity: minimum product of edge counts (edges_a * edges_b)
+// required before spawning a parallel sub-task.
+// Larger values reduce task overhead but limit parallelism.
+// Override at compile time, e.g.: cc ... -DMTPNDD_SPAWN_THRESHOLD=16
+#ifndef MTPNDD_SPAWN_THRESHOLD
+#define MTPNDD_SPAWN_THRESHOLD 2
+#endif
+
 /********************************
  * Global config definitions
  ********************************/

@@ -68,7 +68,7 @@ static inline bool mtpndd_should_spawn(mtpndd_t *a, mtpndd_t *b) {
     if (a->field_id <= 2 && b->field_id <= 2) return true;
 
     // Otherwise, only spawn when the pairwise work is substantial.
-    return prod >= 64;
+    return prod >= MTPNDD_SPAWN_THRESHOLD;
 }
 
 typedef struct {
