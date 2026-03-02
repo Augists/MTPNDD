@@ -719,7 +719,20 @@ Java_org_ants_mtpndd_MTPNDDEngine_getStatsNative(JNIEnv *env, jclass clazz)
         (jlong)stats->nodetable_entry_pool_slab_total,
         (jlong)stats->edge_map_pool_acquire_total,
         (jlong)stats->edge_map_pool_release_total,
-        (jlong)stats->edge_map_pool_slab_total
+        (jlong)stats->edge_map_pool_slab_total,
+        (jlong)stats->and_call_total,
+        (jlong)stats->or_call_total,
+        (jlong)stats->not_call_total,
+        (jlong)stats->diff_call_total,
+        (jlong)stats->and_call_wall_ns,
+        (jlong)stats->or_call_wall_ns,
+        (jlong)stats->not_call_wall_ns,
+        (jlong)stats->diff_call_wall_ns,
+        (jlong)stats->and_time_ns,
+        (jlong)stats->or_time_ns,
+        (jlong)stats->not_time_ns,
+        (jlong)stats->and_spawn_total,
+        (jlong)stats->and_pending_flush_total
     };
     jsize len = (jsize)(sizeof(values) / sizeof(values[0]));
 #else
@@ -733,7 +746,7 @@ Java_org_ants_mtpndd_MTPNDDEngine_getStatsNative(JNIEnv *env, jclass clazz)
     (*env)->SetLongArrayRegion(env, arr, 0, len, values);
 #endif
     jobject result = (*env)->NewObject(env, statsClass, ctor,
-            (jlong)stats->node_count,
+            (jlong)__atomic_load_n(&g_mtpndd_node_count, __ATOMIC_RELAXED),
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
             JNI_TRUE,
 #else

@@ -337,8 +337,8 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         goto cleanup;
     }
 
-    const mtpndd_stats_t *stats = mtpndd_get_stats();
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    const mtpndd_stats_t *stats = mtpndd_get_stats();
     print_run_stats(stats);
 
     mtpndd_memory_pool_stats_t pool_stats = {0};
@@ -354,8 +354,9 @@ static bool run_case(size_t size, nqueens_metrics_t *metrics) {
         metrics->expected = expected;
         metrics->solutions = solutions;
         metrics->seconds = elapsed;
-        metrics->mtpndd_nodes = stats ? stats->node_count : 0;
+        metrics->mtpndd_nodes = __atomic_load_n(&g_mtpndd_node_count, __ATOMIC_RELAXED);
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        const mtpndd_stats_t *stats = mtpndd_get_stats();
         if (stats) {
             metrics->mtpndd_nodes_created = stats->nodes_created_total;
             metrics->mtpndd_nodes_reused = stats->nodes_reused_total;
@@ -515,7 +516,7 @@ static double timespec_diff_seconds(const struct timespec *start, const struct t
 
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 static void log_formula_progress(const char *phase, size_t current, size_t total) {
-    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    size_t nodes = __atomic_load_n(&g_mtpndd_node_count, __ATOMIC_RELAXED);
     printf("[nqueens] %s %zu/%zu nodes=%zu\n",
            phase ? phase : "phase",
            current, total ? total : 0, nodes);

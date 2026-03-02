@@ -366,7 +366,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_MK_SWITCH(MTPNDD_MK_GC_OR_GROW);
 #endif
-    if (g_mtpndd_stats.node_count >= g_mtpndd_pal_config.mtpndd_nodetable_size) {
+    if (g_mtpndd_node_count >= g_mtpndd_pal_config.mtpndd_nodetable_size) {
         gcOrGrow();
     }
     // 3. create new node
@@ -452,7 +452,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     atomic_fetch_add_explicit(&nodetable->entry_count, 1, memory_order_relaxed);
     mtpndd_nodetable_unlock_hash(nodetable, edges->cached_hash);
     mtpndd_nodetable_maybe_rehash(nodetable);
-    __atomic_add_fetch(&g_mtpndd_stats.node_count, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_mtpndd_node_count, 1, __ATOMIC_RELAXED);
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(nodes_created_total, 1);
     if (bucket_had_entries) {
@@ -473,7 +473,7 @@ static void gcOrGrow(void) {
     clock_gettime(CLOCK_MONOTONIC, &gc_timer_start);
     MTPNDD_LOG_DEBUG(
             "[MTPNDD DEBUG] gcOrGrow start node_count=%zu capacity=%zu threshold=%.2f\n",
-            (size_t)g_mtpndd_stats.node_count,
+            (size_t)g_mtpndd_node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size,
             g_mtpndd_pal_config.quick_growth_threshold);
     mtpndd_log_memory_pools("pre-gc");
@@ -487,10 +487,10 @@ static void gcOrGrow(void) {
 
     gc_internal();
 
-    if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_stats.node_count
+    if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_node_count
             < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
         MTPNDD_LOG_DEBUG("[MTPNDD DEBUG] triggering grow (node_count=%zu capacity=%zu)\n",
-                (size_t)g_mtpndd_stats.node_count,
+                (size_t)g_mtpndd_node_count,
                 (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
         grow_internal();
     }
@@ -507,7 +507,7 @@ static void gcOrGrow(void) {
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     mtpndd_log_memory_pools("post-gc");
     MTPNDD_LOG_DEBUG("[MTPNDD DEBUG] gcOrGrow end node_count=%zu capacity=%zu\n",
-            (size_t)g_mtpndd_stats.node_count,
+            (size_t)g_mtpndd_node_count,
             (size_t)g_mtpndd_pal_config.mtpndd_nodetable_size);
 
     struct timespec gc_timer_end = {0};
@@ -529,7 +529,7 @@ static void gc_internal(void) {
     mtpndd_gc_unlock_all_tables();
 
     if (reclaimed > 0) {
-        __atomic_sub_fetch(&g_mtpndd_stats.node_count, reclaimed, __ATOMIC_RELAXED);
+        __atomic_sub_fetch(&g_mtpndd_node_count, reclaimed, __ATOMIC_RELAXED);
 
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         MTPNDD_STAT_SET(nodes_collected_last, reclaimed);

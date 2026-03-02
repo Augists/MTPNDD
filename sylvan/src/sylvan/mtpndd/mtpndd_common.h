@@ -169,8 +169,10 @@ typedef struct mtpndd_pal_config_s {
 
 extern mtpndd_pal_config_t g_mtpndd_pal_config;
 
+// Live node count — runtime state used for GC triggering, not a debug stat.
+extern uint64_t g_mtpndd_node_count;
+
 typedef struct mtpndd_stats_s {
-    uint64_t node_count;
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     uint64_t max_edges_per_node;
     uint64_t bdd_nodes_converted;
@@ -215,6 +217,14 @@ typedef struct mtpndd_stats_s {
     uint64_t nodetable_rehash_total;
     uint64_t nodetable_max_buckets;
     uint64_t and_time_ns;
+    uint64_t and_call_total;
+    uint64_t or_call_total;
+    uint64_t not_call_total;
+    uint64_t diff_call_total;
+    uint64_t and_call_wall_ns;
+    uint64_t or_call_wall_ns;
+    uint64_t not_call_wall_ns;
+    uint64_t diff_call_wall_ns;
     uint64_t and_spawn_total;
     uint64_t and_spawn_same_total;
     uint64_t and_spawn_diff_total;

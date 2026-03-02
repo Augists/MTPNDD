@@ -19,7 +19,8 @@
  * Global singletons and defaults
  ********************************/
 mtpndd_pal_config_t g_mtpndd_pal_config = {0};
-mtpndd_stats_t g_mtpndd_stats = {0};
+uint64_t g_mtpndd_node_count = 0;
+mtpndd_stats_t g_mtpndd_stats;
 mtpndd_field_info_t MTPNDD_TERMINAL_FIELD = {0, 0, 0, NULL, NULL, NULL, NULL};
 mtpndd_config_t g_mtpndd_config = {
     .field_count = 0,
@@ -654,10 +655,11 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     mtpndd_gc_hook_pregc(mtpndd_gc_hook_mtpndd_pre);
     mtpndd_gc_hook_postgc(mtpndd_gc_hook_mtpndd_post);
 
+    g_mtpndd_node_count = 0;
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     memset(&g_mtpndd_stats, 0, sizeof(g_mtpndd_stats));
 #endif
-    
+
     return MTPNDD_SUCCESS;
 }
 
@@ -727,7 +729,7 @@ static void mtpndd_gc_hook_sylvan_post(WorkerP *worker, Task *task) {
 
 static void mtpndd_gc_hook_mtpndd_pre(void) {
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
-    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    size_t nodes = __atomic_load_n(&g_mtpndd_node_count, __ATOMIC_RELAXED);
     size_t capacity = g_mtpndd_pal_config.mtpndd_nodetable_size;
     MTPNDD_LOG_INFO("[MTPNDD GC] start nodes=%zu capacity=%zu\n", nodes, capacity);
 #endif
@@ -735,7 +737,7 @@ static void mtpndd_gc_hook_mtpndd_pre(void) {
 
 static void mtpndd_gc_hook_mtpndd_post(void) {
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_INFO
-    size_t nodes = __atomic_load_n(&g_mtpndd_stats.node_count, __ATOMIC_RELAXED);
+    size_t nodes = __atomic_load_n(&g_mtpndd_node_count, __ATOMIC_RELAXED);
     unsigned long long reclaimed = 0;
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     reclaimed = __atomic_load_n(&g_mtpndd_stats.nodes_collected_last, __ATOMIC_RELAXED);
@@ -804,6 +806,7 @@ mtpndd_error_t mtpndd_quit() {
     sylvan_quit();
 
     memset(&g_mtpndd_pal_config, 0, sizeof(g_mtpndd_pal_config));
+    g_mtpndd_node_count = 0;
     memset(&g_mtpndd_stats, 0, sizeof(g_mtpndd_stats));
 
     mtpndd_clear_error();

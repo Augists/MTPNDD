@@ -34,6 +34,19 @@ public final class MTPNDDStats {
     private static final int IDX_EDGE_MAP_POOL_ACQUIRE = 25;
     private static final int IDX_EDGE_MAP_POOL_RELEASE = 26;
     private static final int IDX_EDGE_MAP_POOL_SLAB = 27;
+    private static final int IDX_AND_CALL_TOTAL = 28;
+    private static final int IDX_OR_CALL_TOTAL = 29;
+    private static final int IDX_NOT_CALL_TOTAL = 30;
+    private static final int IDX_DIFF_CALL_TOTAL = 31;
+    private static final int IDX_AND_CALL_WALL_NS = 32;
+    private static final int IDX_OR_CALL_WALL_NS = 33;
+    private static final int IDX_NOT_CALL_WALL_NS = 34;
+    private static final int IDX_DIFF_CALL_WALL_NS = 35;
+    private static final int IDX_AND_TIME_NS = 36;
+    private static final int IDX_OR_TIME_NS = 37;
+    private static final int IDX_NOT_TIME_NS = 38;
+    private static final int IDX_AND_SPAWN_TOTAL = 39;
+    private static final int IDX_AND_PENDING_FLUSH_TOTAL = 40;
 
     private final long nodeCount;
     private final boolean recordingEnabled;
@@ -77,6 +90,22 @@ public final class MTPNDDStats {
         return metric(IDX_CACHE_MISSES);
     }
 
+    public long gcRuns() {
+        return metric(IDX_GC_RUNS);
+    }
+
+    public long gcPauseNs() {
+        return metric(IDX_GC_PAUSE_NS);
+    }
+
+    public long edgeLockSpinTotal() {
+        return metric(IDX_EDGE_LOCK_SPIN);
+    }
+
+    public long edgeLockWaitNs() {
+        return metric(IDX_EDGE_LOCK_WAIT_NS);
+    }
+
     public long nodePoolAcquireTotal() {
         return metric(IDX_NODE_POOL_ACQUIRE);
     }
@@ -91,6 +120,58 @@ public final class MTPNDDStats {
 
     public long edgeMapPoolAcquireTotal() {
         return metric(IDX_EDGE_MAP_POOL_ACQUIRE);
+    }
+
+    public long andCallTotal() {
+        return metric(IDX_AND_CALL_TOTAL);
+    }
+
+    public long orCallTotal() {
+        return metric(IDX_OR_CALL_TOTAL);
+    }
+
+    public long notCallTotal() {
+        return metric(IDX_NOT_CALL_TOTAL);
+    }
+
+    public long diffCallTotal() {
+        return metric(IDX_DIFF_CALL_TOTAL);
+    }
+
+    public long andCallWallNs() {
+        return metric(IDX_AND_CALL_WALL_NS);
+    }
+
+    public long orCallWallNs() {
+        return metric(IDX_OR_CALL_WALL_NS);
+    }
+
+    public long notCallWallNs() {
+        return metric(IDX_NOT_CALL_WALL_NS);
+    }
+
+    public long diffCallWallNs() {
+        return metric(IDX_DIFF_CALL_WALL_NS);
+    }
+
+    public long andTimeNs() {
+        return metric(IDX_AND_TIME_NS);
+    }
+
+    public long orTimeNs() {
+        return metric(IDX_OR_TIME_NS);
+    }
+
+    public long notTimeNs() {
+        return metric(IDX_NOT_TIME_NS);
+    }
+
+    public long andSpawnTotal() {
+        return metric(IDX_AND_SPAWN_TOTAL);
+    }
+
+    public long andPendingFlushTotal() {
+        return metric(IDX_AND_PENDING_FLUSH_TOTAL);
     }
 
     public long[] rawMetrics() {

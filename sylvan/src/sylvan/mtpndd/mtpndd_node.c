@@ -1399,35 +1399,80 @@ static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **r
  * MTPNDD operations (wrappers)
  ********************************/
 mtpndd_t *mtpndd_and(mtpndd_t *a, mtpndd_t *b) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    MTPNDD_STAT_ADD(and_call_total, 1);
+    MTPNDD_RECORD_TIME_START(_t_and_call);
+    mtpndd_t *result = RUN(mtpndd_and_rec, a, b);
+    MTPNDD_RECORD_TIME_END(and_call_wall_ns, _t_and_call);
+    return result;
+#else
     return RUN(mtpndd_and_rec, a, b);
+#endif
 }
 
 mtpndd_t *mtpndd_or(mtpndd_t *a, mtpndd_t *b) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    MTPNDD_STAT_ADD(or_call_total, 1);
+    MTPNDD_RECORD_TIME_START(_t_or_call);
     mtpndd_t *result = NULL;
     MTPNDD_RECORD_TIME_START(_t_or);
     if (mtpndd_or_rec(a, b, &result) != MTPNDD_SUCCESS) {
+        MTPNDD_RECORD_TIME_END(or_call_wall_ns, _t_or_call);
         return NULL;
     }
     MTPNDD_RECORD_TIME_END(or_time_ns, _t_or);
+    MTPNDD_RECORD_TIME_END(or_call_wall_ns, _t_or_call);
     return result;
+#else
+    mtpndd_t *result = NULL;
+    if (mtpndd_or_rec(a, b, &result) != MTPNDD_SUCCESS) {
+        return NULL;
+    }
+    return result;
+#endif
 }
 
 mtpndd_t *mtpndd_not(mtpndd_t *a) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    MTPNDD_STAT_ADD(not_call_total, 1);
+    MTPNDD_RECORD_TIME_START(_t_not_call);
     mtpndd_t *result = NULL;
     MTPNDD_RECORD_TIME_START(_t_not);
     if (mtpndd_not_rec(a, &result) != MTPNDD_SUCCESS) {
+        MTPNDD_RECORD_TIME_END(not_call_wall_ns, _t_not_call);
         return NULL;
     }
     MTPNDD_RECORD_TIME_END(not_time_ns, _t_not);
+    MTPNDD_RECORD_TIME_END(not_call_wall_ns, _t_not_call);
     return result;
+#else
+    mtpndd_t *result = NULL;
+    if (mtpndd_not_rec(a, &result) != MTPNDD_SUCCESS) {
+        return NULL;
+    }
+    return result;
+#endif
 }
 
 mtpndd_t *mtpndd_diff(mtpndd_t *a, mtpndd_t *b) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    MTPNDD_STAT_ADD(diff_call_total, 1);
+    MTPNDD_RECORD_TIME_START(_t_diff_call);
+    mtpndd_t *not_b = NULL;
+    if (mtpndd_not_rec(b, &not_b) != MTPNDD_SUCCESS) {
+        MTPNDD_RECORD_TIME_END(diff_call_wall_ns, _t_diff_call);
+        return NULL;
+    }
+    mtpndd_t *result = mtpndd_and(a, not_b);
+    MTPNDD_RECORD_TIME_END(diff_call_wall_ns, _t_diff_call);
+    return result;
+#else
     mtpndd_t *not_b = NULL;
     if (mtpndd_not_rec(b, &not_b) != MTPNDD_SUCCESS) {
         return NULL;
     }
     return mtpndd_and(a, not_b);
+#endif
 }
 
 mtpndd_t *mtpndd_exist(mtpndd_t *a, uint32_t field) {
