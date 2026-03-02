@@ -106,6 +106,7 @@ bool mtpndd_is_terminal(mtpndd_t *ndd);
  ********************************/
 mtpndd_t *mtpndd_and(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_or(mtpndd_t *a, mtpndd_t *b);
+mtpndd_t *mtpndd_or_demorgan(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_not(mtpndd_t *a);
 mtpndd_t *mtpndd_diff(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_exist(mtpndd_t *a, uint32_t field);
