@@ -79,6 +79,51 @@ void mtpndd_gc_before_sylvan(void) {
     atomic_store(&g_mtpndd_gc_running, false);
 }
 
+/**
+ * Sylvan GC mark callback: walk all live MTPNDD nodes and mark their
+ * BDD edge labels so that Sylvan's clear-and-mark phase preserves them.
+ *
+ * Called from sylvan_clear_and_mark via the mark_list (registered with
+ * sylvan_gc_add_mark).  Runs inside NEWFRAME on a Lace worker, so
+ * CALL/SPAWN/SYNC are available through __lace_worker/__lace_dq_head.
+ */
+void mtpndd_gc_mark_bdd_labels(WorkerP *__lace_worker, Task *__lace_dq_head) {
+    (void)__lace_dq_head;
+
+    for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
+        mtpndd_nodetable_t *nodetable = g_mtpndd_config.node_tables_by_field[field];
+        if (!nodetable) continue;
+
+        size_t bucket_count = nodetable->nodetable_bucket_count;
+        for (size_t i = 0; i < bucket_count; ++i) {
+            mtpndd_nodetable_bucket_entry_t *entry = nodetable->buckets[i];
+            while (entry) {
+                mtpndd_node_t *node = entry->node;
+                if (!node) { entry = entry->next; continue; }
+
+                mtpndd_edge_t *edges = node->edges;
+                if (edges && edges->buckets) {
+                    size_t edge_bucket_count = edges->bucket_count
+                        ? edges->bucket_count
+                        : g_mtpndd_pal_config.edge_bucket_count;
+                    for (size_t eb = 0; eb < edge_bucket_count; ++eb) {
+                        edge_bucket_entry_t *edge_entry = edges->buckets[eb];
+                        while (edge_entry) {
+                            mtpndd_bdd_t label = atomic_load_explicit(
+                                &edge_entry->label, memory_order_relaxed);
+                            if (label != sylvan_false && label != sylvan_true) {
+                                CALL(mtbdd_gc_mark_rec, label);
+                            }
+                            edge_entry = edge_entry->next;
+                        }
+                    }
+                }
+                entry = entry->next;
+            }
+        }
+    }
+}
+
 
 mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     mtpndd_nodetable_t *table = (mtpndd_nodetable_t *)malloc(sizeof(mtpndd_nodetable_t));

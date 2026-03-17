@@ -655,6 +655,10 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     mtpndd_gc_hook_pregc(mtpndd_gc_hook_mtpndd_pre);
     mtpndd_gc_hook_postgc(mtpndd_gc_hook_mtpndd_post);
 
+    // Register mark callback so Sylvan GC preserves BDD nodes used as
+    // MTPNDD edge labels (see docs/sylvan_gc_bdd_label_bug.md).
+    sylvan_gc_add_mark(mtpndd_gc_mark_bdd_labels);
+
     g_mtpndd_node_count = 0;
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     memset(&g_mtpndd_stats, 0, sizeof(g_mtpndd_stats));

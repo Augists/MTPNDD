@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
+#include "lace.h"
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
 #include <time.h>
 #endif
@@ -166,5 +167,9 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result);
 
 // Run MTPNDD GC before Sylvan GC (called from Sylvan GC pre-hook).
 void mtpndd_gc_before_sylvan(void);
+
+// Sylvan GC mark callback: mark BDD nodes referenced by MTPNDD edge labels.
+// Signature matches gc_hook_cb (WorkerP *, Task *) for sylvan_gc_add_mark.
+void mtpndd_gc_mark_bdd_labels(WorkerP *worker, Task *task);
 
 #endif // MTPNDD_NODETABLE_H
