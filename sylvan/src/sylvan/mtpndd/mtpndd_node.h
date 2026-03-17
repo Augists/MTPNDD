@@ -110,6 +110,13 @@ mtpndd_t *mtpndd_or_demorgan(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_not(mtpndd_t *a);
 mtpndd_t *mtpndd_diff(mtpndd_t *a, mtpndd_t *b);
 mtpndd_t *mtpndd_exist(mtpndd_t *a, uint32_t field);
+
+/********************************
+ * MTPNDD batch operations
+ ********************************/
+mtpndd_t **mtpndd_and_batch(mtpndd_t **lefts, mtpndd_t **rights, size_t count);
+mtpndd_t *mtpndd_or_reduce(mtpndd_t **values, size_t count);
+mtpndd_t *mtpndd_and_reduce(mtpndd_t **values, size_t count);
 double mtpndd_satcount(mtpndd_t *node);
 double mtpndd_satcount_ndd(mtpndd_t *node);
 double mtpndd_satcount_mtbdd(mtpndd_t *node);

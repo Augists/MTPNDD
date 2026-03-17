@@ -1,6 +1,7 @@
 package org.ants.mtpndd;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Runtime façade responsible for loading the native library and managing the global MTPNDD state.
@@ -9,6 +10,82 @@ import java.util.Objects;
  * relying on this class for global lifecycle management (initialisation, shutdown, configuration).</p>
  */
 public final class MTPNDDEngine {
+
+    // ── Timing instrumentation ──
+    private static final AtomicLong andCount = new AtomicLong();
+    private static final AtomicLong andNanos = new AtomicLong();
+    private static final AtomicLong orCount = new AtomicLong();
+    private static final AtomicLong orNanos = new AtomicLong();
+    private static final AtomicLong notCount = new AtomicLong();
+    private static final AtomicLong notNanos = new AtomicLong();
+    private static final AtomicLong diffCount = new AtomicLong();
+    private static final AtomicLong diffNanos = new AtomicLong();
+    private static final AtomicLong existCount = new AtomicLong();
+    private static final AtomicLong existNanos = new AtomicLong();
+    private static final AtomicLong refCount = new AtomicLong();
+    private static final AtomicLong refNanos = new AtomicLong();
+    private static final AtomicLong derefCount = new AtomicLong();
+    private static final AtomicLong derefNanos = new AtomicLong();
+    private static final AtomicLong andBatchCount = new AtomicLong();
+    private static final AtomicLong andBatchNanos = new AtomicLong();
+    private static final AtomicLong andBatchElements = new AtomicLong();
+    private static final AtomicLong orReduceCount = new AtomicLong();
+    private static final AtomicLong orReduceNanos = new AtomicLong();
+    private static final AtomicLong orReduceElements = new AtomicLong();
+    private static final AtomicLong andReduceCount = new AtomicLong();
+    private static final AtomicLong andReduceNanos = new AtomicLong();
+    private static final AtomicLong andReduceElements = new AtomicLong();
+    private static final AtomicLong fromMtbddCount = new AtomicLong();
+    private static final AtomicLong fromMtbddNanos = new AtomicLong();
+    private static final AtomicLong satCountCount = new AtomicLong();
+    private static final AtomicLong satCountNanos = new AtomicLong();
+
+    public static void resetTiming() {
+        andCount.set(0); andNanos.set(0);
+        orCount.set(0); orNanos.set(0);
+        notCount.set(0); notNanos.set(0);
+        diffCount.set(0); diffNanos.set(0);
+        existCount.set(0); existNanos.set(0);
+        refCount.set(0); refNanos.set(0);
+        derefCount.set(0); derefNanos.set(0);
+        andBatchCount.set(0); andBatchNanos.set(0); andBatchElements.set(0);
+        orReduceCount.set(0); orReduceNanos.set(0); orReduceElements.set(0);
+        andReduceCount.set(0); andReduceNanos.set(0); andReduceElements.set(0);
+        fromMtbddCount.set(0); fromMtbddNanos.set(0);
+        satCountCount.set(0); satCountNanos.set(0);
+    }
+
+    public static void printTimingReport() {
+        long totalNanos = andNanos.get() + orNanos.get() + notNanos.get() + diffNanos.get()
+                + existNanos.get() + refNanos.get() + derefNanos.get()
+                + andBatchNanos.get() + orReduceNanos.get() + andReduceNanos.get()
+                + fromMtbddNanos.get() + satCountNanos.get();
+        System.err.println("=== MTPNDD Timing Report ===");
+        printLine("and", andCount.get(), andNanos.get());
+        printLine("or", orCount.get(), orNanos.get());
+        printLine("not", notCount.get(), notNanos.get());
+        printLine("diff", diffCount.get(), diffNanos.get());
+        printLine("exist", existCount.get(), existNanos.get());
+        printLine("ref", refCount.get(), refNanos.get());
+        printLine("deref", derefCount.get(), derefNanos.get());
+        printLine("andBatch", andBatchCount.get(), andBatchNanos.get(),
+                  "elements=" + andBatchElements.get());
+        printLine("orReduce", orReduceCount.get(), orReduceNanos.get(),
+                  "elements=" + orReduceElements.get());
+        printLine("andReduce", andReduceCount.get(), andReduceNanos.get(),
+                  "elements=" + andReduceElements.get());
+        printLine("fromMtbdd", fromMtbddCount.get(), fromMtbddNanos.get());
+        printLine("satCount", satCountCount.get(), satCountNanos.get());
+        System.err.printf("[MTPNDD TOTAL] %.6fs%n", totalNanos / 1e9);
+    }
+
+    private static void printLine(String name, long count, long nanos) {
+        System.err.printf("[MTPNDD %-10s] calls=%-10d time=%.6fs%n", name, count, nanos / 1e9);
+    }
+
+    private static void printLine(String name, long count, long nanos, String extra) {
+        System.err.printf("[MTPNDD %-10s] calls=%-10d time=%.6fs %s%n", name, count, nanos / 1e9, extra);
+    }
     private static final String LIBRARY_PROPERTY = "org.ants.mtpndd.library.path";
 
     static {
@@ -106,7 +183,11 @@ public final class MTPNDDEngine {
     }
 
     static synchronized MTPNDD fromMtbdd(long handle) {
-        return wrap(fromMtbddNative(handle));
+        long t = System.nanoTime();
+        MTPNDD result = wrap(fromMtbddNative(handle));
+        fromMtbddNanos.addAndGet(System.nanoTime() - t);
+        fromMtbddCount.incrementAndGet();
+        return result;
     }
 
     static synchronized MTPNDD getVar(int fieldId, int index) {
@@ -129,45 +210,75 @@ public final class MTPNDDEngine {
 
     static synchronized void ref(MTPNDD node) {
         Objects.requireNonNull(node, "node");
+        long t = System.nanoTime();
         refNative(node.nativePtr);
+        refNanos.addAndGet(System.nanoTime() - t);
+        refCount.incrementAndGet();
     }
 
     static synchronized void deref(MTPNDD node) {
         Objects.requireNonNull(node, "node");
+        long t = System.nanoTime();
         derefNative(node.nativePtr);
+        derefNanos.addAndGet(System.nanoTime() - t);
+        derefCount.incrementAndGet();
     }
 
     static synchronized MTPNDD and(MTPNDD left, MTPNDD right) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        return wrap(andNative(left.nativePtr, right.nativePtr));
+        long t = System.nanoTime();
+        MTPNDD result = wrap(andNative(left.nativePtr, right.nativePtr));
+        andNanos.addAndGet(System.nanoTime() - t);
+        andCount.incrementAndGet();
+        return result;
     }
 
     static synchronized MTPNDD or(MTPNDD left, MTPNDD right) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        return wrap(orNative(left.nativePtr, right.nativePtr));
+        long t = System.nanoTime();
+        MTPNDD result = wrap(orNative(left.nativePtr, right.nativePtr));
+        orNanos.addAndGet(System.nanoTime() - t);
+        orCount.incrementAndGet();
+        return result;
     }
 
     static synchronized MTPNDD not(MTPNDD value) {
         Objects.requireNonNull(value, "value");
-        return wrap(notNative(value.nativePtr));
+        long t = System.nanoTime();
+        MTPNDD result = wrap(notNative(value.nativePtr));
+        notNanos.addAndGet(System.nanoTime() - t);
+        notCount.incrementAndGet();
+        return result;
     }
 
     static synchronized MTPNDD diff(MTPNDD left, MTPNDD right) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        return wrap(diffNative(left.nativePtr, right.nativePtr));
+        long t = System.nanoTime();
+        MTPNDD result = wrap(diffNative(left.nativePtr, right.nativePtr));
+        diffNanos.addAndGet(System.nanoTime() - t);
+        diffCount.incrementAndGet();
+        return result;
     }
 
     static synchronized MTPNDD exist(MTPNDD value, int fieldId) {
         Objects.requireNonNull(value, "value");
-        return wrap(existNative(value.nativePtr, fieldId));
+        long t = System.nanoTime();
+        MTPNDD result = wrap(existNative(value.nativePtr, fieldId));
+        existNanos.addAndGet(System.nanoTime() - t);
+        existCount.incrementAndGet();
+        return result;
     }
 
     static synchronized double satCount(MTPNDD value) {
         Objects.requireNonNull(value, "value");
-        return satCountNative(value.nativePtr);
+        long t = System.nanoTime();
+        double result = satCountNative(value.nativePtr);
+        satCountNanos.addAndGet(System.nanoTime() - t);
+        satCountCount.incrementAndGet();
+        return result;
     }
 
     static synchronized int minZeros(MTPNDD value) {
@@ -216,6 +327,67 @@ public final class MTPNDDEngine {
 
     public static synchronized long bddHigh(long handle) {
         return bddHighNative(handle);
+    }
+
+    static synchronized MTPNDD[] andBatch(MTPNDD[] lefts, MTPNDD[] rights) {
+        if (lefts.length != rights.length) {
+            throw new IllegalArgumentException("andBatch: lefts and rights must have same length");
+        }
+        if (lefts.length == 0) {
+            return new MTPNDD[0];
+        }
+        long[] leftPtrs = new long[lefts.length];
+        long[] rightPtrs = new long[rights.length];
+        for (int i = 0; i < lefts.length; i++) {
+            Objects.requireNonNull(lefts[i], "lefts[" + i + "]");
+            Objects.requireNonNull(rights[i], "rights[" + i + "]");
+            leftPtrs[i] = lefts[i].nativePtr;
+            rightPtrs[i] = rights[i].nativePtr;
+        }
+        long t = System.nanoTime();
+        long[] resultPtrs = andBatchNative(leftPtrs, rightPtrs);
+        andBatchNanos.addAndGet(System.nanoTime() - t);
+        andBatchCount.incrementAndGet();
+        andBatchElements.addAndGet(lefts.length);
+        MTPNDD[] results = new MTPNDD[resultPtrs.length];
+        for (int i = 0; i < resultPtrs.length; i++) {
+            results[i] = wrap(resultPtrs[i]);
+        }
+        return results;
+    }
+
+    static synchronized MTPNDD orReduce(MTPNDD[] values) {
+        if (values.length == 0) {
+            return getFalse();
+        }
+        long[] ptrs = new long[values.length];
+        for (int i = 0; i < values.length; i++) {
+            Objects.requireNonNull(values[i], "values[" + i + "]");
+            ptrs[i] = values[i].nativePtr;
+        }
+        long t = System.nanoTime();
+        MTPNDD result = wrap(orReduceNative(ptrs));
+        orReduceNanos.addAndGet(System.nanoTime() - t);
+        orReduceCount.incrementAndGet();
+        orReduceElements.addAndGet(values.length);
+        return result;
+    }
+
+    static synchronized MTPNDD andReduce(MTPNDD[] values) {
+        if (values.length == 0) {
+            return getTrue();
+        }
+        long[] ptrs = new long[values.length];
+        for (int i = 0; i < values.length; i++) {
+            Objects.requireNonNull(values[i], "values[" + i + "]");
+            ptrs[i] = values[i].nativePtr;
+        }
+        long t = System.nanoTime();
+        MTPNDD result = wrap(andReduceNative(ptrs));
+        andReduceNanos.addAndGet(System.nanoTime() - t);
+        andReduceCount.incrementAndGet();
+        andReduceElements.addAndGet(values.length);
+        return result;
     }
 
     public static synchronized MTPNDDStats stats() {
@@ -298,4 +470,8 @@ public final class MTPNDDEngine {
     private static native long bddHighNative(long handle);
 
     private static native MTPNDDStats getStatsNative();
+
+    private static native long[] andBatchNative(long[] lefts, long[] rights);
+    private static native long orReduceNative(long[] values);
+    private static native long andReduceNative(long[] values);
 }

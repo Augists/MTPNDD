@@ -674,6 +674,161 @@ Java_org_ants_mtpndd_MTPNDDEngine_isTerminalNative(JNIEnv *env, jclass clazz, jl
     return mtpndd_is_terminal(mtpndd_node_from_jlong(handle)) ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jlongArray JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_andBatchNative(JNIEnv *env, jclass clazz,
+    jlongArray lefts, jlongArray rights)
+{
+    (void)clazz;
+    jsize len = (*env)->GetArrayLength(env, lefts);
+    jsize rlen = (*env)->GetArrayLength(env, rights);
+    if (len != rlen) {
+        mtpndd_throw_exception(env, "java/lang/IllegalArgumentException",
+                "andBatch: lefts and rights arrays must have same length");
+        return NULL;
+    }
+    if (len == 0) {
+        return (*env)->NewLongArray(env, 0);
+    }
+
+    jlong *left_ptrs = (*env)->GetLongArrayElements(env, lefts, NULL);
+    jlong *right_ptrs = (*env)->GetLongArrayElements(env, rights, NULL);
+    if (!left_ptrs || !right_ptrs) {
+        if (left_ptrs) (*env)->ReleaseLongArrayElements(env, lefts, left_ptrs, JNI_ABORT);
+        if (right_ptrs) (*env)->ReleaseLongArrayElements(env, rights, right_ptrs, JNI_ABORT);
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "andBatch: failed to get array elements");
+        return NULL;
+    }
+
+    // Convert jlong arrays to mtpndd_t** arrays
+    mtpndd_t **left_nodes = (mtpndd_t **)malloc((size_t)len * sizeof(mtpndd_t *));
+    mtpndd_t **right_nodes = (mtpndd_t **)malloc((size_t)len * sizeof(mtpndd_t *));
+    if (!left_nodes || !right_nodes) {
+        free(left_nodes);
+        free(right_nodes);
+        (*env)->ReleaseLongArrayElements(env, lefts, left_ptrs, JNI_ABORT);
+        (*env)->ReleaseLongArrayElements(env, rights, right_ptrs, JNI_ABORT);
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "andBatch: allocation failed");
+        return NULL;
+    }
+
+    for (jsize i = 0; i < len; i++) {
+        left_nodes[i] = mtpndd_node_from_jlong(left_ptrs[i]);
+        right_nodes[i] = mtpndd_node_from_jlong(right_ptrs[i]);
+    }
+
+    (*env)->ReleaseLongArrayElements(env, lefts, left_ptrs, JNI_ABORT);
+    (*env)->ReleaseLongArrayElements(env, rights, right_ptrs, JNI_ABORT);
+
+    mtpndd_clear_error();
+    mtpndd_t **results = mtpndd_and_batch(left_nodes, right_nodes, (size_t)len);
+    free(left_nodes);
+    free(right_nodes);
+
+    if (!results) {
+        mtpndd_throw_last_error(env);
+        return NULL;
+    }
+
+    // Convert results back to jlong array (results already have +1 refcount)
+    jlongArray result_arr = (*env)->NewLongArray(env, len);
+    if (!result_arr) {
+        // Free results and deref
+        for (jsize i = 0; i < len; i++) {
+            if (results[i]) mtpndd_deref(results[i]);
+        }
+        free(results);
+        return NULL;
+    }
+
+    jlong *result_buf = (jlong *)malloc((size_t)len * sizeof(jlong));
+    if (!result_buf) {
+        for (jsize i = 0; i < len; i++) {
+            if (results[i]) mtpndd_deref(results[i]);
+        }
+        free(results);
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "andBatch: result allocation failed");
+        return NULL;
+    }
+
+    for (jsize i = 0; i < len; i++) {
+        result_buf[i] = mtpndd_ptr_to_jlong(results[i]);
+    }
+    (*env)->SetLongArrayRegion(env, result_arr, 0, len, result_buf);
+    free(result_buf);
+    free(results);
+    return result_arr;
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_orReduceNative(JNIEnv *env, jclass clazz,
+    jlongArray values)
+{
+    (void)clazz;
+    jsize len = (*env)->GetArrayLength(env, values);
+    if (len == 0) {
+        return mtpndd_ptr_to_jlong(&MTPNDD_FALSE);
+    }
+
+    jlong *ptrs = (*env)->GetLongArrayElements(env, values, NULL);
+    if (!ptrs) {
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "orReduce: failed to get array elements");
+        return 0;
+    }
+
+    mtpndd_t **nodes = (mtpndd_t **)malloc((size_t)len * sizeof(mtpndd_t *));
+    if (!nodes) {
+        (*env)->ReleaseLongArrayElements(env, values, ptrs, JNI_ABORT);
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "orReduce: allocation failed");
+        return 0;
+    }
+
+    for (jsize i = 0; i < len; i++) {
+        nodes[i] = mtpndd_node_from_jlong(ptrs[i]);
+    }
+    (*env)->ReleaseLongArrayElements(env, values, ptrs, JNI_ABORT);
+
+    mtpndd_clear_error();
+    mtpndd_t *result = mtpndd_or_reduce(nodes, (size_t)len);
+    free(nodes);
+
+    return mtpndd_wrap_node(env, result);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_andReduceNative(JNIEnv *env, jclass clazz,
+    jlongArray values)
+{
+    (void)clazz;
+    jsize len = (*env)->GetArrayLength(env, values);
+    if (len == 0) {
+        return mtpndd_ptr_to_jlong(&MTPNDD_TRUE);
+    }
+
+    jlong *ptrs = (*env)->GetLongArrayElements(env, values, NULL);
+    if (!ptrs) {
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "andReduce: failed to get array elements");
+        return 0;
+    }
+
+    mtpndd_t **nodes = (mtpndd_t **)malloc((size_t)len * sizeof(mtpndd_t *));
+    if (!nodes) {
+        (*env)->ReleaseLongArrayElements(env, values, ptrs, JNI_ABORT);
+        mtpndd_throw_exception(env, "java/lang/OutOfMemoryError", "andReduce: allocation failed");
+        return 0;
+    }
+
+    for (jsize i = 0; i < len; i++) {
+        nodes[i] = mtpndd_node_from_jlong(ptrs[i]);
+    }
+    (*env)->ReleaseLongArrayElements(env, values, ptrs, JNI_ABORT);
+
+    mtpndd_clear_error();
+    mtpndd_t *result = mtpndd_and_reduce(nodes, (size_t)len);
+    free(nodes);
+
+    return mtpndd_wrap_node(env, result);
+}
+
 JNIEXPORT jobject JNICALL
 Java_org_ants_mtpndd_MTPNDDEngine_getStatsNative(JNIEnv *env, jclass clazz)
 {

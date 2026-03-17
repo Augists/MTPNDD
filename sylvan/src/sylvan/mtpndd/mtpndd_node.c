@@ -1767,6 +1767,92 @@ mtpndd_t *mtpndd_or_demorgan(mtpndd_t *a, mtpndd_t *b) {
 }
 
 /********************************
+ * MTPNDD batch operations
+ ********************************/
+
+// Lace task for tree-reduce OR: recursively split, SPAWN left, CALL right, SYNC+OR
+// Intermediate results must be protected by temp_refs to survive GC.
+TASK_DECL_2(mtpndd_t*, mtpndd_or_reduce_rec, mtpndd_t**, size_t);
+TASK_IMPL_2(mtpndd_t*, mtpndd_or_reduce_rec, mtpndd_t**, values, size_t, count) {
+    if (count == 0) return &MTPNDD_FALSE;
+    if (count == 1) return values[0];
+    if (count == 2) return CALL(mtpndd_or_rec, values[0], values[1]);
+
+    size_t mid = count / 2;
+    mtpndd_temp_ref_list_t trl;
+    mtpndd_temp_refs_init(&trl);
+
+    SPAWN(mtpndd_or_reduce_rec, values, mid);
+    mtpndd_t *right = CALL(mtpndd_or_reduce_rec, values + mid, count - mid);
+    mtpndd_temp_refs_push(&trl, right);
+    mtpndd_t *left = SYNC(mtpndd_or_reduce_rec);
+    mtpndd_temp_refs_push(&trl, left);
+
+    mtpndd_t *result = NULL;
+    if (left && right) {
+        result = CALL(mtpndd_or_rec, left, right);
+    }
+    mtpndd_temp_refs_release(&trl);
+    return result;
+}
+
+// Lace task for tree-reduce AND
+// Intermediate results must be protected by temp_refs to survive GC.
+TASK_DECL_2(mtpndd_t*, mtpndd_and_reduce_rec, mtpndd_t**, size_t);
+TASK_IMPL_2(mtpndd_t*, mtpndd_and_reduce_rec, mtpndd_t**, values, size_t, count) {
+    if (count == 0) return &MTPNDD_TRUE;
+    if (count == 1) return values[0];
+    if (count == 2) return CALL(mtpndd_and_rec, values[0], values[1]);
+
+    size_t mid = count / 2;
+    mtpndd_temp_ref_list_t trl;
+    mtpndd_temp_refs_init(&trl);
+
+    SPAWN(mtpndd_and_reduce_rec, values, mid);
+    mtpndd_t *right = CALL(mtpndd_and_reduce_rec, values + mid, count - mid);
+    mtpndd_temp_refs_push(&trl, right);
+    mtpndd_t *left = SYNC(mtpndd_and_reduce_rec);
+    mtpndd_temp_refs_push(&trl, left);
+
+    mtpndd_t *result = NULL;
+    if (left && right) {
+        result = CALL(mtpndd_and_rec, left, right);
+    }
+    mtpndd_temp_refs_release(&trl);
+    return result;
+}
+
+mtpndd_t **mtpndd_and_batch(mtpndd_t **lefts, mtpndd_t **rights, size_t count) {
+    if (count == 0) return NULL;
+
+    mtpndd_t **results = (mtpndd_t **)calloc(count, sizeof(mtpndd_t *));
+    if (!results) return NULL;
+
+    // Simple sequential approach inside a single RUN entry point.
+    // Each individual AND can still exploit internal Lace parallelism.
+    for (size_t i = 0; i < count; i++) {
+        results[i] = mtpndd_and(lefts[i], rights[i]);
+        if (results[i]) {
+            mtpndd_ref(results[i]);
+        }
+    }
+
+    return results;
+}
+
+mtpndd_t *mtpndd_or_reduce(mtpndd_t **values, size_t count) {
+    if (count == 0) return &MTPNDD_FALSE;
+    if (count == 1) return values[0];
+    return RUN(mtpndd_or_reduce_rec, values, count);
+}
+
+mtpndd_t *mtpndd_and_reduce(mtpndd_t **values, size_t count) {
+    if (count == 0) return &MTPNDD_TRUE;
+    if (count == 1) return values[0];
+    return RUN(mtpndd_and_reduce_rec, values, count);
+}
+
+/********************************
  * MTPNDD <-> MTBDD convertion
  ********************************/
 typedef struct {

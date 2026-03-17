@@ -75,6 +75,30 @@ public final class MTPNDD {
         return left.diff(right);
     }
 
+    /**
+     * Batch AND: compute lefts[i] AND rights[i] for all i in a single native call.
+     * Each result has +1 refcount (already ref'd).
+     */
+    public static MTPNDD[] andBatch(MTPNDD[] lefts, MTPNDD[] rights) {
+        return MTPNDDEngine.andBatch(lefts, rights);
+    }
+
+    /**
+     * Tree-reduce OR: compute OR of all values in O(log N) depth.
+     * Result is NOT ref'd (caller must ref if needed).
+     */
+    public static MTPNDD orReduce(MTPNDD[] values) {
+        return MTPNDDEngine.orReduce(values);
+    }
+
+    /**
+     * Tree-reduce AND: compute AND of all values in O(log N) depth.
+     * Result is NOT ref'd (caller must ref if needed).
+     */
+    public static MTPNDD andReduce(MTPNDD[] values) {
+        return MTPNDDEngine.andReduce(values);
+    }
+
     public static MTPNDD andTo(MTPNDD left, MTPNDD right) {
         MTPNDD result = left.and(right).ref();
         left.deref();
