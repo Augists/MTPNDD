@@ -700,6 +700,12 @@ static bool mtpndd_lace_init(void) {
     sylvan_init_package();
     sylvan_init_bdd();
 
+    // Disable Sylvan GC — it uses NEWFRAME barrier which causes SIGBUS/SIGSEGV
+    // when Lace workers concurrently access BDD nodes during GC's clear_aligned
+    // (mmap MAP_FIXED) or rehash. MTPNDD manages its own node lifecycle;
+    // Sylvan BDD nodes are only used as edge labels and are long-lived.
+    // sylvan_gc_disable();
+
     // check if sylvan is initialized
     return true;
 }
