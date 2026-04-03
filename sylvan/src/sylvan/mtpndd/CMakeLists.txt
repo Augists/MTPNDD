@@ -82,6 +82,11 @@ target_link_libraries(mtpndd_nqueens_benchmark PRIVATE mtpndd::mtpndd m)
 target_compile_features(mtpndd_nqueens_benchmark PRIVATE c_std_11)
 target_compile_options(mtpndd_nqueens_benchmark PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
 
+add_executable(mtpndd_nqueens_parallel_benchmark test/nqueens_parallel_benchmark.c)
+target_link_libraries(mtpndd_nqueens_parallel_benchmark PRIVATE mtpndd::mtpndd m)
+target_compile_features(mtpndd_nqueens_parallel_benchmark PRIVATE c_std_11)
+target_compile_options(mtpndd_nqueens_parallel_benchmark PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
+
 add_executable(mtpndd_conversion_test test/conversion.c)
 target_link_libraries(mtpndd_conversion_test PRIVATE mtpndd::mtpndd)
 target_compile_features(mtpndd_conversion_test PRIVATE c_std_11)
