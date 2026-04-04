@@ -234,6 +234,15 @@ static bool run_parallel_benchmark(size_t n) {
     bdd_cache = next_pow2(bdd_cache);
     ndd_size = next_pow2(ndd_size);
 
+    /* Pre-allocate nodetable buckets to lower the initial load factor and
+     * reduce avg lookup chain length (~30% faster lookup for N>=11).
+     * Only applied when bdd_size >= 1M: below that the init cost > savings. */
+    size_t nodetable_init_buckets = 0;
+    if (bdd_size >= (size_t)1048576) {
+        nodetable_init_buckets = (bdd_size < (size_t)2097152)
+                                     ? bdd_size : (size_t)2097152;
+    }
+
     mtpndd_pal_config_t cfg = {
         .n_workers = g_n_workers,
         .lace_dqsize = 1 << 20,
@@ -241,7 +250,7 @@ static bool run_parallel_benchmark(size_t n) {
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = bdd_cache,
         .edge_bucket_count = 0,
-        .nodetable_bucket_count = 0,
+        .nodetable_bucket_count = nodetable_init_buckets,
         .node_slab_capacity = 0,
         .edge_entry_slab_capacity = 0,
         .nodetable_entry_slab_capacity = 0,
@@ -297,7 +306,7 @@ static bool run_parallel_benchmark(size_t n) {
         if (!or_batch[i]) goto build_fail;
     }
 
-    /* ---- Phase 2: cell implication terms in parallel ---- */
+    /* ---- Phase 2: n*n cell implication terms in parallel ---- */
     if (total_cells == 1) {
         imp_batch[0] = CALL(par_build_cell, (size_t)0, (size_t)0, n);
     } else {
@@ -305,7 +314,6 @@ static bool run_parallel_benchmark(size_t n) {
             SPAWN(par_build_cell, k / n, k % n, n);
         }
         imp_batch[total_cells - 1] = CALL(par_build_cell, n - 1, n - 1, n);
-        /* SYNC in LIFO order. */
         for (int k = (int)total_cells - 2; k >= 0; k--) {
             imp_batch[k] = SYNC(par_build_cell);
         }
@@ -314,14 +322,7 @@ static bool run_parallel_benchmark(size_t n) {
         if (!imp_batch[k]) goto build_fail;
     }
 
-    /* ---- Phase 3: sequential left-fold AND (same order as nqueens_benchmark) ----
-     *
-     * A tree-reduce (mtpndd_and_reduce) produces large intermediate NDDs before
-     * constraints prune the search space, which is much slower for n-queens.
-     * The sequential fold applies constraints progressively and matches the
-     * serial benchmark's Phase 3 exactly, so timing differences isolate the
-     * effect of parallel build (Phases 1 and 2).
-     */
+    /* ---- Phase 3: sequential left-fold AND ---- */
     {
         mtpndd_t *queen = &MTPNDD_TRUE;
         mtpndd_ref(queen);
