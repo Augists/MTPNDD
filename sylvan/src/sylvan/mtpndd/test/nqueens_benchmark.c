@@ -181,10 +181,17 @@ static bool run_benchmark(size_t n) {
      * Only applied when bdd_size >= 1M (N>=11): below that threshold the
      * bucket array initialization cost exceeds the lookup savings.
      * The internal hard cap is 2^21 = 2097152 buckets per field. */
-    size_t nodetable_init_buckets = 0;  /* default 1024 for small N */
+    /* Pre-allocate nodetable buckets at 1/4 the BDD table size so the
+     * initial per-field load factor ≈ nodes/bdd_size × 4 ≈ 0.9.  This keeps
+     * avg lookup chain length near 1.0 without excess init cost.
+     * Cap at 8M (= new library hard limit `1<<23`).
+     * Only applied when bdd_size >= 1M (N>=11): below that the init cost
+     * exceeds the lookup savings. */
+    size_t nodetable_init_buckets = 0;
     if (bdd_size >= (size_t)1048576) {
-        nodetable_init_buckets = (bdd_size < (size_t)2097152)
-                                     ? bdd_size : (size_t)2097152;
+        nodetable_init_buckets = bdd_size / 4;
+        if (nodetable_init_buckets > (size_t)8388608)
+            nodetable_init_buckets = (size_t)8388608;
     }
 
     mtpndd_pal_config_t cfg = {

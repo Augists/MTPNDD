@@ -133,8 +133,9 @@ mtpndd_nodetable_t *mtpndd_nodetable_declare_field() {
     if (bucket_cnt == 0) {
         bucket_cnt = MTPNDD_DEFAULT_NODETABLE_BUCKET_COUNT;
     }
-    // encourage moderate load to allow rehash when needed
-    if (bucket_cnt > (1 << 21)) bucket_cnt = (1 << 21);
+    // Cap initial bucket count to limit virtual address space allocation.
+    // Physical memory is only consumed for non-NULL (written) bucket slots.
+    if (bucket_cnt > (1 << 23)) bucket_cnt = (1 << 23);
     if (bucket_cnt < 16) bucket_cnt = 16;
     bucket_cnt = mtpndd_round_up_pow2(bucket_cnt);
     table->nodetable_bucket_count = bucket_cnt;

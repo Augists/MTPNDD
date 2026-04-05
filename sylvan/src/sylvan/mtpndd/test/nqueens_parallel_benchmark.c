@@ -237,10 +237,13 @@ static bool run_parallel_benchmark(size_t n) {
     /* Pre-allocate nodetable buckets to lower the initial load factor and
      * reduce avg lookup chain length (~30% faster lookup for N>=11).
      * Only applied when bdd_size >= 1M: below that the init cost > savings. */
+    /* Pre-allocate nodetable buckets at 1/4 the BDD table size.
+     * Cap at 8M (library hard limit `1<<23`). Only for bdd_size >= 1M. */
     size_t nodetable_init_buckets = 0;
     if (bdd_size >= (size_t)1048576) {
-        nodetable_init_buckets = (bdd_size < (size_t)2097152)
-                                     ? bdd_size : (size_t)2097152;
+        nodetable_init_buckets = bdd_size / 4;
+        if (nodetable_init_buckets > (size_t)8388608)
+            nodetable_init_buckets = (size_t)8388608;
     }
 
     mtpndd_pal_config_t cfg = {
