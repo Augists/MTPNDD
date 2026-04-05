@@ -58,6 +58,5 @@ perf.data
 perf.data.old
 .worktrees/
 
-*.tsv
 CLAUDE.md
 AGENTS.md
