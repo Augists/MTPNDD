@@ -344,13 +344,16 @@ nodetable 初始 1024 桶，rehash 80 次后才到 1M 桶，final load factor �
 ```c
 size_t nodetable_init_buckets = 0;  /* default 1024 for small N */
 if (bdd_size >= (size_t)1048576) {  /* only N>=11 where savings > init cost */
-    nodetable_init_buckets = (bdd_size < (size_t)2097152)
-                                 ? bdd_size : (size_t)2097152;
+    nodetable_init_buckets = bdd_size / 4;
+    if (nodetable_init_buckets > (size_t)8388608)
+        nodetable_init_buckets = (size_t)8388608;
 }
 ```
 
-内部上限 2^21 = 2M 桶。Linux 虚拟内存保证稀疏 `calloc` 数组仅在写入时分配物理页，
-所以 12 × 2M × 8 = 192MB 虚拟地址空间实际物理占用约 14MB（只有被写入的桶才分配页）。
+初始版本上限为 2M（`min(bdd_size, 2097152)`），后在 commit `92d92e7` 改为 `bdd_size/4` 上限 8M：
+- 公式 `bdd_size/4` 使初始 load ≈ 25%（bdd_size 约等于最终节点数的 4 倍），rehash=0，lookup chain ≈ 1.1
+- 库内硬限同步从 `1<<21` 提升至 `1<<23`，N=13 可用 8M 桶（`32M/4=8M`）
+- Linux 虚拟内存：12 × 8M × 8 = 768MB 虚拟，实际物理仅约 50MB（COW 零页）
 
 **优化后效果（N≥11，DEBUG=2 回归测试）**
 
@@ -375,15 +378,64 @@ collision 从 772K → 124K（↓ 6x）和 lookup 时间 ↓ 1.5x 才是真实�
 | 13 | 4 | 41.24s  | 38.12s | **1.08x** |
 | 13 | 6 | 40.37s  | 37.51s | **1.08x** |
 
-N=13 的提升较小是因为桶数上限 2M 相对 N=13 的节点规模偏低；若提升库内硬限（当前 `1<<21`）可获更多收益。
+上表数据为公式 `min(bdd_size, 2M)` 的中间版本。N=13 提升较小是因为 2M 桶相对节点规模偏低，load 仍偏高。
+commit `92d92e7` 将公式改为 `bdd_size/4`（上限 8M），库内硬限同步从 `1<<21` 提升至 `1<<23`，
+N=13 w=6 加速比从 1.08x 提升至 1.34x（见 §6.6 叠加数据，nodetable-only 列）。
 
-### 6.6 若要进一步提升大 N（12+）的加速比
+### 6.6 edge_bucket_count=16（边哈希表桶数）优化
+
+**问题**
+
+每个 NDD 节点有一个 edge map（`mtpndd_edge_t`，子节点→BDD标签 的哈希表）。
+`edge_bucket_count` 控制每个 edge map 的初始桶数，默认值为 8。
+`FOR_EACH_ENTRY_IN_ALL_BUCKETS` 宏遍历**所有**桶（包括 NULL 桶），所以桶越多、
+空桶越多，遍历开销越大；桶太少则冲突率高。
+
+N=12 时每个节点平均约 7 条出边。
+- `edge_bucket_count=8`：8 桶装 7 项 → load 87.5% → 冲突率高，每次 lookup 需额外链追踪
+- `edge_bucket_count=16`：16 桶装 7 项 → load 43.7% → 冲突率低，遍历代价（16 slots）仍可接受
+- `edge_bucket_count=32`：32 桶装 7 项 → load 21.9% → 空桶太多，`FOR_EACH_ENTRY_IN_ALL_BUCKETS`
+  遍历 32 次迭代（25 次无效），比 16 更慢
+
+**实现**
+
+在两个 benchmark 的 `mtpndd_pal_config_t` 中：
+```c
+.edge_bucket_count = 16,   /* was 0 = default 8 */
+```
+
+**实测效果（N=12 w=4/6，release build，nodetable 优化已包含）**
+
+| N  | w | nodetable-only | + edge_bucket=16 | 额外加速 |
+|----|---|--------------|------------------|---------|
+| 11 | 6 | 1.246s | 1.03s  | **1.21x** |
+| 12 | 4 | 6.201s | 5.18s  | **1.20x** |
+| 12 | 6 | 5.722s | 4.83s  | **1.18x** |
+| 13 | 6 | 37.51s | 28.0s  | **1.34x** |
+
+**与 HEAD 基准的总加速比（两项优化叠加）**
+
+| N  | w | HEAD 基准 | 全优化后 | 总加速 |
+|----|---|---------|---------|-------|
+| 11 | 6 | 1.454s  | 1.03s   | **1.41x** |
+| 12 | 4 | 7.322s  | 5.18s   | **1.41x** |
+| 12 | 6 | 7.136s  | 4.83s   | **1.48x** |
+| 13 | 6 | 40.37s  | 28.0s   | **1.44x** |
+
+**结论**
+
+edge_bucket_count=16 在 nodetable 预分配基础上再叠加 18-34% 加速。
+两项优化合计对 N=11-13 带来 1.41-1.48x 总加速，且不改变任何核心算法逻辑。
+
+---
+
+### 6.7 若要进一步提升大 N（12+）的加速比
 
 Phase 3 是数据依赖链（`queen[k] = AND(queen[k-1], constraint[k])`），无法直接并行。
 可行优化方向：
 
-1. **提升 nodetable 桶数上限**：将库内 `(1 << 21)` 上限改为 `(1 << 23)` 或更大，
-   使 N=13 也能获得充分低的负载因子，进一步减少 lookup DRAM 访问。
+1. ~~**提升 nodetable 桶数上限**~~（已完成，`92d92e7`）：库内上限已从 `(1 << 21)` 提升至 `(1 << 23)`，
+   N=13 现可使用 8M 初始桶，lookup DRAM 访问已大幅减少。
 
 2. **Symmetry decomposition**：利用棋盘的旋转/反射对称性，将问题分解为 k 个独立子问题，
    各自构建完整公式后 OR 合并，Phase 1+2+3 全部并行。

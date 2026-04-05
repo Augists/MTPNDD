@@ -252,7 +252,7 @@ static bool run_parallel_benchmark(size_t n) {
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = bdd_cache,
-        .edge_bucket_count = 0,
+        .edge_bucket_count = 16,
         .nodetable_bucket_count = nodetable_init_buckets,
         .node_slab_capacity = 0,
         .edge_entry_slab_capacity = 0,
