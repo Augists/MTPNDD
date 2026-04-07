@@ -14,6 +14,7 @@
 #include "mtpndd_common.h"
 #include "sylvan_mtbdd.h"
 #include "sylvan_refs.h"
+#include "sylvan_stats.h"
 #include <lace.h>
 
 #include <inttypes.h>
@@ -364,6 +365,7 @@ static bool run_parallel_benchmark(size_t n) {
         printf("\t%.3f\t%" PRIu64 "\n", elapsed, solutions);
         fflush(stdout);
 
+        sylvan_stats_report(stdout);
         mtpndd_quit();
         return true;
     }

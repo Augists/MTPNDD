@@ -2,6 +2,7 @@
 #include "mtpndd_common.h"
 #include "sylvan_mtbdd.h"
 #include "sylvan_refs.h"
+#include "sylvan_stats.h"
 
 #include <inttypes.h>
 #include <math.h>
@@ -367,6 +368,7 @@ static bool run_benchmark(size_t n) {
 
     free(or_batch);
     free(imp_batch);
+    sylvan_stats_report(stdout);
     mtpndd_quit();
     return true;
 

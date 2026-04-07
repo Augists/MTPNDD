@@ -11,10 +11,10 @@ SYLVAN_DIR="$SCRIPT_DIR/sylvan"
 SERIAL_BIN="$SYLVAN_DIR/build/src/sylvan/mtpndd/mtpndd_nqueens_benchmark"
 PARALLEL_BIN="$SYLVAN_DIR/build/src/sylvan/mtpndd/mtpndd_nqueens_parallel_benchmark"
 
-N_MIN=14
-N_MAX=14
+N_MIN=7
+N_MAX=13
 W_MIN=1
-W_MAX=16
+W_MAX=6
 SKIP_BUILD=0
 USE_PARALLEL=0
 

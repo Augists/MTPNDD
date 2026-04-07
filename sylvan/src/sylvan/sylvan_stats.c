@@ -17,6 +17,7 @@
 
 #include <sylvan_int.h>
 #include <sylvan_align.h>
+#include <stdatomic.h>
 
 #include <errno.h>  // for errno
 #include <string.h> // memset
