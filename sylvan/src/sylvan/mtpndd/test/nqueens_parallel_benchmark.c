@@ -12,6 +12,7 @@
 
 #include "mtpndd.h"
 #include "mtpndd_common.h"
+#include <sylvan.h>
 #include "sylvan_mtbdd.h"
 #include "sylvan_refs.h"
 #include "sylvan_stats.h"
@@ -265,6 +266,17 @@ static bool run_parallel_benchmark(size_t n) {
         fprintf(stderr, "mtpndd_init failed: %s\n",
                 mtpndd_error_string(mtpndd_get_last_error().code));
         return false;
+    }
+
+    /* Optionally set BDD spawn depth cutoff via environment variable.
+     * BDD_SPAWN_DEPTH_CUTOFF=0 disables all BDD-internal spawning. */
+    {
+        const char *cutoff_env = getenv("BDD_SPAWN_DEPTH_CUTOFF");
+        if (cutoff_env) {
+            int cutoff = atoi(cutoff_env);
+            sylvan_set_spawn_depth_cutoff(cutoff);
+            fprintf(stderr, "[bench] BDD spawn depth cutoff = %d\n", cutoff);
+        }
     }
 
     if (!declare_fields(n)) {

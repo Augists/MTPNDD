@@ -330,6 +330,17 @@ main(int argc, char** argv)
     sylvan_set_granularity(3); // granularity 3 is decent value for this small problem - 1 means "use cache for every operation"
     sylvan_init_bdd();
 
+    /* Optionally set BDD spawn depth cutoff via environment variable.
+     * BDD_SPAWN_DEPTH_CUTOFF=0 disables all BDD-internal spawning. */
+    {
+        const char *cutoff_env = getenv("BDD_SPAWN_DEPTH_CUTOFF");
+        if (cutoff_env) {
+            int cutoff = atoi(cutoff_env);
+            sylvan_set_spawn_depth_cutoff(cutoff);
+            printf("[nqueens] BDD spawn depth cutoff = %d\n", cutoff);
+        }
+    }
+
     // Before and after garbage collection, call gc_start and gc_end
     sylvan_gc_hook_pregc(TASK(gc_start));
     sylvan_gc_hook_postgc(TASK(gc_end));
