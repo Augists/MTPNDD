@@ -3,24 +3,22 @@
 ## Motivation
 
 Sylvan BDD operations (e.g. `sylvan_and`) recursively split into high/low
-cofactors, SPAWNing one branch as a Lace task and CALLing the other. For deep
-BDD trees, this creates an exponential number of tasks.
+cofactors, SPAWNing one branch as a Lace task and CALLing the other.
 
 In MTPNDD, parallelism is structured in two layers:
 
-1. **Upper layer** (MTPNDD operations + benchmark scheduling): parallel
-   SPAWN of NDD AND/OR/NOT sub-problems and tree-reduce.
+1. **Upper layer** (MTPNDD operations): parallel SPAWN of NDD AND/OR/NOT
+   sub-problems on edge pairs.
 2. **Lower layer** (BDD label operations): `sylvan_and`, `sylvan_or`, etc.
    on edge-label BDDs, called from within each MTPNDD sub-task.
 
-The hypothesis: BDD-internal spawning is unnecessary overhead for MTPNDD
-workloads — the BDD labels are small, every worker is already busy with
-MTPNDD-level tasks, BDD sub-tasks only add deque pressure and steal
-contention without meaningful parallel benefit.
+BDD-internal spawning produces large numbers of micro-tasks that pollute the
+Lace work-stealing deque. Other workers waste CPU in steal search with very
+low success rates (~0.8%), creating scheduling overhead that outweighs any
+parallel benefit from BDD-level task splitting.
 
-Inspired by OxiDD's depth-threshold mechanism, we add a **spawn depth
-cutoff** to Sylvan. Setting `cutoff=0` makes all BDD operations fully
-sequential, confining parallelism to the upper layers.
+Setting `cutoff=0` disables all BDD-internal spawning, confining parallelism
+to the MTPNDD layer where tasks are larger and steal ROI is higher.
 
 ## Design
 
@@ -47,12 +45,6 @@ int  sylvan_get_spawn_depth_cutoff(void);
 | `0` | **No BDD-internal spawning** — all recursive sub-problems via CALL |
 | `> 0` (e.g. `3`) | SPAWN only when nested depth < cutoff |
 
-### Stolen task behaviour
-
-When a SPAWNed task is stolen by another worker, it runs on the stealer's
-thread with an independent `bdd_spawn_depth` (typically 0), giving the
-stolen sub-tree a fresh parallelism budget.
-
 ### GC safety
 
 Sequential cofactor computation requires protecting the first result from GC:
@@ -76,143 +68,152 @@ All fork-join BDD operations modified (14 total). `sylvan_relnext` /
 
 ## Benchmark Results
 
-Platform: 6-core (12-thread), Linux 6.19.9. 3 runs per configuration,
-sequential execution (no concurrent benchmarks).
+### Experiment: sre-ndd A/B 对比
 
-### Experiment 1: Pure Sylvan BDD — N-Queens N=10
+**同一台机器、同一份代码、相近时间**运行的严格 A/B 对比。
+- baseline: `bench-results-26.4.9`（默认 cutoff=-1）
+- cutoff=0: `bench-results-26.4.9-cutoff`（`-Dmtpndd.bddSpawnDepthCutoff=0`）
 
-Workload: pure BDD over 100 variables. 1-worker serial baseline: **63.41 s**.
+取每组 2 runs 的较好值（秒）。
 
-| cutoff | run 1 | run 2 | run 3 | median | vs default |
-|-------:|------:|------:|------:|-------:|-----------:|
-| -1 (unlimited) | 11.16 | 12.27 | 11.30 | **11.30** | baseline |
-| 5      | 47.31 | 46.58 | 50.50 | **47.31** | +319% |
-| 8      | 38.68 | 38.66 | 39.07 | **38.68** | +242% |
-| 12     | 26.65 | 24.28 | 27.35 | **26.65** | +136% |
-| 20     | 14.57 | 14.69 | 14.04 | **14.57** | +29% |
+#### bgp_fattree04
 
-### Experiment 2: MTPNDD N-Queens — cutoff=0 vs default
+| MF | w | baseline | cutoff=0 | delta |
+|---:|--:|--------:|---------:|------:|
+| 1 | 1 | 0.398 | 0.399 | +0.1% |
+| 1 | 2 | 0.402 | 0.398 | -0.9% |
+| 1 | 4 | 0.400 | 0.398 | -0.5% |
+| 1 | 6 | 0.423 | 0.417 | -1.4% |
+| 2 | 1 | 0.297 | 0.298 | +0.4% |
+| 2 | 2 | 0.299 | 0.296 | -0.8% |
+| 2 | 4 | 0.301 | 0.296 | -1.8% |
+| 2 | 6 | 0.303 | 0.324 | +6.8% |
+| 3 | 1 | 0.299 | 0.297 | -0.6% |
+| 3 | 2 | 0.299 | 0.297 | -0.6% |
+| 3 | 4 | 0.299 | 0.300 | +0.3% |
+| 3 | 6 | 0.303 | 0.323 | +6.7% |
 
-| N  | default (median) | cutoff=0 (median) | delta |
-|---:|------:|------:|------:|
-| 11 | 1.063 | 1.055 | -0.8% |
-| 12 | 5.349 | 5.334 | -0.3% |
-| 13 | 30.77 | 31.58 | +2.6% |
+fattree04 太小（<0.5s），结果在噪声范围内。
 
-### Experiment 3: sre-ndd BGP verification (MTPNDD time only)
+#### bgp_fattree08
 
-| Dataset | Workers | Default | Cutoff=0 | Delta |
-|---------|---------|--------:|---------:|------:|
-| bgp_fattree08 | 1 | 1.935s | 1.926s | -0.5% |
-| bgp_fattree08 | 4 | 2.080s | 2.035s | -2.2% |
-| bgp_fattree12 | 1 | 17.820s | 17.643s | -1.0% |
-| bgp_fattree12 | 4 | 19.722s | 18.701s | **-5.2%** |
+| MF | w | baseline | cutoff=0 | delta |
+|---:|--:|--------:|---------:|------:|
+| 1 | 1 | 2.834 | 2.745 | **-3.2%** |
+| 1 | 2 | 2.850 | 2.855 | +0.2% |
+| 1 | 4 | 2.881 | 2.849 | -1.1% |
+| 1 | 6 | 2.972 | 3.147 | +5.9% |
+| 2 | 1 | 9.802 | 9.965 | +1.7% |
+| 2 | 2 | 9.935 | 9.787 | -1.5% |
+| 2 | 4 | 10.056 | 9.825 | **-2.3%** |
+| 2 | 6 | 10.068 | 9.906 | -1.6% |
+| 3 | 1 | 33.382 | 33.327 | -0.2% |
+| 3 | 2 | 30.626 | 30.970 | +1.1% |
+| 3 | 4 | 31.177 | 29.574 | **-5.1%** |
+| 3 | 6 | 30.816 | 30.147 | **-2.2%** |
 
----
+fattree08 中等规模，MF=3 w=4 有 -5.1% 改善。
 
-## Analysis: Why Only ~5% Improvement
+#### bgp_fattree12
 
-### BDD 在 MTPNDD 中的调用位置
-
-MTPNDD 的核心递归操作（`mtpndd_and_rec`, `mtpndd_or_rec`）中，BDD 操作
-发生在 **edge-pair 内层循环里**：
-
-```
-mtpndd_and_rec(A, B):
-  FOR_EACH edge_a IN A.edges:          // 外层循环
-    FOR_EACH edge_b IN B.edges:        // 内层循环
-      label = sylvan_and(edge_a.label, edge_b.label)  // ← BDD 操作
-      if label != false:
-        child = mtpndd_and_rec(edge_a.child, edge_b.child)  // 递归
-        add_edge(result, child, label)
-```
-
-关键特征：
-- 每个 edge pair 产生 **恰好 1 次** `sylvan_and` 调用（OR 操作多几次）
-- 这些 BDD 调用是 **串行执行** 的——在同一个 Lace task 内逐对处理
-- 并行化发生在 **task 粒度**：MTPNDD 决定整个 edge-pair 的处理是
-  SPAWN 还是 CALL（由 `mtpndd_should_spawn` 控制）
-
-### 原因 1: BDD label 太小，内部几乎不产生 SPAWN
-
-MTPNDD edge label 是小型 BDD。以 N-Queens 为例，label 编码的是
-"哪些 assignment 使得这条边成立"的布尔条件。这些 BDD 通常只有
-几个到几十个节点。
-
-`sylvan_and` 的递归深度 = BDD 变量数。对于小 label，递归几层就
-到达 terminal case（true/false），**根本没有机会 SPAWN**——还没走到
-SPAWN 判断点就已经 return 了。
-
-验证：原始 Sylvan 的 `sylvan_and` 中 SPAWN 只在 high cofactor
-非 trivial 时触发。小 BDD 的 cofactor 很快变成常量，所以绝大多数
-递归路径走的是 terminal shortcut，不经过 SPAWN 分支。
-
-**结论：cutoff=0 禁用的 SPAWN 本来就很少发生**。
-
-### 原因 2: BDD 调用在 MTPNDD task 内部串行执行
-
-即使 BDD label 足够大能触发 SPAWN，这些 SPAWN 发生在 MTPNDD 的
-spawned task 内部。调用链是：
-
-```
-Worker thread
-  └─ mtpndd_and_rec (MTPNDD task, may be spawned or called)
-       └─ FOR_EACH edge pair:
-            └─ sylvan_and(label_a, label_b)  ← BDD SPAWN 发生在这里
-                 └─ SPAWN(sylvan_and, high...)
-                 └─ CALL(sylvan_and, low...)
-                 └─ SYNC(sylvan_and)
-```
-
-BDD 的 SPAWN 推入当前 worker 的 deque。但此时 worker 正在执行
-MTPNDD task，其他 worker 也在执行各自的 MTPNDD task。BDD sub-task
-被偷走的概率很低——通常在 SYNC 之前就被本线程消费掉了（等同于 CALL）。
-
-**结论：BDD SPAWN 大多退化为 local execution，禁用它几乎没有区别**。
-
-### 原因 3: Lace SPAWN 开销本身极低
-
-Lace 的 deque 操作是 lock-free 的：
-- SPAWN = 写入 deque tail（~10ns）
-- SYNC（未被偷）= 读取 deque tail + 本地执行（~10ns overhead）
-- 只有被偷走时才涉及 CAS 和跨线程同步
-
-对于 N=13 的 ~30 秒计算，即使有百万次 BDD SPAWN，总开销也只是
-~10ms 量级，占比 < 0.03%。
-
-### 原因 4: 瓶颈在 edge-pair 组合爆炸
-
-MTPNDD 的计算复杂度主要来自 edge-pair 的笛卡尔积：一个有 E_a 条边
-的节点和一个有 E_b 条边的节点做 AND，需要 E_a × E_b 次 BDD 操作。
-这些操作在单个 task 内串行执行，BDD 内部是否并行对这个 O(E^2) 循环
-没有影响。
-
-### sre-ndd 为什么比 N-Queens 效果稍好（-5.2%）
-
-sre-ndd 的 BGP 路由验证中，BDD label 编码 IP 前缀匹配条件，比
-N-Queens 的 label 更大（更多 BDD 变量）。在 fattree12 + 4 workers 下：
-
-- 更大的 label → 更深的 BDD 递归 → 更多 SPAWN 实际发生
-- 4 workers 同时执行 MTPNDD task → deque 更拥挤 → SPAWN 的
-  cache/contention 成本更高
-- 禁用 SPAWN 后减少了这些开销，但绝对量仍然小
-
-### 总结
-
-| 因素 | 对 cutoff 效果的影响 |
-|------|---------------------|
-| BDD label 大小 | 小 label → 几乎不产生 SPAWN → 禁用无效果 |
-| BDD SPAWN 局部性 | 大多在 SYNC 前被本线程消费 → 禁用几乎无区别 |
-| Lace 单次开销 | ~10ns/次，极低 → 即使有 SPAWN 也不贵 |
-| 真实瓶颈 | edge-pair O(E^2) 循环，不受 BDD 并行影响 |
-
-**结论：BDD spawn depth cutoff 对当前 MTPNDD workload 效果有限（<5%），
-根本原因是 BDD label 太小、SPAWN 本身极少发生且开销极低。瓶颈不在
-BDD 并行层，而在 MTPNDD 的 edge-pair 组合爆炸。**
+| MF | w | baseline | cutoff=0 | delta |
+|---:|--:|--------:|---------:|------:|
+| 1 | 1 | 19.915 | 19.733 | -0.9% |
+| 1 | 2 | 20.618 | 20.198 | **-2.0%** |
+| 1 | 4 | 21.296 | 20.664 | **-3.0%** |
+| 1 | 6 | 21.579 | 20.826 | **-3.5%** |
+| 2 | 1 | 89.236 | 86.952 | **-2.6%** |
+| 2 | 2 | 89.606 | 85.189 | **-4.9%** |
+| 2 | 4 | 91.474 | 85.226 | **-6.8%** |
+| 2 | 6 | 92.660 | 85.714 | **-7.5%** |
+| 3 | 1 | 412.009 | 396.417 | **-3.8%** |
+| 3 | 2 | 364.519 | 340.586 | **-6.6%** |
+| 3 | 4 | 363.311 | 327.566 | **-9.8%** |
+| 3 | 6 | 371.782 | 330.627 | **-11.1%** |
 
 ---
 
-## Usage
+## 分析
+
+### 1. 效果随 workload 规模和 worker 数递增
+
+fattree12 MF=3 的改善幅度：
+
+```
+w=1: -3.8%  →  w=2: -6.6%  →  w=4: -9.8%  →  w=6: -11.1%
+```
+
+- **Worker 越多效果越大**：更多 worker 意味着更多空闲 worker 在
+  steal search，而 BDD micro-task 又增大了 deque 噪声。cutoff=0
+  消除了这些噪声，减少了无效 steal search 的 CPU 浪费。
+
+- **MF 越大效果越大**：MF（最大故障数）越大，NDD 操作越多，BDD
+  SPAWN 的累积开销越大。MF=1 最多 -3.5%，MF=3 最高 -11.1%。
+
+### 2. w=1 也有 1-4% 改善
+
+cutoff=0 在 w=1 时也有效（fattree12 MF=3: -3.8%）。虽然单 worker
+不存在 steal 问题，但 cutoff=0 避免了 BDD SPAWN/SYNC 的 deque
+push/pop 操作本身的开销（即使不被偷，每次 SPAWN 仍有 ~10ns 的
+deque 写入 + `bdd_refs_spawn` GC 引用栈操作）。在数千万次
+`sylvan_and` 调用中，这些微小开销累积成可测量的差异。
+
+### 3. Lace profiling 详细分析
+
+通过 `LACE_PIE_TIMES=1 LACE_COUNT_TASKS=1 LACE_COUNT_STEALS=1
+LACE_IDLE_STATS=1 SYLVAN_STATS=1` 的 profiling，对 **fattree12 MF=3
+w=4**（效果最大的配置）做详细对比：
+
+| 指标 | baseline | cutoff=0 | 变化 |
+|------|--------:|--------:|-----:|
+| **Wall time** | 299.3s | 275.1s | **-8.1%** |
+| **MTPNDD total** | 271.2s | 247.0s | **-8.9%** |
+| **Tasks (sum)** | **1,032M** | **259M** | **-74.9%** |
+| BDD and count | 1,588M | 1,527M | -3.8% |
+| Steal good (sum) | 75.96M | 70.31M | -7.4% |
+| **Leap tries (sum)** | 2,725M | **1,064M** | **-61.0%** |
+| **Leap work (sum CPU)** | 105.4s | **45.6s** | **-56.8%** |
+| **Leap search (sum CPU)** | 157.2s | **85.8s** | **-45.4%** |
+| Steal work (sum CPU) | 440.9s | 427.5s | -3.0% |
+| Steal search (sum CPU) | 464.7s | 518.5s | +11.6% |
+
+#### Leapfrog 是真正的受益者
+
+cutoff=0 的最大收益来自 **leapfrog 减少**：
+
+- Leap work: 105.4s → 45.6s（**-57%**）
+- Leap search: 157.2s → 85.8s（**-45%**）
+
+Lace 的 leapfrog 机制是：当 worker A 的 SPAWN task 被 worker B
+偷走后，worker A 在 SYNC 时不会阻塞等待，而是去帮 worker B 干活
+（偷 B 的 task）。BDD 内部的大量 SPAWN 触发了大量 leapfrog——
+owner 每次 `sylvan_and` 的 SPAWN+SYNC 都可能导致 leapfrog，而
+BDD micro-task 本身只有 ~1μs，leapfrog 的搜索开销远大于 task
+本身的价值。
+
+cutoff=0 让 BDD 操作全部用 CALL（无 SPAWN → 无 SYNC → 无
+leapfrog），彻底消除了这个开销源。
+
+#### Task 数量减少 75%
+
+从 10.3 亿降到 2.6 亿。减少的 7.7 亿全部是 BDD 内部的 SPAWN
+task。这意味着原来每次 `sylvan_and` 平均产生 ~0.5 个 SPAWN task
+（15.3 亿次 BDD and 产生 7.7 亿个 task）。
+
+#### Steal search 增加但 ROI 更高
+
+Steal search 从 465s 增到 519s（+12%），因为 deque 中少了 BDD
+micro-task，空闲 worker 需要更多轮搜索才找到 MTPNDD 级别的大
+task。但这些大 task 的 steal ROI 远高于 BDD micro-task。
+
+### 4. 对 fattree04/fattree08 小规模 workload 效果有限
+
+fattree04 总运行时间 <0.5s，BDD 操作占比小，cutoff 效果被噪声掩盖。
+fattree08 MF=1/2 效果在 ±3% 波动，MF=3 开始显现（-5.1%）。
+
+---
+
+## 使用方式
 
 ### C API
 
@@ -220,17 +221,21 @@ BDD 并行层，而在 MTPNDD 的 edge-pair 组合爆炸。**
 #include <sylvan.h>
 
 // After sylvan_init_bdd():
-sylvan_set_spawn_depth_cutoff(0);   // BDD fully serial
-sylvan_set_spawn_depth_cutoff(-1);  // unlimited (default)
+sylvan_set_spawn_depth_cutoff(0);   // BDD fully serial (recommended for MTPNDD)
+sylvan_set_spawn_depth_cutoff(-1);  // unlimited (default, original Sylvan)
 ```
 
-### Java API (sre-ndd)
+### Java (sre-ndd)
 
 ```bash
-java -Dmtpndd.bddSpawnDepthCutoff=0 -jar sre-ndd.jar ...
+# 通过 JVM property:
+java -Dmtpndd.bddSpawnDepthCutoff=0 ...
+
+# 或通过 run.sh:
+JAVA_OPTS="-Xmx32768m -Dmtpndd.bddSpawnDepthCutoff=0" bash run.sh
 ```
 
-### Environment variable (C benchmarks)
+### C benchmark (env var)
 
 ```bash
 BDD_SPAWN_DEPTH_CUTOFF=0 ./mtpndd_nqueens_parallel_benchmark 13
