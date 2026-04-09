@@ -90,9 +90,20 @@ TASK_DECL_1(mtpndd_and_item_t, mtpndd_and_recurse_pair, mtpndd_and_pair_t*);
 
 // Minimum E_a * E_b to trigger the two-phase path.
 // Below this, the original single-pass loop is used.
-#ifndef MTPNDD_AND_TWO_PHASE_THRESHOLD
-#define MTPNDD_AND_TWO_PHASE_THRESHOLD 16
+// 0 = disabled (always use original single-pass).
+#ifndef MTPNDD_AND_TWO_PHASE_THRESHOLD_DEFAULT
+#define MTPNDD_AND_TWO_PHASE_THRESHOLD_DEFAULT 4
 #endif
+
+static int g_mtpndd_two_phase_threshold = MTPNDD_AND_TWO_PHASE_THRESHOLD_DEFAULT;
+
+void mtpndd_set_two_phase_threshold(int value) {
+    g_mtpndd_two_phase_threshold = value;
+}
+
+int mtpndd_get_two_phase_threshold(void) {
+    return g_mtpndd_two_phase_threshold;
+}
 
 // Granularity control: decide whether to SPAWN a sub-problem
 static inline bool mtpndd_should_spawn(mtpndd_t *a, mtpndd_t *b) {
@@ -1001,7 +1012,8 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
         // multiple workers, separate BDD label filtering from recursive descent.
         size_t ea = a->edges ? a->edges->edge_count : 0;
         size_t eb = b->edges ? b->edges->edge_count : 0;
-        if (lace_workers() > 1 && ea * eb >= MTPNDD_AND_TWO_PHASE_THRESHOLD) {
+        if (lace_workers() > 1 && g_mtpndd_two_phase_threshold > 0
+                && (int)(ea * eb) >= g_mtpndd_two_phase_threshold) {
             status = mtpndd_and_two_phase_same_field(
                 __lace_worker, __lace_dq_head,
                 a, b, res_edges, &temp_refs);

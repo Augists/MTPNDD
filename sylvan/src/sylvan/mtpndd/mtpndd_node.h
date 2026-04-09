@@ -102,6 +102,17 @@ bool mtpndd_is_false(mtpndd_t *ndd);
 bool mtpndd_is_terminal(mtpndd_t *ndd);
 
 /********************************
+ * MTPNDD tuning
+ ********************************/
+
+/**
+ * Two-phase AND threshold: minimum E_a * E_b to use the filter-then-recurse
+ * path in same-field AND.  0 = disabled (always single-pass).  Default 16.
+ */
+void mtpndd_set_two_phase_threshold(int value);
+int  mtpndd_get_two_phase_threshold(void);
+
+/********************************
  * MTPNDD operations
  ********************************/
 mtpndd_t *mtpndd_and(mtpndd_t *a, mtpndd_t *b);

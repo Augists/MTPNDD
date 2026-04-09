@@ -482,3 +482,51 @@ BDD 单次 `sylvan_and` 的精确时间需要采样计时（per-call `clock_gett
 
 这和 BDD label 很小的预期一致——大部分 `sylvan_and` 在 terminal case
 （true/false/cache hit）就 return 了，不进入递归。
+
+---
+
+## 8. twoPhaseThreshold 调优实验
+
+在 sre-ndd 上扫描不同 threshold 值（cutoff=0 固定），取 best of runs。
+
+### fattree08 MF=3 w=4
+
+| threshold | time (s) | vs tpt=0 |
+|----------:|--------:|---------:|
+| 0 (禁用) | 32.46 | baseline |
+| 4 | 31.07 | -4.3% |
+| 8 | 31.38 | -3.3% |
+| 16 | 32.30 | -0.5% |
+| 32 | 30.88 | -4.9% |
+| 64 | 32.09 | -1.1% |
+
+### fattree12 MF=1 w=4
+
+| threshold | time (s) | vs tpt=0 |
+|----------:|--------:|---------:|
+| 0 (禁用) | 25.92 | baseline |
+| 4 | 25.46 | -1.8% |
+| 8 | 25.27 | -2.5% |
+| 16 | 25.69 | -0.9% |
+| 32 | 25.52 | -1.6% |
+| 64 | 25.49 | -1.7% |
+
+### 结论
+
+- tpt=0（禁用两阶段）始终最慢，两阶段有正向效果
+- 最佳值在 4-32 之间波动，run-to-run 噪声 ±2% 内无法区分
+- **默认值调整为 4**：在两个 workload 上都接近最优，且更积极地触发
+  两阶段路径。运行时可通过 `-Dmtpndd.twoPhaseThreshold=N` 覆盖。
+
+### 运行时 API
+
+```c
+// C API
+mtpndd_set_two_phase_threshold(4);   // default
+mtpndd_set_two_phase_threshold(0);   // disabled
+```
+
+```bash
+# Java (sre-ndd)
+java -Dmtpndd.twoPhaseThreshold=4 ...
+```
