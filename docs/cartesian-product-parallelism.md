@@ -377,3 +377,108 @@ typedef struct {
 `max_pairs = E_a × E_b`。对于 `edge_bucket_count=16`，最大
 16 × 16 = 256 pairs × 24 bytes = 6KB。可以用 `alloca` 放栈上。
 如果 edge map 更大，fallback 到 heap。
+
+---
+
+## 6. 实际实现状态
+
+### 6.1 两个独立的阈值
+
+| 阈值 | 默认值 | 控制什么 |
+|------|-------:|----------|
+| `MTPNDD_SPAWN_THRESHOLD` | 2 | 每个 edge pair 是 SPAWN 还是 CALL（基于 **child** 的 edge count 乘积） |
+| `MTPNDD_AND_TWO_PHASE_THRESHOLD` | 16 | 是否走两阶段路径（基于 **当前** 节点的 edge count 乘积 `E_a × E_b`） |
+
+两阶段路径还需要 `lace_workers() > 1`。
+
+### 6.2 触发条件
+
+```c
+// mtpndd_and_rec 的 same-field case 入口
+if (lace_workers() > 1 && ea * eb >= MTPNDD_AND_TWO_PHASE_THRESHOLD) {
+    mtpndd_and_two_phase_same_field(...)  // 两阶段
+} else {
+    // 原始单阶段
+}
+```
+
+### 6.3 两阶段 vs 原始的区别
+
+**原始单阶段**：BDD filter 和递归绑在同一个 task（`and_same_field_item`）里。
+即使 BDD 结果是 false（这条边不存在），task 已经被 SPAWN 了。
+
+```
+and_same_field_item(entry_a, entry_b):
+  label = sylvan_and(label_a, label_b)    ← BDD
+  if label == false: return empty         ← 白 SPAWN 了
+  child = mtpndd_and_rec_CALL(...)        ← 递归
+  return (child, label)
+```
+
+**两阶段**：Phase 1 串行做所有 BDD filter，只有 surviving pairs 进入 Phase 2 被 SPAWN。
+
+```
+Phase 1 (串行):
+  for each (entry_a, entry_b):
+    label = sylvan_and(label_a, label_b)
+    if label != false: pairs[n++] = {child_a, child_b, label}
+
+Phase 2 (并行):
+  for each pair in pairs:
+    SPAWN(and_recurse_pair, pair)    ← 只做递归，不做 BDD
+
+and_recurse_pair(pair):
+  child = mtpndd_and_rec_CALL(pair->child_a, pair->child_b)
+  return (child, pair->label)        ← label 已由 Phase 1 算好
+```
+
+### 6.4 BDD 调用统计（N-Queens N=12）
+
+| 指标 | w=1 | w=4 |
+|------|----:|----:|
+| BDD ops in same-field AND | 11,264,241 | 11,247,318 |
+| False rate (pruned) | 29.1% | 29.1% |
+| Two-phase triggers | 0 | 2,530 |
+| Two-phase total pairs | 0 | 44,408 |
+| Two-phase surviving | 0 | 22,222 (50%) |
+| Sylvan BDD and total | 11,510,893 | 11,510,893 |
+
+- w=1 不触发两阶段（单 worker 条件不满足）
+- w=4 触发 2530 次，处理了 4.4 万 pairs 中的 2.2 万（50% Phase 1 剪枝率）
+- 但这只是 N-Queens；sre-ndd 的剪枝率可能不同
+
+### 6.5 N-Queens 上的效果
+
+两阶段 AND 在 N-Queens 上与原始路径持平（±1%）。原因：
+- N-Queens edge count 小（多为 1-8），`E_a * E_b >= 16` 触发率低
+- 两阶段只处理了 4.4 万 / 1126 万 = 0.4% 的 BDD ops
+
+### 6.6 sre-ndd 上的效果
+
+两阶段 AND 在 sre-ndd 上的效果尚未和原始路径做严格隔离测试。
+当前 sre-ndd 的改善主要来自 BDD spawn depth cutoff（-3% ~ -11%）。
+
+---
+
+## 7. BDD 运算开销估算
+
+从 Lace stats profiling（fattree12 MF=3 w=4）：
+
+| 指标 | baseline | cutoff=0 |
+|------|--------:|--------:|
+| Sylvan BDD and count | 1,588M | 1,527M |
+| MTPNDD total time | 271.2s | 247.0s |
+| MTPNDD AND calls | 7,427,345 | 7,427,345 |
+| BDD and per MTPNDD AND | ~214 | ~206 |
+
+每次 `mtpndd_and` 平均触发 ~210 次 `sylvan_and`。
+MTPNDD AND 平均耗时 = 271.2s / 7.43M = **36.5 μs/次**（含 BDD + 递归 + merge 全部）。
+
+BDD 单次 `sylvan_and` 的精确时间需要采样计时（per-call `clock_gettime`
+对 15 亿次调用太贵 ~150ns/次 × 1.5B = 225s overhead）。粗略估算：
+- 如果 BDD 占 MTPNDD AND 时间的 30%（基于 N-Queens profiling 中 `and_same_bdd_op_ns`
+  占 `and_time_ns` 的比例），则 BDD 总时间 ≈ 81s
+- 15.3 亿次 / 81s ≈ **53 ns/次** 平均
+
+这和 BDD label 很小的预期一致——大部分 `sylvan_and` 在 terminal case
+（true/false/cache hit）就 return 了，不进入递归。

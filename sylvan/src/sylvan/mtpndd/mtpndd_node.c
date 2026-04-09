@@ -76,6 +76,24 @@ TASK_DECL_2(mtpndd_not_item_t, mtpndd_not_expand_item, edge_bucket_entry_t*, _At
 TASK_DECL_3(mtpndd_or_item_t, mtpndd_or_same_field_item, edge_bucket_entry_t*, edge_bucket_entry_t*, mtpndd_or_shared_ctx_t*);
 TASK_DECL_3(mtpndd_or_item_t, mtpndd_or_diff_field_item, edge_bucket_entry_t*, mtpndd_t*, _Atomic(mtpndd_bdd_t)*);
 
+// Two-phase AND: surviving pair after BDD label filter (Phase 1).
+// label is already sylvan_ref'd; child_a/child_b are raw pointers.
+typedef struct {
+    mtpndd_t *child_a;
+    mtpndd_t *child_b;
+    mtpndd_bdd_t label;
+} mtpndd_and_pair_t;
+
+// Task for Phase 2: recurse on a pre-filtered pair.
+// Only does the recursive mtpndd_and_rec; the BDD label is already computed.
+TASK_DECL_1(mtpndd_and_item_t, mtpndd_and_recurse_pair, mtpndd_and_pair_t*);
+
+// Minimum E_a * E_b to trigger the two-phase path.
+// Below this, the original single-pass loop is used.
+#ifndef MTPNDD_AND_TWO_PHASE_THRESHOLD
+#define MTPNDD_AND_TWO_PHASE_THRESHOLD 16
+#endif
+
 // Granularity control: decide whether to SPAWN a sub-problem
 static inline bool mtpndd_should_spawn(mtpndd_t *a, mtpndd_t *b) {
     // Never spawn if only 1 worker
@@ -619,8 +637,14 @@ TASK_IMPL_2(mtpndd_and_item_t, mtpndd_and_same_field_item,
     mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
     mtpndd_bdd_t label_b = mtpndd_edge_label_load(entry_b);
     mtpndd_bdd_t combined_label = sylvan_ref(sylvan_and(label_a, label_b));
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    MTPNDD_STAT_ADD(and_same_bdd_op_count, 1);
+#endif
     if (combined_label == sylvan_false) {
         sylvan_deref(combined_label);
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+        MTPNDD_STAT_ADD(and_same_bdd_op_false_count, 1);
+#endif
         return out;
     }
 
@@ -663,6 +687,29 @@ TASK_IMPL_2(mtpndd_and_item_t, mtpndd_and_diff_field_item,
     out.emit = 1;
     out.child = sub_result;
     out.label = label_a;
+    return out;
+}
+
+// Phase 2 task: recurse on a surviving pair whose label was already computed in Phase 1.
+TASK_IMPL_1(mtpndd_and_item_t, mtpndd_and_recurse_pair, mtpndd_and_pair_t*, pair) {
+    mtpndd_and_item_t out = {0};
+    out.status = MTPNDD_SUCCESS;
+    out.emit = 0;
+    out.child = NULL;
+    out.label = 0;
+
+    mtpndd_t *sub_result = mtpndd_and_rec_CALL(__lace_worker, __lace_dq_head, pair->child_a, pair->child_b);
+    if (!sub_result) {
+        sylvan_deref(pair->label);
+        out.status = mtpndd_get_last_error().code;
+        return out;
+    }
+
+    mtpndd_ref(sub_result);
+
+    out.emit = 1;
+    out.child = sub_result;
+    out.label = pair->label;   // transfer ownership of the ref
     return out;
 }
 
@@ -772,6 +819,141 @@ static mtpndd_error_t mtpndd_and_drain_diff_field_items(
     return MTPNDD_SUCCESS;
 }
 
+/**
+ * Two-phase AND for same-field case: separate BDD filtering from recursive descent.
+ *
+ * Phase 1 (serial): iterate E_a × E_b, compute sylvan_and on labels, collect
+ *   surviving pairs where label != false.
+ * Phase 2 (parallel): SPAWN independent recursive mtpndd_and_rec for each
+ *   surviving pair, then SYNC + merge into res_edges.
+ *
+ * This decouples the cheap O(E_a*E_b) BDD filter from the expensive recursive
+ * descent, letting the scheduler distribute recursive work across all workers.
+ */
+static mtpndd_error_t mtpndd_and_two_phase_same_field(
+        WorkerP *__lace_worker, Task *__lace_dq_head,
+        mtpndd_t *a, mtpndd_t *b,
+        mtpndd_edge_t *res_edges,
+        mtpndd_temp_ref_list_t *temp_refs)
+{
+    mtpndd_error_t status = MTPNDD_SUCCESS;
+    size_t ea = a->edges ? a->edges->edge_count : 0;
+    size_t eb = b->edges ? b->edges->edge_count : 0;
+    size_t max_pairs = ea * eb;
+
+    // Allocate pair buffer (stack for small, heap for large).
+    mtpndd_and_pair_t stack_buf[64];
+    mtpndd_and_pair_t *pairs = (max_pairs <= 64) ? stack_buf : NULL;
+    if (!pairs) {
+        pairs = (mtpndd_and_pair_t *)malloc(max_pairs * sizeof(mtpndd_and_pair_t));
+        if (!pairs) return MTPNDD_ERROR_OUT_OF_MEMORY;
+    }
+
+    // --- Phase 1: filter ---
+    size_t npairs = 0;
+    size_t total_checked = 0;
+    edge_bucket_entry_t *entry_a;
+    edge_bucket_entry_t *entry_b;
+    FOR_EACH_ENTRY_IN_ALL_BUCKETS(a->edges, entry_a) {
+        FOR_EACH_ENTRY_IN_ALL_BUCKETS(b->edges, entry_b) {
+            total_checked++;
+            mtpndd_bdd_t label_a = mtpndd_edge_label_load(entry_a);
+            mtpndd_bdd_t label_b = mtpndd_edge_label_load(entry_b);
+            mtpndd_bdd_t combined = sylvan_and(label_a, label_b);
+            if (combined != sylvan_false) {
+                sylvan_ref(combined);
+                pairs[npairs++] = (mtpndd_and_pair_t){
+                    .child_a = entry_a->child,
+                    .child_b = entry_b->child,
+                    .label = combined
+                };
+            }
+        }
+    }
+
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+    MTPNDD_STAT_ADD(and_two_phase_trigger_count, 1);
+    MTPNDD_STAT_ADD(and_two_phase_total_pairs, total_checked);
+    MTPNDD_STAT_ADD(and_two_phase_surviving, npairs);
+    MTPNDD_STAT_ADD(and_same_bdd_op_count, total_checked);
+    MTPNDD_STAT_ADD(and_same_bdd_op_false_count, total_checked - npairs);
+#endif
+
+    if (npairs == 0) {
+        goto done;
+    }
+
+    // --- Phase 2: parallel recurse ---
+    {
+        size_t pending = 0;
+
+        for (size_t i = 0; i < npairs; i++) {
+            if (mtpndd_should_spawn(pairs[i].child_a, pairs[i].child_b)) {
+#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
+                MTPNDD_STAT_ADD(and_spawn_total, 1);
+                MTPNDD_STAT_ADD(and_spawn_same_total, 1);
+#endif
+                mtpndd_and_recurse_pair_SPAWN(__lace_worker, __lace_dq_head, &pairs[i]);
+                __lace_dq_head++;
+                pending++;
+            } else {
+                mtpndd_and_item_t item = mtpndd_and_recurse_pair_CALL(__lace_worker, __lace_dq_head, &pairs[i]);
+                status = mtpndd_and_merge_item(res_edges, temp_refs, &item, true);
+                if (status != MTPNDD_SUCCESS) goto fail_phase2;
+            }
+
+            if (pending >= MTPNDD_AND_PENDING_FLUSH_THRESHOLD) {
+                size_t keep = MTPNDD_AND_PENDING_FLUSH_THRESHOLD / 2;
+                if (keep == 0) keep = 1;
+                size_t to_drain = pending > keep ? (pending - keep) : pending;
+                // Drain recurse-pair tasks (same item type as same_field_item)
+                for (size_t j = 0; j < to_drain; j++) {
+                    __lace_dq_head--;
+                    mtpndd_and_item_t item = mtpndd_and_recurse_pair_SYNC(__lace_worker, __lace_dq_head);
+                    pending--;
+                    status = mtpndd_and_merge_item(res_edges, temp_refs, &item, true);
+                    if (status != MTPNDD_SUCCESS) goto fail_phase2;
+                }
+            }
+        }
+
+        // Drain remaining
+        while (pending > 0) {
+            __lace_dq_head--;
+            mtpndd_and_item_t item = mtpndd_and_recurse_pair_SYNC(__lace_worker, __lace_dq_head);
+            pending--;
+            status = mtpndd_and_merge_item(res_edges, temp_refs, &item, true);
+            if (status != MTPNDD_SUCCESS) goto fail_phase2;
+        }
+
+        goto done;
+
+    fail_phase2:
+        // Cancel remaining spawned tasks
+        while (pending > 0) {
+            __lace_dq_head--;
+            Task *t = (Task *)__lace_dq_head;
+            if (TASK_IS_STOLEN(t)) {
+                mtpndd_and_item_t item = mtpndd_and_recurse_pair_SYNC(__lace_worker, __lace_dq_head);
+                if (item.emit) {
+                    sylvan_deref(item.label);
+                    mtpndd_deref(item.child);
+                }
+            } else {
+                lace_drop(__lace_worker, __lace_dq_head);
+            }
+            pending--;
+        }
+        // Release labels for un-processed pairs (they were not handed to a task)
+        // All pairs before the current index already had their labels consumed (by CALL or SPAWN).
+        // No cleanup needed — tasks own the labels.
+    }
+
+done:
+    if (pairs != stack_buf) free(pairs);
+    return status;
+}
+
 TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
     mtpndd_and_prof_start();
     mtpndd_error_t status = MTPNDD_SUCCESS;
@@ -815,7 +997,19 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_and_rec, mtpndd_t*, a, mtpndd_t*, b) {
     size_t pending = 0;
 
     if (same_field_case) {
-        // Same field, combine edges
+        // Two-phase path: when the Cartesian product is large enough and we have
+        // multiple workers, separate BDD label filtering from recursive descent.
+        size_t ea = a->edges ? a->edges->edge_count : 0;
+        size_t eb = b->edges ? b->edges->edge_count : 0;
+        if (lace_workers() > 1 && ea * eb >= MTPNDD_AND_TWO_PHASE_THRESHOLD) {
+            status = mtpndd_and_two_phase_same_field(
+                __lace_worker, __lace_dq_head,
+                a, b, res_edges, &temp_refs);
+            if (status != MTPNDD_SUCCESS) goto fail_build_edges;
+            goto build_edges_ok;
+        }
+
+        // Original single-pass path (small edge maps or single worker).
         edge_bucket_entry_t *entry_a;
         edge_bucket_entry_t *entry_b;
         mtpndd_and_prof_switch(MTPNDD_AND_PROF_SAME_OUTER_LOOP);

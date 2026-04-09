@@ -566,6 +566,25 @@ static void print_run_stats(const mtpndd_stats_t *stats) {
            stats->mk_bucket_scan_ns / 1e9,
            stats->mk_link_ns / 1e9,
            stats->mk_collision_cleanup_ns / 1e9);
+    printf(".. stats: BDD ops in same-field AND: count=%" PRIu64 " false=%" PRIu64 " (%.1f%% pruned)\n",
+           stats->and_same_bdd_op_count,
+           stats->and_same_bdd_op_false_count,
+           stats->and_same_bdd_op_count > 0
+               ? 100.0 * stats->and_same_bdd_op_false_count / stats->and_same_bdd_op_count
+               : 0.0);
+    printf(".. stats: two-phase AND: triggers=%" PRIu64 " total_pairs=%" PRIu64 " surviving=%" PRIu64 " (%.1f%% pruned)\n",
+           stats->and_two_phase_trigger_count,
+           stats->and_two_phase_total_pairs,
+           stats->and_two_phase_surviving,
+           stats->and_two_phase_total_pairs > 0
+               ? 100.0 * (stats->and_two_phase_total_pairs - stats->and_two_phase_surviving) / stats->and_two_phase_total_pairs
+               : 0.0);
+    if (stats->and_same_bdd_op_count > 0 && stats->and_same_bdd_op_ns > 0) {
+        printf(".. stats: BDD op avg time = %.0f ns (total %.3f s / %" PRIu64 " ops)\n",
+               (double)stats->and_same_bdd_op_ns / stats->and_same_bdd_op_count,
+               stats->and_same_bdd_op_ns / 1e9,
+               stats->and_same_bdd_op_count);
+    }
     printf(".. stats: mk other/total = %.3f/%.3f s\n",
            stats->mk_other_ns / 1e9,
            stats->mk_total_ns / 1e9);

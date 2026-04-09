@@ -239,6 +239,11 @@ typedef struct mtpndd_stats_s {
     uint64_t and_same_inner_loop_ns;
     uint64_t and_same_label_load_ns;
     uint64_t and_same_bdd_op_ns;
+    uint64_t and_same_bdd_op_count;       // number of sylvan_and calls in same-field AND
+    uint64_t and_same_bdd_op_false_count; // of those, how many returned sylvan_false
+    uint64_t and_two_phase_trigger_count; // times two-phase path was taken
+    uint64_t and_two_phase_total_pairs;   // total E_a * E_b entering Phase 1
+    uint64_t and_two_phase_surviving;     // pairs surviving Phase 1 filter (label != false)
     uint64_t and_same_add_edge_ns;
     uint64_t and_diff_field_ns;
     uint64_t and_mk_ns;
