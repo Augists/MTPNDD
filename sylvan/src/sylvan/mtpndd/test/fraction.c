@@ -308,6 +308,33 @@ static void test_leaf_gc(void) {
     printf("  leaf GC (reclaimed %zu) OK\n", reclaimed);
 }
 
+static void test_abstract_plus_validate(void) {
+    // Valid case: build_indicator uses only field 1's cube BDDs at a
+    // field-1 node, so validation should pass.
+    mtpndd_t *half = mtpndd_make_fraction(1, 2);
+    mtpndd_t *ok_node = build_indicator(1, 2, 0, half);
+    mtpndd_ref(ok_node);
+    assert(mtpndd_abstract_plus_validate(ok_node));
+
+    // Invalid case: attach an edge at field 1 whose label uses BDD var
+    // 100 — well outside field 1's legal range [0, 2).  Validation must
+    // reject this.  (Using sylvan_ithvar directly avoids needing a
+    // second field declared in the engine.)
+    mtpndd_edge_t *bad_edges = mtpndd_memory_acquire_edge_map();
+    mtpndd_edge_map_init(bad_edges);
+    mtpndd_bdd_t bad_label = sylvan_ref(sylvan_ithvar(100));
+    assert_success(mtpndd_add_edge(bad_edges, half, bad_label));
+    mtpndd_t *bad_node = NULL;
+    mtpndd_mk(1, bad_edges, &bad_node);
+    assert(bad_node);
+    mtpndd_ref(bad_node);
+    assert(!mtpndd_abstract_plus_validate(bad_node));
+
+    mtpndd_deref(ok_node);
+    mtpndd_deref(bad_node);
+    printf("  abstract_plus validate OK\n");
+}
+
 static void test_parallel_plus(void) {
     // Both operands cover the same 2 cubes → 4 intersection pairs (2 empty,
     // 2 non-empty), exercising the SPAWN path.
@@ -421,6 +448,7 @@ int main(void) {
     test_times_disjoint();
     test_divide();
     test_abstract_plus();
+    test_abstract_plus_validate();
     test_parallel_plus();
     test_leaf_gc();
 

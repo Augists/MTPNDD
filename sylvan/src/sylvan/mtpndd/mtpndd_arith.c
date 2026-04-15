@@ -1518,6 +1518,130 @@ mtpndd_t *mtpndd_abstract_plus(mtpndd_t *root, uint32_t field_id) {
 }
 
 /********************************
+ * abstract_plus validator
+ *
+ * Walks the DAG rooted at `root` and checks that every internal node's
+ * edge labels only use BDD vars belonging to that node's own field.  This
+ * is the implicit invariant that mtpndd_abstract_plus relies on — if it
+ * does not hold, the collapse step's label-satcount weighting is wrong.
+ ********************************/
+
+typedef struct validate_entry_s {
+    struct validate_entry_s *next;
+    mtpndd_t *node;
+} validate_entry_t;
+
+typedef struct {
+    size_t bucket_count;
+    validate_entry_t **buckets;
+} validate_visited_t;
+
+static bool validate_visited_init(validate_visited_t *vs, size_t bucket_count) {
+    vs->bucket_count = bucket_count;
+    vs->buckets = (validate_entry_t **)calloc(bucket_count, sizeof(validate_entry_t *));
+    return vs->buckets != NULL;
+}
+
+static void validate_visited_free(validate_visited_t *vs) {
+    if (!vs->buckets) return;
+    for (size_t i = 0; i < vs->bucket_count; ++i) {
+        validate_entry_t *e = vs->buckets[i];
+        while (e) {
+            validate_entry_t *next = e->next;
+            free(e);
+            e = next;
+        }
+    }
+    free(vs->buckets);
+    vs->buckets = NULL;
+}
+
+// Returns true if newly inserted.
+static bool validate_visited_mark(validate_visited_t *vs, mtpndd_t *node) {
+    size_t h = mtpndd_hash_node_identity(node) & (vs->bucket_count - 1);
+    for (validate_entry_t *e = vs->buckets[h]; e; e = e->next) {
+        if (e->node == node) return false;
+    }
+    validate_entry_t *e = (validate_entry_t *)malloc(sizeof(*e));
+    if (!e) return false;
+    e->node = node;
+    e->next = vs->buckets[h];
+    vs->buckets[h] = e;
+    return true;
+}
+
+// Walk a support cube (BDD) and confirm every variable falls in
+// [start_var, start_var + bit_width).  A cube is a conjunction of positive
+// literals; each level has var, low=false, high=next-or-true.
+static bool support_within_range(mtpndd_bdd_t support, uint32_t start_var, uint32_t bit_width) {
+    while (support != sylvan_true) {
+        if (support == sylvan_false) return true;  // empty support
+        uint32_t var = sylvan_var(support);
+        if (var < start_var || var >= start_var + bit_width) {
+            return false;
+        }
+        support = sylvan_high(support);
+    }
+    return true;
+}
+
+TASK_DECL_2(int, mtpndd_validate_rec, mtpndd_t*, validate_visited_t*);
+TASK_IMPL_2(int, mtpndd_validate_rec, mtpndd_t*, node, validate_visited_t*, vs) {
+    if (!node) return 1;
+    if (mtpndd_is_terminal(node)) return 1;
+    if (!validate_visited_mark(vs, node)) return 1;  // already visited
+
+    mtpndd_field_info_t *info = mtpndd_get_field_info(node->field_id);
+    if (!info) {
+        mtpndd_set_error(MTPNDD_ERROR_INVALID_FIELD, __func__, __LINE__);
+        return 0;
+    }
+    uint32_t start_var = info->start_var;
+    uint32_t bit_width = info->bit_width;
+
+    if (!node->edges || !node->edges->buckets) return 1;
+    size_t bc = node->edges->bucket_count
+            ? node->edges->bucket_count
+            : g_mtpndd_pal_config.edge_bucket_count;
+    for (size_t i = 0; i < bc; ++i) {
+        for (edge_bucket_entry_t *e = node->edges->buckets[i]; e; e = e->next) {
+            mtpndd_bdd_t lab = edge_label_load(e);
+            if (lab == sylvan_true || lab == sylvan_false) {
+                // Trivially within range.
+            } else {
+                mtpndd_bdd_t support = CALL(mtbdd_support, lab);
+                if (!support_within_range(support, start_var, bit_width)) {
+                    mtpndd_set_error(MTPNDD_ERROR_INVALID_PARAM, __func__, __LINE__);
+                    return 0;
+                }
+            }
+            int child_ok = mtpndd_validate_rec_CALL(__lace_worker, __lace_dq_head, e->child, vs);
+            if (!child_ok) return 0;
+        }
+    }
+    return 1;
+}
+
+bool mtpndd_abstract_plus_validate(mtpndd_t *root) {
+    if (!mtpndd_is_initialized()) {
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_NOT_INITIALIZED);
+        return false;
+    }
+    if (!root) {
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_NULL_POINTER);
+        return false;
+    }
+    validate_visited_t vs;
+    if (!validate_visited_init(&vs, 1024)) {
+        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
+        return false;
+    }
+    int ok = RUN(mtpndd_validate_rec, root, &vs);
+    validate_visited_free(&vs);
+    return ok != 0;
+}
+
+/********************************
  * leafcount
  ********************************/
 typedef struct lc_entry_s {

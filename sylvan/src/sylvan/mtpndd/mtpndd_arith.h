@@ -30,4 +30,12 @@ size_t mtpndd_leafcount(mtpndd_t *root);
 // Returns NULL on overflow, OOM, or invalid field_id.
 mtpndd_t *mtpndd_abstract_plus(mtpndd_t *root, uint32_t field_id);
 
+// Validate the implicit invariant that every internal node's edge labels
+// only depend on its own field's BDD variables.  abstract_plus relies on
+// this; violators give silently wrong results.  Returns true iff the
+// invariant holds.  On violation, sets last-error to MTPNDD_ERROR_INVALID_PARAM
+// (with context pointing at the offending field).  Complexity is
+// O(|DAG nodes|) plus one sylvan_support per distinct edge.
+bool mtpndd_abstract_plus_validate(mtpndd_t *root);
+
 #endif // MTPNDD_ARITH_H
