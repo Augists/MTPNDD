@@ -10,6 +10,7 @@
 #include "mtpndd_node.h"
 #include "mtpndd_memory_pool.h"
 #include "mtpndd_operation_cache.h"
+#include "mtpndd_leaf_table.h"
 #include "sylvan.h"
 #include "sylvan_common.h"
 #include "lace.h"
@@ -572,6 +573,13 @@ static void gc_internal(void) {
     // This avoids suspending workers while they may hold spin locks.
     mtpndd_gc_lock_all_tables();
     size_t reclaimed = mtpndd_gc_sweep();
+
+    // Sweep the leaf tables while the nodetables are still locked so that
+    // the set of live internal nodes (and thus the set of reachable leaves)
+    // cannot change underneath us.  Leaves freed now are those that were
+    // only reachable from internal nodes reclaimed above.
+    size_t leaves_reclaimed = mtpndd_leaf_gc();
+
     mtpndd_gc_unlock_all_tables();
 
     if (reclaimed > 0) {
@@ -581,6 +589,7 @@ static void gc_internal(void) {
         MTPNDD_STAT_SET(nodes_collected_last, reclaimed);
 #endif
     }
+    (void)leaves_reclaimed;
 
     mtpndd_gc_run_posthooks();
 }

@@ -175,6 +175,23 @@ size_t mtpndd_leaf_table_size(const mtpndd_leaf_table_t *t) {
 /********************************
  * Mark-and-sweep GC
  ********************************/
+
+// Lock / unlock every bucket on a leaf table.  Used by mtpndd_leaf_gc to
+// quiesce concurrent make_fraction / make_double inserts while sweeping.
+static void leaf_table_lock_all(mtpndd_leaf_table_t *t) {
+    if (!t || !t->bucket_locks) return;
+    for (size_t i = 0; i < t->bucket_lock_count; ++i) {
+        pthread_spin_lock(&t->bucket_locks[i]);
+    }
+}
+
+static void leaf_table_unlock_all(mtpndd_leaf_table_t *t) {
+    if (!t || !t->bucket_locks) return;
+    for (size_t i = t->bucket_lock_count; i-- > 0; ) {
+        pthread_spin_unlock(&t->bucket_locks[i]);
+    }
+}
+
 void mtpndd_leaf_table_clear_marks(mtpndd_leaf_table_t *t) {
     if (!t || !t->buckets) return;
     for (size_t i = 0; i < t->bucket_count; ++i) {
@@ -261,6 +278,13 @@ size_t mtpndd_leaf_gc(void) {
     mtpndd_leaf_table_t *dbl  = g_mtpndd_config.double_leaf_table;
     if (!frac && !dbl) return 0;
 
+    // Quiesce concurrent inserts while we clear/mark/sweep.  The caller
+    // from gc_internal already holds all nodetable bucket locks, so any
+    // thread inside mtpndd_mk is blocked; but make_fraction / make_double
+    // only touch the leaf table and must be blocked here explicitly.
+    if (frac) leaf_table_lock_all(frac);
+    if (dbl)  leaf_table_lock_all(dbl);
+
     if (frac) mtpndd_leaf_table_clear_marks(frac);
     if (dbl)  mtpndd_leaf_table_clear_marks(dbl);
 
@@ -269,5 +293,8 @@ size_t mtpndd_leaf_gc(void) {
     size_t reclaimed = 0;
     if (frac) reclaimed += mtpndd_leaf_table_sweep_unmarked(frac);
     if (dbl)  reclaimed += mtpndd_leaf_table_sweep_unmarked(dbl);
+
+    if (dbl)  leaf_table_unlock_all(dbl);
+    if (frac) leaf_table_unlock_all(frac);
     return reclaimed;
 }

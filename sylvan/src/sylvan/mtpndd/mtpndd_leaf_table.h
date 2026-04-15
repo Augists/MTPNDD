@@ -61,8 +61,13 @@ size_t mtpndd_leaf_table_sweep_unmarked(mtpndd_leaf_table_t *table);
 // Full GC entry point: walks all live internal nodes in the field
 // nodetables, marks every leaf they reach, and sweeps the rest from both
 // the fraction and double leaf tables.  Returns the number of leaves
-// reclaimed.  The caller must ensure no arithmetic operations are in
-// flight (the engine should be quiescent).
+// reclaimed.
+//
+// Also wired into mtpndd_gc_before_sylvan / gc_internal automatically:
+// whenever the node-table GC runs, leaf GC runs immediately afterwards
+// while the nodetables are still locked.  External callers can invoke
+// it directly for diagnostics or explicit cleanup; the function takes
+// all leaf-table bucket locks for the duration of the sweep.
 size_t mtpndd_leaf_gc(void);
 
 #endif // MTPNDD_LEAF_TABLE_H
