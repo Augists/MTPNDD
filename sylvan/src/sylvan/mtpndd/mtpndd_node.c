@@ -22,6 +22,11 @@
 #include <time.h>
 #endif
 
+// Terminal singletons. Their values are assigned during mtpndd_init once
+// the leaf table exists; at that point MTPNDD_TRUE becomes the canonical
+// leaf for 1/1 and MTPNDD_FALSE the canonical leaf for 0/1. Their
+// addresses remain stable so existing `&MTPNDD_TRUE` / `&MTPNDD_FALSE`
+// references keep working.
 mtpndd_t MTPNDD_TRUE = {0};
 mtpndd_t MTPNDD_FALSE = {0};
 
@@ -541,7 +546,7 @@ bool mtpndd_is_false(mtpndd_t *ndd) {
 }
 
 bool mtpndd_is_terminal(mtpndd_t *ndd) {
-    return ndd->field_id == 0;
+    return ndd->field_id >= MTPNDD_LEAF_FIELD_ID_MIN;
 }
 
 static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **result);
@@ -2568,7 +2573,22 @@ static double mtpndd_satcount_rec(mtpndd_t *node, uint32_t field) {
     if (mtpndd_is_false(node)) {
         return 0.0;
     }
-    if (mtpndd_is_true(node)) {
+    // Any non-zero terminal contributes the full measure of the remaining
+    // fields.  Zero leaves (whether fraction 0/1 or double 0.0) contribute
+    // nothing.
+    if (mtpndd_is_terminal(node)) {
+        bool is_zero = false;
+        if (node->field_id == MTPNDD_FRACTION_LEAF_FIELD_ID) {
+            int32_t numer = (int32_t)(uint32_t)(node->leaf_value >> 32);
+            is_zero = (numer == 0);
+        } else if (node->field_id == MTPNDD_DOUBLE_LEAF_FIELD_ID) {
+            double v;
+            memcpy(&v, &node->leaf_value, sizeof(v));
+            is_zero = (v == 0.0);
+        }
+        if (is_zero) {
+            return 0.0;
+        }
         if (field > g_mtpndd_config.field_count) {
             return 1.0;
         }

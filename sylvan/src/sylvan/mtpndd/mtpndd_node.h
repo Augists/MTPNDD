@@ -13,13 +13,28 @@
 /********************************
  * MTPNDD node definition
  ********************************/
+// Terminal (leaf) nodes use the top of the field_id space.  Any field_id
+// >= MTPNDD_LEAF_FIELD_ID_MIN is a leaf; the specific value encodes the
+// leaf type so that the correct canonical table is consulted.
+//   MTPNDD_FRACTION_LEAF_FIELD_ID : int32 numer / int32 denom in leaf_value
+//   MTPNDD_DOUBLE_LEAF_FIELD_ID   : IEEE double bit-pattern in leaf_value
+#define MTPNDD_FRACTION_LEAF_FIELD_ID ((uint32_t)0xFFFFFFFFu)
+#define MTPNDD_DOUBLE_LEAF_FIELD_ID   ((uint32_t)0xFFFFFFFEu)
+#define MTPNDD_LEAF_FIELD_ID_MIN      MTPNDD_DOUBLE_LEAF_FIELD_ID
+
+// Backwards-compatibility alias.
+#define MTPNDD_LEAF_FIELD_ID MTPNDD_FRACTION_LEAF_FIELD_ID
+
 // directly use field_id instead of mtpndd_field_info_t * for better cache performance
 // TODO: cache line friendly
 // TODO: like JDD, use a t_list data structure for both node memory pool and node table
 struct mtpndd_node_s {
-    atomic_uint_fast64_t ref_count;
+    atomic_uint_fast32_t ref_count;     // UINT32_MAX = protected (never collected)
     uint32_t field_id;
-    struct mtpndd_edge_s *edges;
+    union {
+        struct mtpndd_edge_s *edges;   // internal nodes
+        uint64_t leaf_value;            // leaves (field_id == MTPNDD_LEAF_FIELD_ID)
+    };
 };
 /********************************
  * MTPNDD edge definition

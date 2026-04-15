@@ -7,6 +7,8 @@
 #include "mtpndd_nodetable.h"
 #include "mtpndd_operation_cache.h"
 #include "mtpndd_memory_pool.h"
+#include "mtpndd_leaf_table.h"
+#include "mtpndd_leaf.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +32,17 @@ mtpndd_config_t g_mtpndd_config = {
     .and_cache = NULL,
     .or_cache = NULL,
     .not_cache = NULL,
+    .leaf_table = NULL,
+    .double_leaf_table = NULL,
 };
+
+mtpndd_leaf_table_t *mtpndd_get_leaf_table(void) {
+    return g_mtpndd_config.leaf_table;
+}
+
+mtpndd_leaf_table_t *mtpndd_get_double_leaf_table(void) {
+    return g_mtpndd_config.double_leaf_table;
+}
 
 #define MTPNDD_GC_HOOK_CAPACITY 16
 static mtpndd_gc_hook_t g_mtpndd_gc_prehooks[MTPNDD_GC_HOOK_CAPACITY] = {0};
@@ -590,11 +602,14 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     g_mtpndd_pal_config.edge_map_slab_capacity = config->edge_map_slab_capacity;
     mtpndd_apply_pal_config_defaults();
 
-    MTPNDD_TRUE.field_id = 0;
-    MTPNDD_TRUE.edges = NULL;
+    // Initialize TRUE/FALSE as leaves for 1/1 and 0/1. They will be
+    // pre-seeded into the leaf table so that mtpndd_make_fraction(1,1)
+    // and mtpndd_make_fraction(0,1) return these canonical pointers.
+    MTPNDD_TRUE.field_id = MTPNDD_LEAF_FIELD_ID;
+    MTPNDD_TRUE.leaf_value = mtpndd_pack_fraction(1, 1);
     mtpndd_protect(&MTPNDD_TRUE);
-    MTPNDD_FALSE.field_id = 0;
-    MTPNDD_FALSE.edges = NULL;
+    MTPNDD_FALSE.field_id = MTPNDD_LEAF_FIELD_ID;
+    MTPNDD_FALSE.leaf_value = mtpndd_pack_fraction(0, 1);
     mtpndd_protect(&MTPNDD_FALSE);
 
     memset(&g_mtpndd_config, 0, sizeof(g_mtpndd_config));
@@ -648,6 +663,26 @@ mtpndd_error_t mtpndd_init(mtpndd_pal_config_t *config) {
     mtpndd_log_init_config(config);
 
     mtpndd_memory_pools_init();
+
+    // Canonical leaf tables and seeding of TRUE/FALSE.
+    g_mtpndd_config.leaf_table = mtpndd_leaf_table_create(0);
+    if (!g_mtpndd_config.leaf_table) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INITIALIZE_FAILED);
+    }
+    g_mtpndd_config.double_leaf_table = mtpndd_leaf_table_create(0);
+    if (!g_mtpndd_config.double_leaf_table) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INITIALIZE_FAILED);
+    }
+    if (mtpndd_leaf_table_insert_sentinel(
+            g_mtpndd_config.leaf_table,
+            MTPNDD_FALSE.leaf_value, &MTPNDD_FALSE) != MTPNDD_SUCCESS) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INITIALIZE_FAILED);
+    }
+    if (mtpndd_leaf_table_insert_sentinel(
+            g_mtpndd_config.leaf_table,
+            MTPNDD_TRUE.leaf_value, &MTPNDD_TRUE) != MTPNDD_SUCCESS) {
+        MTPNDD_RETURN_ERROR(MTPNDD_ERROR_INITIALIZE_FAILED);
+    }
 
     // Attach GC logging hooks for both Sylvan and MTPNDD
     sylvan_gc_hook_pregc(mtpndd_gc_hook_sylvan_pre);
@@ -808,6 +843,17 @@ mtpndd_error_t mtpndd_quit() {
     g_mtpndd_config.pending_field_count = 0;
     g_mtpndd_config.pending_field_capacity = 0;
     g_mtpndd_config.fields_generated = false;
+
+    // Leaf tables must be freed before the memory pool shuts down, since
+    // pooled leaf nodes live in the slab allocator.
+    if (g_mtpndd_config.leaf_table) {
+        mtpndd_leaf_table_free(g_mtpndd_config.leaf_table);
+        g_mtpndd_config.leaf_table = NULL;
+    }
+    if (g_mtpndd_config.double_leaf_table) {
+        mtpndd_leaf_table_free(g_mtpndd_config.double_leaf_table);
+        g_mtpndd_config.double_leaf_table = NULL;
+    }
 
     mtpndd_op_cache_destroy();
     mtpndd_memory_pools_shutdown();

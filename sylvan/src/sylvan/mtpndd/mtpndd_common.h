@@ -42,6 +42,7 @@ struct mtpndd_node_s;
 struct mtpndd_edge_s;
 struct mtpndd_nodetable_s;
 struct mtpndd_op_cache_s;
+struct mtpndd_leaf_table_s;
 
 typedef uint64_t mtpndd_bdd_t;
 typedef struct mtpndd_node_s mtpndd_node_t;
@@ -49,6 +50,7 @@ typedef mtpndd_node_t mtpndd_t;
 typedef struct mtpndd_edge_s mtpndd_edge_t;
 typedef struct mtpndd_nodetable_s mtpndd_nodetable_t;
 typedef struct mtpndd_op_cache_s mtpndd_op_cache_t;
+typedef struct mtpndd_leaf_table_s mtpndd_leaf_table_t;
 
 size_t mtpndd_hash_node_identity(const mtpndd_node_t *node);
 
@@ -329,9 +331,17 @@ typedef struct mtpndd_config_s {
 
     mtpndd_nodetable_t **node_tables_by_field;
 
+    // and_cache/or_cache are reused for times/plus respectively in MT mode;
+    // Boolean-mode and MT-mode usage is mutually exclusive, so the physical
+    // cache slots are shared. minus/divide are not cached in phase 1.
     mtpndd_op_cache_t *and_cache;
     mtpndd_op_cache_t *or_cache;
     mtpndd_op_cache_t *not_cache;
+
+    // Canonical tables for terminal (leaf) nodes.  Separate tables per type
+    // keep the hash keys simple (no type tag in the key).
+    mtpndd_leaf_table_t *leaf_table;           // fractions (phase 1)
+    mtpndd_leaf_table_t *double_leaf_table;    // IEEE doubles (phase 2)
 
     uint32_t pending_field_count;
     uint32_t pending_field_capacity;

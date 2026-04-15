@@ -248,8 +248,8 @@ mtpndd_error_t mtpndd_ref(mtpndd_t *node) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return MTPNDD_ERROR_NULL_POINTER;
     }
-    if (node->ref_count == UINT64_MAX) {
-        // Terminal nodes
+    if (node->ref_count == UINT32_MAX) {
+        // Terminal / protected nodes
         return MTPNDD_SUCCESS;
     }
     atomic_fetch_add(&node->ref_count, 1);
@@ -261,8 +261,8 @@ mtpndd_error_t mtpndd_deref(mtpndd_t *node) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return MTPNDD_ERROR_NULL_POINTER;
     }
-    if (node->ref_count == UINT64_MAX) {
-        // Terminal nodes
+    if (node->ref_count == UINT32_MAX) {
+        // Terminal / protected nodes
         return MTPNDD_SUCCESS;
     }
     atomic_fetch_sub(&node->ref_count, 1);
@@ -274,7 +274,7 @@ mtpndd_error_t mtpndd_protect(mtpndd_t *node) {
         mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
         return MTPNDD_ERROR_NULL_POINTER;
     }
-    atomic_init(&node->ref_count, UINT64_MAX);
+    atomic_init(&node->ref_count, UINT32_MAX);
     return MTPNDD_SUCCESS;
 }
 
@@ -658,7 +658,7 @@ static size_t mtpndd_gc_sweep(void) {
             while (entry) {
                 mtpndd_nodetable_bucket_entry_t *next_entry = entry->next;
                 mtpndd_node_t *node = entry->node;
-                uint64_t refc = atomic_load_explicit(&node->ref_count, memory_order_relaxed);
+                uint32_t refc = atomic_load_explicit(&node->ref_count, memory_order_relaxed);
                 if (refc == 0) {
                     mtpndd_release_node(nodetable, i, entry, node);
                     reclaimed++;

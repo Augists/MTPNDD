@@ -1,0 +1,170 @@
+// Multi-Terminal Parallel Network Decision Diagrams (MTPNDD)
+// Copyright (C) Augists
+// Copyright (C) XJTU ANTS Netverify Lab
+
+#include "mtpndd_leaf_table.h"
+#include "mtpndd_node.h"
+#include "mtpndd_nodetable.h"
+#include "mtpndd_memory_pool.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+#define MTPNDD_LEAF_TABLE_DEFAULT_BUCKETS 1024u
+#define MTPNDD_LEAF_TABLE_LOCK_CAP 64u
+
+static inline size_t leaf_bucket_index(const mtpndd_leaf_table_t *t, uint64_t v) {
+    uint64_t h = mtpndd_hash_u64(v);
+    return (size_t)(h & (t->bucket_count - 1));
+}
+
+static inline size_t leaf_lock_index(const mtpndd_leaf_table_t *t, uint64_t v) {
+    uint64_t h = mtpndd_hash_u64(v);
+    return (size_t)(h & (t->bucket_lock_count - 1));
+}
+
+mtpndd_leaf_table_t *mtpndd_leaf_table_create(size_t bucket_count) {
+    if (bucket_count == 0) bucket_count = MTPNDD_LEAF_TABLE_DEFAULT_BUCKETS;
+    bucket_count = mtpndd_round_up_pow2(bucket_count);
+    if (bucket_count < 16) bucket_count = 16;
+
+    mtpndd_leaf_table_t *t = (mtpndd_leaf_table_t *)calloc(1, sizeof(*t));
+    if (!t) return NULL;
+
+    t->bucket_count = bucket_count;
+    t->buckets = (mtpndd_leaf_bucket_entry_t **)calloc(
+            bucket_count, sizeof(mtpndd_leaf_bucket_entry_t *));
+    if (!t->buckets) {
+        free(t);
+        return NULL;
+    }
+
+    size_t locks = bucket_count;
+    if (locks > MTPNDD_LEAF_TABLE_LOCK_CAP) locks = MTPNDD_LEAF_TABLE_LOCK_CAP;
+    if (locks < 4) locks = 4;
+    locks = mtpndd_round_up_pow2(locks);
+    t->bucket_lock_count = locks;
+    t->bucket_locks = (pthread_spinlock_t *)calloc(locks, sizeof(*t->bucket_locks));
+    if (!t->bucket_locks) {
+        free(t->buckets);
+        free(t);
+        return NULL;
+    }
+    for (size_t i = 0; i < locks; ++i) {
+        pthread_spin_init(&t->bucket_locks[i], PTHREAD_PROCESS_PRIVATE);
+    }
+    atomic_init(&t->entry_count, 0);
+    return t;
+}
+
+void mtpndd_leaf_table_free(mtpndd_leaf_table_t *t) {
+    if (!t) return;
+    if (t->buckets) {
+        for (size_t i = 0; i < t->bucket_count; ++i) {
+            mtpndd_leaf_bucket_entry_t *e = t->buckets[i];
+            while (e) {
+                mtpndd_leaf_bucket_entry_t *next = e->next;
+                // The node pointer is either a pre-seeded sentinel (owned by
+                // the caller) or a pooled node (owned by the memory pool).
+                // In either case we do not free `e->node` here; we only free
+                // pool-allocated nodes that are not the TRUE/FALSE sentinels.
+                if (e->node != &MTPNDD_TRUE && e->node != &MTPNDD_FALSE) {
+                    mtpndd_memory_release_node(e->node);
+                }
+                free(e);
+                e = next;
+            }
+        }
+        free(t->buckets);
+    }
+    if (t->bucket_locks) {
+        for (size_t i = 0; i < t->bucket_lock_count; ++i) {
+            pthread_spin_destroy(&t->bucket_locks[i]);
+        }
+        free((void *)t->bucket_locks);
+    }
+    free(t);
+}
+
+mtpndd_error_t mtpndd_leaf_table_insert_sentinel(
+        mtpndd_leaf_table_t *t, uint64_t leaf_value, mtpndd_node_t *node) {
+    if (!t || !node) {
+        return MTPNDD_ERROR_NULL_POINTER;
+    }
+    mtpndd_leaf_bucket_entry_t *entry = (mtpndd_leaf_bucket_entry_t *)malloc(sizeof(*entry));
+    if (!entry) return MTPNDD_ERROR_OUT_OF_MEMORY;
+    entry->leaf_value = leaf_value;
+    entry->node = node;
+
+    size_t lock_idx = leaf_lock_index(t, leaf_value);
+    size_t bkt = leaf_bucket_index(t, leaf_value);
+    pthread_spin_lock(&t->bucket_locks[lock_idx]);
+    entry->next = t->buckets[bkt];
+    t->buckets[bkt] = entry;
+    pthread_spin_unlock(&t->bucket_locks[lock_idx]);
+    atomic_fetch_add_explicit(&t->entry_count, 1, memory_order_relaxed);
+    return MTPNDD_SUCCESS;
+}
+
+mtpndd_node_t *mtpndd_leaf_table_lookup_or_insert(
+        mtpndd_leaf_table_t *t, uint32_t leaf_field_id, uint64_t leaf_value) {
+    if (!t) {
+        mtpndd_set_error(MTPNDD_ERROR_NULL_POINTER, __func__, __LINE__);
+        return NULL;
+    }
+    size_t lock_idx = leaf_lock_index(t, leaf_value);
+    size_t bkt = leaf_bucket_index(t, leaf_value);
+
+    // Fast path: scan under lock.
+    pthread_spin_lock(&t->bucket_locks[lock_idx]);
+    for (mtpndd_leaf_bucket_entry_t *e = t->buckets[bkt]; e; e = e->next) {
+        if (e->leaf_value == leaf_value) {
+            mtpndd_node_t *found = e->node;
+            pthread_spin_unlock(&t->bucket_locks[lock_idx]);
+            return found;
+        }
+    }
+    pthread_spin_unlock(&t->bucket_locks[lock_idx]);
+
+    // Slow path: allocate a new leaf node, then retry under lock.
+    mtpndd_node_t *node = mtpndd_memory_acquire_node();
+    if (!node) {
+        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
+        return NULL;
+    }
+    node->field_id = leaf_field_id;
+    node->leaf_value = leaf_value;
+    // Protected: leaves live for the lifetime of the engine in phase 1.
+    atomic_init(&node->ref_count, UINT32_MAX);
+
+    mtpndd_leaf_bucket_entry_t *entry = (mtpndd_leaf_bucket_entry_t *)malloc(sizeof(*entry));
+    if (!entry) {
+        mtpndd_memory_release_node(node);
+        mtpndd_set_error(MTPNDD_ERROR_OUT_OF_MEMORY, __func__, __LINE__);
+        return NULL;
+    }
+    entry->leaf_value = leaf_value;
+    entry->node = node;
+
+    pthread_spin_lock(&t->bucket_locks[lock_idx]);
+    // Re-check to handle a concurrent insert of the same value.
+    for (mtpndd_leaf_bucket_entry_t *e = t->buckets[bkt]; e; e = e->next) {
+        if (e->leaf_value == leaf_value) {
+            mtpndd_node_t *found = e->node;
+            pthread_spin_unlock(&t->bucket_locks[lock_idx]);
+            free(entry);
+            mtpndd_memory_release_node(node);
+            return found;
+        }
+    }
+    entry->next = t->buckets[bkt];
+    t->buckets[bkt] = entry;
+    pthread_spin_unlock(&t->bucket_locks[lock_idx]);
+    atomic_fetch_add_explicit(&t->entry_count, 1, memory_order_relaxed);
+    return node;
+}
+
+size_t mtpndd_leaf_table_size(const mtpndd_leaf_table_t *t) {
+    if (!t) return 0;
+    return (size_t)atomic_load_explicit(&t->entry_count, memory_order_relaxed);
+}
