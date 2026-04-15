@@ -11,6 +11,7 @@
 #include "mtpndd_node.h"
 #include "mtpndd_nodetable.h"
 #include "mtpndd_leaf.h"
+#include "mtpndd_leaf_table.h"
 #include "mtpndd_arith.h"
 #include "sylvan.h"
 #include "sylvan_cache.h"
@@ -1027,4 +1028,19 @@ Java_org_ants_mtpndd_MTPNDDEngine_abstractPlusNative(JNIEnv *env, jclass clazz, 
     mtpndd_clear_error();
     mtpndd_t *node = mtpndd_abstract_plus(mtpndd_node_from_jlong(handle), (uint32_t)fieldId);
     return mtpndd_wrap_node(env, node);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_abstractPlusValidateNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    return mtpndd_abstract_plus_validate(mtpndd_node_from_jlong(handle)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_leafGcNative(JNIEnv *env, jclass clazz)
+{
+    (void)env; (void)clazz;
+    return (jlong)mtpndd_leaf_gc();
 }

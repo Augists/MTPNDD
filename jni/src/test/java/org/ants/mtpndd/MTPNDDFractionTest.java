@@ -125,4 +125,22 @@ class MTPNDDFractionTest {
         MTPNDD sum = MTPNDDEngine.plus(a, b);  // leaf 5/6
         assertEquals(1L, MTPNDDEngine.leafCount(sum));
     }
+
+    @Test
+    void leafGc() {
+        // Create a handful of loose leaves that are not referenced.
+        for (int i = 1; i <= 20; i++) {
+            MTPNDDEngine.makeFraction(i, 97);
+        }
+        long reclaimed = MTPNDDEngine.leafGc();
+        // At least the 20 loose leaves we created should be reclaimed.
+        assertTrue(reclaimed >= 20L, "expected >= 20 reclaimed, got " + reclaimed);
+    }
+
+    @Test
+    void abstractPlusValidatePassesOnLeaf() {
+        // A leaf is trivially valid: no internal nodes, no labels to check.
+        MTPNDD leaf = MTPNDDEngine.makeFraction(3, 7);
+        assertTrue(MTPNDDEngine.abstractPlusValidate(leaf));
+    }
 }

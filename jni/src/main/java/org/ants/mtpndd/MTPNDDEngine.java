@@ -360,6 +360,15 @@ public final class MTPNDDEngine {
         return wrap(abstractPlusNative(node.nativePtr, fieldId));
     }
 
+    public static synchronized boolean abstractPlusValidate(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return abstractPlusValidateNative(node.nativePtr);
+    }
+
+    public static synchronized long leafGc() {
+        return leafGcNative();
+    }
+
     static synchronized MTPNDD getTrue() {
         return wrap(terminalTrueNative());
     }
@@ -564,4 +573,6 @@ public final class MTPNDDEngine {
     private static native long divideNative(long left, long right);
     private static native long leafCountNative(long handle);
     private static native long abstractPlusNative(long handle, int fieldId);
+    private static native boolean abstractPlusValidateNative(long handle);
+    private static native long leafGcNative();
 }
