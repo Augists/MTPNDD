@@ -10,6 +10,8 @@
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
 #include "mtpndd_nodetable.h"
+#include "mtpndd_leaf.h"
+#include "mtpndd_arith.h"
 #include "sylvan.h"
 #include "sylvan_cache.h"
 #include "sylvan_bdd.h"
@@ -909,4 +911,120 @@ Java_org_ants_mtpndd_MTPNDDEngine_getStatsNative(JNIEnv *env, jclass clazz)
 #endif
             arr);
     return result;
+}
+
+/********************************
+ * MT (fraction / double leaf) bindings
+ ********************************/
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_makeFractionNative(JNIEnv *env, jclass clazz, jint numer, jint denom)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_t *node = mtpndd_make_fraction((int32_t)numer, (int32_t)denom);
+    return mtpndd_wrap_node(env, node);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_makeDoubleNative(JNIEnv *env, jclass clazz, jdouble value)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_t *node = mtpndd_make_double((double)value);
+    return mtpndd_wrap_node(env, node);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_isLeafNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    return mtpndd_is_leaf(mtpndd_node_from_jlong(handle)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_isFractionLeafNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    return mtpndd_is_fraction_leaf(mtpndd_node_from_jlong(handle)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_isDoubleLeafNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    return mtpndd_is_double_leaf(mtpndd_node_from_jlong(handle)) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getNumerNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    return (jint)mtpndd_get_numer(mtpndd_node_from_jlong(handle));
+}
+
+JNIEXPORT jint JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getDenomNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    return (jint)mtpndd_get_denom(mtpndd_node_from_jlong(handle));
+}
+
+JNIEXPORT jdouble JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_getDoubleLeafNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    return (jdouble)mtpndd_get_double(mtpndd_node_from_jlong(handle));
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_plusNative(JNIEnv *env, jclass clazz, jlong left, jlong right)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_t *node = mtpndd_plus(mtpndd_node_from_jlong(left), mtpndd_node_from_jlong(right));
+    return mtpndd_wrap_node(env, node);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_minusNative(JNIEnv *env, jclass clazz, jlong left, jlong right)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_t *node = mtpndd_minus(mtpndd_node_from_jlong(left), mtpndd_node_from_jlong(right));
+    return mtpndd_wrap_node(env, node);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_timesNative(JNIEnv *env, jclass clazz, jlong left, jlong right)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_t *node = mtpndd_times(mtpndd_node_from_jlong(left), mtpndd_node_from_jlong(right));
+    return mtpndd_wrap_node(env, node);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_divideNative(JNIEnv *env, jclass clazz, jlong left, jlong right)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_t *node = mtpndd_divide(mtpndd_node_from_jlong(left), mtpndd_node_from_jlong(right));
+    return mtpndd_wrap_node(env, node);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_leafCountNative(JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    return (jlong)mtpndd_leafcount(mtpndd_node_from_jlong(handle));
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_ants_mtpndd_MTPNDDEngine_abstractPlusNative(JNIEnv *env, jclass clazz, jlong handle, jint fieldId)
+{
+    (void)clazz;
+    mtpndd_clear_error();
+    mtpndd_t *node = mtpndd_abstract_plus(mtpndd_node_from_jlong(handle), (uint32_t)fieldId);
+    return mtpndd_wrap_node(env, node);
 }

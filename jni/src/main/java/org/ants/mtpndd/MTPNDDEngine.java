@@ -286,6 +286,80 @@ public final class MTPNDDEngine {
         return minZerosNative(value.nativePtr);
     }
 
+    // ---- MT (fraction / double leaf) operations --------------------------
+
+    public static synchronized MTPNDD makeFraction(int numer, int denom) {
+        return wrap(makeFractionNative(numer, denom));
+    }
+
+    public static synchronized MTPNDD makeDouble(double value) {
+        return wrap(makeDoubleNative(value));
+    }
+
+    public static synchronized boolean isLeaf(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return isLeafNative(node.nativePtr);
+    }
+
+    public static synchronized boolean isFractionLeaf(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return isFractionLeafNative(node.nativePtr);
+    }
+
+    public static synchronized boolean isDoubleLeaf(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return isDoubleLeafNative(node.nativePtr);
+    }
+
+    public static synchronized int getNumer(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return getNumerNative(node.nativePtr);
+    }
+
+    public static synchronized int getDenom(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return getDenomNative(node.nativePtr);
+    }
+
+    public static synchronized double getDoubleLeaf(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return getDoubleLeafNative(node.nativePtr);
+    }
+
+    public static synchronized MTPNDD plus(MTPNDD left, MTPNDD right) {
+        Objects.requireNonNull(left, "left");
+        Objects.requireNonNull(right, "right");
+        return wrap(plusNative(left.nativePtr, right.nativePtr));
+    }
+
+    public static synchronized MTPNDD minus(MTPNDD left, MTPNDD right) {
+        Objects.requireNonNull(left, "left");
+        Objects.requireNonNull(right, "right");
+        return wrap(minusNative(left.nativePtr, right.nativePtr));
+    }
+
+    public static synchronized MTPNDD times(MTPNDD left, MTPNDD right) {
+        Objects.requireNonNull(left, "left");
+        Objects.requireNonNull(right, "right");
+        return wrap(timesNative(left.nativePtr, right.nativePtr));
+    }
+
+    public static synchronized MTPNDD divide(MTPNDD left, MTPNDD right) {
+        Objects.requireNonNull(left, "left");
+        Objects.requireNonNull(right, "right");
+        return wrap(divideNative(left.nativePtr, right.nativePtr));
+    }
+
+    public static synchronized long leafCount(MTPNDD node) {
+        Objects.requireNonNull(node, "node");
+        return leafCountNative(node.nativePtr);
+    }
+
+    public static synchronized MTPNDD abstractPlus(MTPNDD node, int fieldId) {
+        Objects.requireNonNull(node, "node");
+        return wrap(abstractPlusNative(node.nativePtr, fieldId));
+    }
+
     static synchronized MTPNDD getTrue() {
         return wrap(terminalTrueNative());
     }
@@ -474,4 +548,20 @@ public final class MTPNDDEngine {
     private static native long[] andBatchNative(long[] lefts, long[] rights);
     private static native long orReduceNative(long[] values);
     private static native long andReduceNative(long[] values);
+
+    // ---- MT (fraction / double) JNI ----
+    private static native long makeFractionNative(int numer, int denom);
+    private static native long makeDoubleNative(double value);
+    private static native boolean isLeafNative(long handle);
+    private static native boolean isFractionLeafNative(long handle);
+    private static native boolean isDoubleLeafNative(long handle);
+    private static native int getNumerNative(long handle);
+    private static native int getDenomNative(long handle);
+    private static native double getDoubleLeafNative(long handle);
+    private static native long plusNative(long left, long right);
+    private static native long minusNative(long left, long right);
+    private static native long timesNative(long left, long right);
+    private static native long divideNative(long left, long right);
+    private static native long leafCountNative(long handle);
+    private static native long abstractPlusNative(long handle, int fieldId);
 }
