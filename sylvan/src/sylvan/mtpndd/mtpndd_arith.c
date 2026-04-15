@@ -69,10 +69,21 @@ typedef struct {
     mtpndd_bdd_t label;
 } mtpndd_arith_item_t;
 
-TASK_DECL_2(mtpndd_arith_item_t, mtpndd_plus_same_pair, edge_bucket_entry_t*, edge_bucket_entry_t*);
 TASK_DECL_2(mtpndd_arith_item_t, mtpndd_plus_diff_pair, edge_bucket_entry_t*, mtpndd_t*);
-TASK_DECL_2(mtpndd_arith_item_t, mtpndd_times_same_pair, edge_bucket_entry_t*, edge_bucket_entry_t*);
 TASK_DECL_2(mtpndd_arith_item_t, mtpndd_times_diff_pair, edge_bucket_entry_t*, mtpndd_t*);
+
+// Row-level chunks: each sub-task processes one A-entry against all of B
+// (or vice versa) and returns an array of surviving (child, label) items.
+// Reduces task count from O(|A|*|B|) to O(|A|) and amortizes Lace overhead
+// across the inner loop's work.
+typedef struct {
+    mtpndd_error_t status;
+    uint32_t count;
+    mtpndd_arith_item_t *items;   // malloc'd; caller frees after merge
+} mtpndd_arith_chunk_t;
+
+TASK_DECL_2(mtpndd_arith_chunk_t, mtpndd_plus_same_row, edge_bucket_entry_t*, mtpndd_t*);
+TASK_DECL_2(mtpndd_arith_chunk_t, mtpndd_times_same_row, edge_bucket_entry_t*, mtpndd_t*);
 
 /********************************
  * int64 fraction helpers
@@ -347,37 +358,6 @@ fail:
 /********************************
  * Parallel plus sub-tasks
  ********************************/
-TASK_IMPL_2(mtpndd_arith_item_t, mtpndd_plus_same_pair,
-            edge_bucket_entry_t*, ea,
-            edge_bucket_entry_t*, eb)
-{
-    mtpndd_arith_item_t out = {0};
-    out.status = MTPNDD_SUCCESS;
-    out.emit = 0;
-
-    mtpndd_bdd_t la = edge_label_load(ea);
-    mtpndd_bdd_t lb = edge_label_load(eb);
-    mtpndd_bdd_t inter = sylvan_ref(sylvan_and(la, lb));
-    if (inter == sylvan_false) {
-        sylvan_deref(inter);
-        return out;
-    }
-
-    mtpndd_t *child = mtpndd_plus_rec_CALL(__lace_worker, __lace_dq_head, ea->child, eb->child);
-    if (!child) {
-        sylvan_deref(inter);
-        out.status = mtpndd_get_last_error().code;
-        return out;
-    }
-    // Keep alive across SYNC until the main loop merges us in.
-    mtpndd_ref(child);
-
-    out.emit = 1;
-    out.child = child;
-    out.label = inter;
-    return out;
-}
-
 TASK_IMPL_2(mtpndd_arith_item_t, mtpndd_plus_diff_pair,
             edge_bucket_entry_t*, ea,
             mtpndd_t*, other)
@@ -417,25 +397,6 @@ static mtpndd_error_t merge_arith_item(
     return mtpndd_add_edge(res_edges, item->child, item->label);
 }
 
-// Cancel and drain remaining SPAWNed items on the failure path.  Any
-// emitted children are dereffed so we don't leak.
-static void cancel_plus_items(WorkerP *__lace_worker, Task **dq_head_ptr, size_t *pending) {
-    while (*pending > 0) {
-        (*dq_head_ptr)--;
-        Task *t = (Task *)(*dq_head_ptr);
-        if (TASK_IS_STOLEN(t)) {
-            mtpndd_arith_item_t item = mtpndd_plus_same_pair_SYNC(__lace_worker, *dq_head_ptr);
-            if (item.emit) {
-                sylvan_deref(item.label);
-                mtpndd_deref(item.child);
-            }
-        } else {
-            lace_drop(__lace_worker, *dq_head_ptr);
-        }
-        (*pending)--;
-    }
-}
-
 static void cancel_plus_diff_items(WorkerP *__lace_worker, Task **dq_head_ptr, size_t *pending) {
     while (*pending > 0) {
         (*dq_head_ptr)--;
@@ -454,38 +415,191 @@ static void cancel_plus_diff_items(WorkerP *__lace_worker, Task **dq_head_ptr, s
 }
 
 /********************************
- * Parallel times sub-tasks
+ * Row-level chunked sub-tasks
  ********************************/
-TASK_IMPL_2(mtpndd_arith_item_t, mtpndd_times_same_pair,
+
+// Release all owned refs in a chunk's items (used on failure / after merge).
+static void chunk_release_items(mtpndd_arith_chunk_t *chunk) {
+    if (!chunk || !chunk->items) return;
+    for (uint32_t i = 0; i < chunk->count; ++i) {
+        sylvan_deref(chunk->items[i].label);
+        mtpndd_deref(chunk->items[i].child);
+    }
+    free(chunk->items);
+    chunk->items = NULL;
+    chunk->count = 0;
+}
+
+// Merge a chunk into the result edge map.  Transfers ownership of each
+// item's +1 child ref into `pins` and the +1 label ref into res_edges.
+// Always frees chunk->items before returning (on success or failure).
+static mtpndd_error_t merge_arith_chunk(
+        mtpndd_edge_t *res_edges, pin_list_t *pins,
+        mtpndd_arith_chunk_t *chunk) {
+    if (chunk->status != MTPNDD_SUCCESS) {
+        // The failing task already cleaned up its items before returning.
+        return chunk->status;
+    }
+    for (uint32_t i = 0; i < chunk->count; ++i) {
+        mtpndd_arith_item_t *it = &chunk->items[i];
+        if (!pin_list_push_owned(pins, it->child)) {
+            sylvan_deref(it->label);
+            mtpndd_deref(it->child);
+            // Release the remaining items we haven't consumed yet.
+            for (uint32_t k = i + 1; k < chunk->count; ++k) {
+                sylvan_deref(chunk->items[k].label);
+                mtpndd_deref(chunk->items[k].child);
+            }
+            free(chunk->items);
+            chunk->items = NULL;
+            chunk->count = 0;
+            return MTPNDD_ERROR_OUT_OF_MEMORY;
+        }
+        mtpndd_error_t st = mtpndd_add_edge(res_edges, it->child, it->label);
+        if (st != MTPNDD_SUCCESS) {
+            // label already consumed by add_edge on failure? Assume not;
+            // conservatively skip derefing label and release the rest.
+            for (uint32_t k = i + 1; k < chunk->count; ++k) {
+                sylvan_deref(chunk->items[k].label);
+                mtpndd_deref(chunk->items[k].child);
+            }
+            free(chunk->items);
+            chunk->items = NULL;
+            chunk->count = 0;
+            return st;
+        }
+    }
+    free(chunk->items);
+    chunk->items = NULL;
+    chunk->count = 0;
+    return MTPNDD_SUCCESS;
+}
+
+TASK_IMPL_2(mtpndd_arith_chunk_t, mtpndd_plus_same_row,
             edge_bucket_entry_t*, ea,
-            edge_bucket_entry_t*, eb)
+            mtpndd_t*, b)
 {
-    mtpndd_arith_item_t out = {0};
-    out.status = MTPNDD_SUCCESS;
-    out.emit = 0;
+    mtpndd_arith_chunk_t out = { MTPNDD_SUCCESS, 0, NULL };
+    size_t b_edge_count = b->edges ? b->edges->edge_count : 0;
+    if (b_edge_count == 0) return out;
+
+    out.items = (mtpndd_arith_item_t *)malloc(sizeof(mtpndd_arith_item_t) * b_edge_count);
+    if (!out.items) {
+        out.status = MTPNDD_ERROR_OUT_OF_MEMORY;
+        return out;
+    }
 
     mtpndd_bdd_t la = edge_label_load(ea);
-    mtpndd_bdd_t lb = edge_label_load(eb);
-    mtpndd_bdd_t inter = sylvan_ref(sylvan_and(la, lb));
-    if (inter == sylvan_false) {
-        sylvan_deref(inter);
-        return out;
-    }
+    size_t bc = b->edges->bucket_count ? b->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
+    for (size_t j = 0; j < bc; ++j) {
+        for (edge_bucket_entry_t *eb = b->edges->buckets[j]; eb; eb = eb->next) {
+            mtpndd_bdd_t lb = edge_label_load(eb);
+            mtpndd_bdd_t inter = sylvan_ref(sylvan_and(la, lb));
+            if (inter == sylvan_false) { sylvan_deref(inter); continue; }
 
-    mtpndd_t *child = mtpndd_times_rec_CALL(__lace_worker, __lace_dq_head, ea->child, eb->child);
-    if (!child) {
-        sylvan_deref(inter);
-        out.status = mtpndd_get_last_error().code;
-        return out;
-    }
-    mtpndd_ref(child);
+            mtpndd_t *child = mtpndd_plus_rec_CALL(__lace_worker, __lace_dq_head, ea->child, eb->child);
+            if (!child) {
+                sylvan_deref(inter);
+                out.status = mtpndd_get_last_error().code;
+                chunk_release_items(&out);
+                return out;
+            }
+            mtpndd_ref(child);
 
-    out.emit = 1;
-    out.child = child;
-    out.label = inter;
+            out.items[out.count].status = MTPNDD_SUCCESS;
+            out.items[out.count].emit = 1;
+            out.items[out.count].child = child;
+            out.items[out.count].label = inter;
+            out.count++;
+        }
+    }
     return out;
 }
 
+TASK_IMPL_2(mtpndd_arith_chunk_t, mtpndd_times_same_row,
+            edge_bucket_entry_t*, ea,
+            mtpndd_t*, b)
+{
+    mtpndd_arith_chunk_t out = { MTPNDD_SUCCESS, 0, NULL };
+    size_t b_edge_count = b->edges ? b->edges->edge_count : 0;
+    if (b_edge_count == 0) return out;
+
+    out.items = (mtpndd_arith_item_t *)malloc(sizeof(mtpndd_arith_item_t) * b_edge_count);
+    if (!out.items) {
+        out.status = MTPNDD_ERROR_OUT_OF_MEMORY;
+        return out;
+    }
+
+    mtpndd_bdd_t la = edge_label_load(ea);
+    size_t bc = b->edges->bucket_count ? b->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
+    for (size_t j = 0; j < bc; ++j) {
+        for (edge_bucket_entry_t *eb = b->edges->buckets[j]; eb; eb = eb->next) {
+            mtpndd_bdd_t lb = edge_label_load(eb);
+            mtpndd_bdd_t inter = sylvan_ref(sylvan_and(la, lb));
+            if (inter == sylvan_false) { sylvan_deref(inter); continue; }
+
+            mtpndd_t *child = mtpndd_times_rec_CALL(__lace_worker, __lace_dq_head, ea->child, eb->child);
+            if (!child) {
+                sylvan_deref(inter);
+                out.status = mtpndd_get_last_error().code;
+                chunk_release_items(&out);
+                return out;
+            }
+            mtpndd_ref(child);
+
+            out.items[out.count].status = MTPNDD_SUCCESS;
+            out.items[out.count].emit = 1;
+            out.items[out.count].child = child;
+            out.items[out.count].label = inter;
+            out.count++;
+        }
+    }
+    return out;
+}
+
+// Row-level spawn decision: SPAWN a full row only when the inner loop has
+// enough work to amortize task overhead.  Also guarded against terminal
+// children (trivial recursion).
+static inline bool arith_should_spawn_row(mtpndd_t *a_child, mtpndd_t *b) {
+    if (lace_workers() <= 1) return false;
+    if (mtpndd_is_terminal(a_child)) return false;
+    size_t b_edges = b->edges ? b->edges->edge_count : 0;
+    return b_edges >= 8;
+}
+
+// Cancel pending row SPAWNs on failure: drain and release the items
+// any already-completed tasks emitted.
+static void cancel_row_tasks_plus(WorkerP *__lace_worker, Task **dq_head_ptr, size_t *pending) {
+    while (*pending > 0) {
+        (*dq_head_ptr)--;
+        Task *t = (Task *)(*dq_head_ptr);
+        if (TASK_IS_STOLEN(t)) {
+            mtpndd_arith_chunk_t chunk = mtpndd_plus_same_row_SYNC(__lace_worker, *dq_head_ptr);
+            chunk_release_items(&chunk);
+        } else {
+            lace_drop(__lace_worker, *dq_head_ptr);
+        }
+        (*pending)--;
+    }
+}
+
+static void cancel_row_tasks_times(WorkerP *__lace_worker, Task **dq_head_ptr, size_t *pending) {
+    while (*pending > 0) {
+        (*dq_head_ptr)--;
+        Task *t = (Task *)(*dq_head_ptr);
+        if (TASK_IS_STOLEN(t)) {
+            mtpndd_arith_chunk_t chunk = mtpndd_times_same_row_SYNC(__lace_worker, *dq_head_ptr);
+            chunk_release_items(&chunk);
+        } else {
+            lace_drop(__lace_worker, *dq_head_ptr);
+        }
+        (*pending)--;
+    }
+}
+
+/********************************
+ * Parallel times sub-tasks
+ ********************************/
 TASK_IMPL_2(mtpndd_arith_item_t, mtpndd_times_diff_pair,
             edge_bucket_entry_t*, ea,
             mtpndd_t*, other)
@@ -507,23 +621,6 @@ TASK_IMPL_2(mtpndd_arith_item_t, mtpndd_times_diff_pair,
     out.child = child;
     out.label = la;
     return out;
-}
-
-static void cancel_times_same_items(WorkerP *__lace_worker, Task **dq_head_ptr, size_t *pending) {
-    while (*pending > 0) {
-        (*dq_head_ptr)--;
-        Task *t = (Task *)(*dq_head_ptr);
-        if (TASK_IS_STOLEN(t)) {
-            mtpndd_arith_item_t item = mtpndd_times_same_pair_SYNC(__lace_worker, *dq_head_ptr);
-            if (item.emit) {
-                sylvan_deref(item.label);
-                mtpndd_deref(item.child);
-            }
-        } else {
-            lace_drop(__lace_worker, *dq_head_ptr);
-        }
-        (*pending)--;
-    }
 }
 
 static void cancel_times_diff_items(WorkerP *__lace_worker, Task **dq_head_ptr, size_t *pending) {
@@ -771,33 +868,30 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_plus_rec, mtpndd_t*, a, mtpndd_t*, b) {
     bool have_or_a = false, have_or_b = false;
 
     if (same_field) {
-        // Intersection pairs, SPAWN-capable.
+        // Row-level parallelism: SPAWN one task per A-entry, each handles
+        // the full B inner loop inline.  Reduces task count from |A|*|B|
+        // to |A| and amortizes Lace overhead across the inner work.
         size_t ba = a->edges->bucket_count ? a->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
-        size_t bb = b->edges->bucket_count ? b->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
         for (size_t i = 0; i < ba; ++i) {
             for (edge_bucket_entry_t *ea = a->edges->buckets[i]; ea; ea = ea->next) {
-                for (size_t j = 0; j < bb; ++j) {
-                    for (edge_bucket_entry_t *eb = b->edges->buckets[j]; eb; eb = eb->next) {
-                        if (arith_should_spawn(ea->child, eb->child)) {
-                            mtpndd_plus_same_pair_SPAWN(__lace_worker, __lace_dq_head, ea, eb);
-                            __lace_dq_head++;
-                            pending++;
-                        } else {
-                            mtpndd_arith_item_t item = mtpndd_plus_same_pair_CALL(__lace_worker, __lace_dq_head, ea, eb);
-                            status = merge_arith_item(res_edges, &pins, &item);
-                            if (status != MTPNDD_SUCCESS) goto fail_same;
-                        }
-                        if (pending >= MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD) {
-                            size_t keep = MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD / 2;
-                            size_t to_drain = pending - keep;
-                            while (to_drain-- > 0) {
-                                __lace_dq_head--;
-                                mtpndd_arith_item_t item = mtpndd_plus_same_pair_SYNC(__lace_worker, __lace_dq_head);
-                                pending--;
-                                status = merge_arith_item(res_edges, &pins, &item);
-                                if (status != MTPNDD_SUCCESS) goto fail_same;
-                            }
-                        }
+                if (arith_should_spawn_row(ea->child, b)) {
+                    mtpndd_plus_same_row_SPAWN(__lace_worker, __lace_dq_head, ea, b);
+                    __lace_dq_head++;
+                    pending++;
+                } else {
+                    mtpndd_arith_chunk_t chunk = mtpndd_plus_same_row_CALL(__lace_worker, __lace_dq_head, ea, b);
+                    status = merge_arith_chunk(res_edges, &pins, &chunk);
+                    if (status != MTPNDD_SUCCESS) goto fail_same;
+                }
+                if (pending >= MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD) {
+                    size_t keep = MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD / 2;
+                    size_t to_drain = pending - keep;
+                    while (to_drain-- > 0) {
+                        __lace_dq_head--;
+                        mtpndd_arith_chunk_t chunk = mtpndd_plus_same_row_SYNC(__lace_worker, __lace_dq_head);
+                        pending--;
+                        status = merge_arith_chunk(res_edges, &pins, &chunk);
+                        if (status != MTPNDD_SUCCESS) goto fail_same;
                     }
                 }
             }
@@ -805,9 +899,9 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_plus_rec, mtpndd_t*, a, mtpndd_t*, b) {
         // Drain remaining.
         while (pending > 0) {
             __lace_dq_head--;
-            mtpndd_arith_item_t item = mtpndd_plus_same_pair_SYNC(__lace_worker, __lace_dq_head);
+            mtpndd_arith_chunk_t chunk = mtpndd_plus_same_row_SYNC(__lace_worker, __lace_dq_head);
             pending--;
-            status = merge_arith_item(res_edges, &pins, &item);
+            status = merge_arith_chunk(res_edges, &pins, &chunk);
             if (status != MTPNDD_SUCCESS) goto fail_same;
         }
 
@@ -832,7 +926,8 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_plus_rec, mtpndd_t*, a, mtpndd_t*, b) {
         sylvan_deref(not_or_b);
 
         mtpndd_bdd_t not_or_a = sylvan_ref(sylvan_not(or_a));
-        for (size_t j = 0; j < bb; ++j) {
+        size_t bb_resid = b->edges->bucket_count ? b->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
+        for (size_t j = 0; j < bb_resid; ++j) {
             for (edge_bucket_entry_t *eb = b->edges->buckets[j]; eb; eb = eb->next) {
                 mtpndd_bdd_t lb = edge_label_load(eb);
                 mtpndd_bdd_t resB = sylvan_ref(sylvan_and(lb, not_or_a));
@@ -849,7 +944,7 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_plus_rec, mtpndd_t*, a, mtpndd_t*, b) {
         goto build_ok;
 
     fail_same:
-        cancel_plus_items(__lace_worker, &__lace_dq_head, &pending);
+        cancel_row_tasks_plus(__lace_worker, &__lace_dq_head, &pending);
         goto fail_build;
     } else {
         // Different fields (or one operand is a leaf).
@@ -992,47 +1087,43 @@ TASK_IMPL_2(mtpndd_t*, mtpndd_times_rec, mtpndd_t*, a, mtpndd_t*, b) {
     size_t pending = 0;
 
     if (same_field) {
+        // Row-level chunked SPAWN (see mtpndd_plus_rec for rationale).
         size_t ba = a->edges->bucket_count ? a->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
-        size_t bb = b->edges->bucket_count ? b->edges->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
         for (size_t i = 0; i < ba; ++i) {
             for (edge_bucket_entry_t *ea = a->edges->buckets[i]; ea; ea = ea->next) {
-                for (size_t j = 0; j < bb; ++j) {
-                    for (edge_bucket_entry_t *eb = b->edges->buckets[j]; eb; eb = eb->next) {
-                        if (arith_should_spawn(ea->child, eb->child)) {
-                            mtpndd_times_same_pair_SPAWN(__lace_worker, __lace_dq_head, ea, eb);
-                            __lace_dq_head++;
-                            pending++;
-                        } else {
-                            mtpndd_arith_item_t item = mtpndd_times_same_pair_CALL(__lace_worker, __lace_dq_head, ea, eb);
-                            status = merge_arith_item(res_edges, &pins, &item);
-                            if (status != MTPNDD_SUCCESS) goto times_fail_same;
-                        }
-                        if (pending >= MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD) {
-                            size_t keep = MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD / 2;
-                            size_t to_drain = pending - keep;
-                            while (to_drain-- > 0) {
-                                __lace_dq_head--;
-                                mtpndd_arith_item_t item = mtpndd_times_same_pair_SYNC(__lace_worker, __lace_dq_head);
-                                pending--;
-                                status = merge_arith_item(res_edges, &pins, &item);
-                                if (status != MTPNDD_SUCCESS) goto times_fail_same;
-                            }
-                        }
+                if (arith_should_spawn_row(ea->child, b)) {
+                    mtpndd_times_same_row_SPAWN(__lace_worker, __lace_dq_head, ea, b);
+                    __lace_dq_head++;
+                    pending++;
+                } else {
+                    mtpndd_arith_chunk_t chunk = mtpndd_times_same_row_CALL(__lace_worker, __lace_dq_head, ea, b);
+                    status = merge_arith_chunk(res_edges, &pins, &chunk);
+                    if (status != MTPNDD_SUCCESS) goto times_fail_same;
+                }
+                if (pending >= MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD) {
+                    size_t keep = MTPNDD_ARITH_PENDING_FLUSH_THRESHOLD / 2;
+                    size_t to_drain = pending - keep;
+                    while (to_drain-- > 0) {
+                        __lace_dq_head--;
+                        mtpndd_arith_chunk_t chunk = mtpndd_times_same_row_SYNC(__lace_worker, __lace_dq_head);
+                        pending--;
+                        status = merge_arith_chunk(res_edges, &pins, &chunk);
+                        if (status != MTPNDD_SUCCESS) goto times_fail_same;
                     }
                 }
             }
         }
         while (pending > 0) {
             __lace_dq_head--;
-            mtpndd_arith_item_t item = mtpndd_times_same_pair_SYNC(__lace_worker, __lace_dq_head);
+            mtpndd_arith_chunk_t chunk = mtpndd_times_same_row_SYNC(__lace_worker, __lace_dq_head);
             pending--;
-            status = merge_arith_item(res_edges, &pins, &item);
+            status = merge_arith_chunk(res_edges, &pins, &chunk);
             if (status != MTPNDD_SUCCESS) goto times_fail_same;
         }
         goto times_build_ok;
 
     times_fail_same:
-        cancel_times_same_items(__lace_worker, &__lace_dq_head, &pending);
+        cancel_row_tasks_times(__lace_worker, &__lace_dq_head, &pending);
         goto times_fail;
     } else {
         uint32_t fa = a_leaf ? MTPNDD_LEAF_FIELD_ID : a->field_id;
