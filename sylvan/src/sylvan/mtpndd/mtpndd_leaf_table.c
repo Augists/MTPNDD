@@ -8,6 +8,7 @@
 #include "mtpndd_memory_pool.h"
 
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #define MTPNDD_LEAF_TABLE_DEFAULT_BUCKETS 1024u
@@ -95,6 +96,7 @@ mtpndd_error_t mtpndd_leaf_table_insert_sentinel(
     if (!entry) return MTPNDD_ERROR_OUT_OF_MEMORY;
     entry->leaf_value = leaf_value;
     entry->node = node;
+    entry->marked = 0;
 
     size_t lock_idx = leaf_lock_index(t, leaf_value);
     size_t bkt = leaf_bucket_index(t, leaf_value);
@@ -145,6 +147,7 @@ mtpndd_node_t *mtpndd_leaf_table_lookup_or_insert(
     }
     entry->leaf_value = leaf_value;
     entry->node = node;
+    entry->marked = 0;
 
     pthread_spin_lock(&t->bucket_locks[lock_idx]);
     // Re-check to handle a concurrent insert of the same value.
@@ -167,4 +170,104 @@ mtpndd_node_t *mtpndd_leaf_table_lookup_or_insert(
 size_t mtpndd_leaf_table_size(const mtpndd_leaf_table_t *t) {
     if (!t) return 0;
     return (size_t)atomic_load_explicit(&t->entry_count, memory_order_relaxed);
+}
+
+/********************************
+ * Mark-and-sweep GC
+ ********************************/
+void mtpndd_leaf_table_clear_marks(mtpndd_leaf_table_t *t) {
+    if (!t || !t->buckets) return;
+    for (size_t i = 0; i < t->bucket_count; ++i) {
+        for (mtpndd_leaf_bucket_entry_t *e = t->buckets[i]; e; e = e->next) {
+            e->marked = 0;
+        }
+    }
+}
+
+void mtpndd_leaf_table_mark(mtpndd_leaf_table_t *t, mtpndd_node_t *leaf) {
+    if (!t || !leaf) return;
+    size_t bkt = leaf_bucket_index(t, leaf->leaf_value);
+    for (mtpndd_leaf_bucket_entry_t *e = t->buckets[bkt]; e; e = e->next) {
+        if (e->node == leaf) {
+            e->marked = 1;
+            return;
+        }
+    }
+}
+
+size_t mtpndd_leaf_table_sweep_unmarked(mtpndd_leaf_table_t *t) {
+    if (!t || !t->buckets) return 0;
+    size_t reclaimed = 0;
+    for (size_t i = 0; i < t->bucket_count; ++i) {
+        mtpndd_leaf_bucket_entry_t **link = &t->buckets[i];
+        mtpndd_leaf_bucket_entry_t *e = *link;
+        while (e) {
+            mtpndd_leaf_bucket_entry_t *next = e->next;
+            // Never reclaim the pre-seeded TRUE / FALSE sentinels — even
+            // if they happen to be unmarked for some reason, they live on
+            // the data segment and must not be freed.
+            bool is_sentinel = (e->node == &MTPNDD_TRUE) || (e->node == &MTPNDD_FALSE);
+            if (!e->marked && !is_sentinel) {
+                *link = next;
+                mtpndd_memory_release_node(e->node);
+                free(e);
+                atomic_fetch_sub_explicit(&t->entry_count, 1, memory_order_relaxed);
+                reclaimed++;
+            } else {
+                link = &e->next;
+            }
+            e = next;
+        }
+    }
+    return reclaimed;
+}
+
+// Walk all live internal nodes in the field nodetables and mark every
+// leaf they reference.  Internal helper for mtpndd_leaf_gc.
+static void mtpndd_leaf_gc_mark_from_roots(void) {
+    mtpndd_leaf_table_t *frac = g_mtpndd_config.leaf_table;
+    mtpndd_leaf_table_t *dbl  = g_mtpndd_config.double_leaf_table;
+    if (frac) mtpndd_leaf_table_mark(frac, &MTPNDD_TRUE);
+    if (frac) mtpndd_leaf_table_mark(frac, &MTPNDD_FALSE);
+
+    for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
+        mtpndd_nodetable_t *nt = g_mtpndd_config.node_tables_by_field[field];
+        if (!nt || !nt->buckets) continue;
+        for (size_t i = 0; i < nt->nodetable_bucket_count; ++i) {
+            for (mtpndd_nodetable_bucket_entry_t *ne = nt->buckets[i]; ne; ne = ne->next) {
+                mtpndd_node_t *node = ne->node;
+                if (!node || !node->edges || !node->edges->buckets) continue;
+                size_t bc = node->edges->bucket_count
+                        ? node->edges->bucket_count
+                        : g_mtpndd_pal_config.edge_bucket_count;
+                for (size_t eb = 0; eb < bc; ++eb) {
+                    for (edge_bucket_entry_t *edge = node->edges->buckets[eb]; edge; edge = edge->next) {
+                        mtpndd_node_t *child = edge->child;
+                        if (!child) continue;
+                        if (child->field_id == MTPNDD_FRACTION_LEAF_FIELD_ID && frac) {
+                            mtpndd_leaf_table_mark(frac, child);
+                        } else if (child->field_id == MTPNDD_DOUBLE_LEAF_FIELD_ID && dbl) {
+                            mtpndd_leaf_table_mark(dbl, child);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+size_t mtpndd_leaf_gc(void) {
+    mtpndd_leaf_table_t *frac = g_mtpndd_config.leaf_table;
+    mtpndd_leaf_table_t *dbl  = g_mtpndd_config.double_leaf_table;
+    if (!frac && !dbl) return 0;
+
+    if (frac) mtpndd_leaf_table_clear_marks(frac);
+    if (dbl)  mtpndd_leaf_table_clear_marks(dbl);
+
+    mtpndd_leaf_gc_mark_from_roots();
+
+    size_t reclaimed = 0;
+    if (frac) reclaimed += mtpndd_leaf_table_sweep_unmarked(frac);
+    if (dbl)  reclaimed += mtpndd_leaf_table_sweep_unmarked(dbl);
+    return reclaimed;
 }

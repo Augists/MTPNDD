@@ -20,6 +20,7 @@ typedef struct mtpndd_leaf_bucket_entry_s {
     struct mtpndd_leaf_bucket_entry_s *next;
     uint64_t leaf_value;       // packed (numer << 32) | (uint32_t)denom
     mtpndd_node_t *node;
+    uint8_t marked;            // GC mark bit (cleared at start of sweep)
 } mtpndd_leaf_bucket_entry_t;
 
 typedef struct mtpndd_leaf_table_s {
@@ -48,5 +49,20 @@ mtpndd_error_t mtpndd_leaf_table_insert_sentinel(
         mtpndd_leaf_table_t *table, uint64_t leaf_value, mtpndd_node_t *node);
 
 size_t mtpndd_leaf_table_size(const mtpndd_leaf_table_t *table);
+
+// Mark-and-sweep GC primitives.  `mtpndd_leaf_table_mark` finds the entry
+// whose node pointer matches `leaf` and sets its marked flag; `sweep`
+// releases every unmarked entry (except the pre-seeded sentinels
+// MTPNDD_TRUE / MTPNDD_FALSE which are always kept).
+void   mtpndd_leaf_table_clear_marks(mtpndd_leaf_table_t *table);
+void   mtpndd_leaf_table_mark(mtpndd_leaf_table_t *table, mtpndd_node_t *leaf);
+size_t mtpndd_leaf_table_sweep_unmarked(mtpndd_leaf_table_t *table);
+
+// Full GC entry point: walks all live internal nodes in the field
+// nodetables, marks every leaf they reach, and sweeps the rest from both
+// the fraction and double leaf tables.  Returns the number of leaves
+// reclaimed.  The caller must ensure no arithmetic operations are in
+// flight (the engine should be quiescent).
+size_t mtpndd_leaf_gc(void);
 
 #endif // MTPNDD_LEAF_TABLE_H

@@ -2,6 +2,7 @@
 
 #include "mtpndd.h"
 #include "mtpndd_memory_pool.h"
+#include "mtpndd_leaf_table.h"
 #include "sylvan.h"
 
 #include <assert.h>
@@ -271,6 +272,42 @@ static void test_abstract_plus(void) {
     printf("  abstract_plus OK\n");
 }
 
+static void test_leaf_gc(void) {
+    // Create a batch of temporary fraction leaves that are NOT referenced
+    // by any live internal node.  After GC they should all be reclaimed
+    // except the sentinels MTPNDD_TRUE / MTPNDD_FALSE.
+    extern mtpndd_leaf_table_t *mtpndd_get_leaf_table(void);
+    mtpndd_leaf_table_t *frac = mtpndd_get_leaf_table();
+    size_t before = mtpndd_leaf_table_size(frac);
+
+    // Create 50 unique fractions that are not reachable from any DAG.
+    for (int i = 1; i <= 50; ++i) {
+        mtpndd_t *f = mtpndd_make_fraction(i, 101);
+        (void)f;  // no reference kept
+    }
+    size_t after_create = mtpndd_leaf_table_size(frac);
+    assert(after_create >= before + 50);
+
+    // Create one DAG-embedded leaf that MUST survive GC.
+    mtpndd_t *keeper_leaf = mtpndd_make_fraction(7, 13);
+    mtpndd_t *keeper = build_indicator(1, 2, 0, keeper_leaf);
+    mtpndd_ref(keeper);
+
+    size_t reclaimed = mtpndd_leaf_gc();
+    // All 50 loose leaves should be gone; keeper leaf and sentinels survive.
+    size_t after_gc = mtpndd_leaf_table_size(frac);
+    assert(after_gc < after_create);
+    assert(after_gc <= before + 1);  // +1 for keeper_leaf (7/13)
+
+    // keeper must still be usable after GC — its leaf is still reachable.
+    assert(mtpndd_satcount(keeper) == 1.0);
+    assert(mtpndd_is_fraction_leaf(keeper_leaf));
+    assert(mtpndd_get_numer(keeper_leaf) == 7);
+
+    mtpndd_deref(keeper);
+    printf("  leaf GC (reclaimed %zu) OK\n", reclaimed);
+}
+
 static void test_parallel_plus(void) {
     // Both operands cover the same 2 cubes → 4 intersection pairs (2 empty,
     // 2 non-empty), exercising the SPAWN path.
@@ -385,6 +422,7 @@ int main(void) {
     test_divide();
     test_abstract_plus();
     test_parallel_plus();
+    test_leaf_gc();
 
     assert_success(mtpndd_quit());
     printf("all fraction tests passed\n");
