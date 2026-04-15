@@ -26,15 +26,28 @@ static inline mtpndd_bdd_t edge_label_load(edge_bucket_entry_t *entry) {
     return atomic_load_explicit(&entry->label, memory_order_acquire);
 }
 
-// Local copy of the coarse-granularity spawn heuristic (static in mtpndd_node.c).
+// Granularity heuristic for arith SPAWN decisions.  Tighter than the AND
+// path because arith sub-tasks are dominated by a single sylvan_and plus a
+// shallow recursive call — task overhead dominates unless the recursive
+// child operation is itself substantial (~256+ pair iterations).
+//
+// MTPNDD_ARITH_SPAWN_MIN_PROD: minimum (children's edge_count product)
+// required at the recursive level to justify SPAWNing the pair.
+#ifndef MTPNDD_ARITH_SPAWN_MIN_PROD
+#define MTPNDD_ARITH_SPAWN_MIN_PROD 256
+#endif
+
 static inline bool arith_should_spawn(mtpndd_t *a, mtpndd_t *b) {
+#ifdef MTPNDD_ARITH_DISABLE_SPAWN
+    (void)a; (void)b;
+    return false;
+#else
     if (lace_workers() <= 1) return false;
     if (mtpndd_is_terminal(a) || mtpndd_is_terminal(b)) return false;
     size_t edges_a = a->edges ? a->edges->edge_count : 0;
     size_t edges_b = b->edges ? b->edges->edge_count : 0;
-    size_t prod = edges_a * edges_b;
-    if (a->field_id <= 2 && b->field_id <= 2) return true;
-    return prod >= MTPNDD_SPAWN_THRESHOLD;
+    return edges_a * edges_b >= MTPNDD_ARITH_SPAWN_MIN_PROD;
+#endif
 }
 
 // Same-field pair flush threshold (mirrors MTPNDD_AND_PENDING_FLUSH_THRESHOLD).
