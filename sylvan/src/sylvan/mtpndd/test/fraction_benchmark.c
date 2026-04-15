@@ -48,21 +48,22 @@ static mtpndd_bdd_t bit_cube(uint32_t field_id, uint32_t bit_width, uint32_t val
 
 // Build a 2-field MTPNDD: field 1 has n_cubes cubes, each pointing to a
 // distinct field-2 sub-DD that itself has n_cubes cubes mapping to distinct
-// fraction leaves.  Total shape: n_cubes * n_cubes leaves.
-// The sub-DDs are distinct so `plus(a, b)` at the top triggers recursive
-// plus at field 2, giving the parallel code path non-terminal children.
+// double leaves.  Total shape: n_cubes * n_cubes leaves.
+// Uses double leaves to avoid int32 overflow in `times` at large k (a
+// fraction benchmark of the same shape would need |numer|*|denom| to
+// stay inside 2^31, which fails at n_cubes >= ~256).
 static mtpndd_t *build_two_field(uint32_t bit_width,
-                                 uint32_t n_cubes, int32_t offset) {
+                                 uint32_t n_cubes, double offset) {
     mtpndd_edge_t *top_edges = mtpndd_memory_acquire_edge_map();
     mtpndd_edge_map_init(top_edges);
-    int32_t denom = (int32_t)(n_cubes * n_cubes);
+    double scale = 1.0 / (double)(n_cubes * n_cubes);
 
     for (uint32_t i = 0; i < n_cubes; ++i) {
         mtpndd_edge_t *sub = mtpndd_memory_acquire_edge_map();
         mtpndd_edge_map_init(sub);
         for (uint32_t j = 0; j < n_cubes; ++j) {
-            int32_t numer = offset + (int32_t)(i * n_cubes + j) + 1;
-            mtpndd_t *leaf = mtpndd_make_fraction(numer, denom);
+            double value = offset + ((double)(i * n_cubes + j) + 1.0) * scale;
+            mtpndd_t *leaf = mtpndd_make_double(value);
             assert(leaf);
             mtpndd_bdd_t cube2 = bit_cube(2, bit_width, j);
             assert_success(mtpndd_add_edge(sub, leaf, cube2));
@@ -109,8 +110,8 @@ int main(int argc, char **argv) {
 
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    mtpndd_t *a = build_two_field(log2_cubes, n_cubes, 0);
-    mtpndd_t *b = build_two_field(log2_cubes, n_cubes, (int32_t)(n_cubes * n_cubes));
+    mtpndd_t *a = build_two_field(log2_cubes, n_cubes, 0.0);
+    mtpndd_t *b = build_two_field(log2_cubes, n_cubes, 100.0);
     mtpndd_ref(a); mtpndd_ref(b);
     double t_build = seconds_since(t0);
 
