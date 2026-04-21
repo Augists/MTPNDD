@@ -209,41 +209,68 @@ N=12, same HEAD binary, just different build mode:
 This is the largest single change the project has ever seen, and it was
 free. Committed as part of `5ae2e05`.
 
-### 7. Final fair comparison — HEAD `-O3` vs upstream+refs `-O3`
+### 7. Final fair comparison — both sides fully fixed
 
-(Both with `edge_bucket_count` default 8 post-fix. All 16 cells N=10..13
-× W=1,2,4,6.)
+HEAD = `feature/c` with Release default + `edge_bucket_count=0`
+(library default 8) commit `5ae2e05`.
+Upstream = `feature/upstream-sylvan` worktree = upstream Sylvan 1.10.0 +
+Lace 1.6.2 + ported per-worker refs + ported spawn cutoff API, same
+`edge_bucket_count=0`, default cutoff `-1`.
 
-| N | W | HEAD (s) | upstream+refs (s) | Δ% |
-|---|---|---------:|------------------:|-----:|
-| 10 | 1 | 0.288 | 0.274 | -5% |
-| 10 | 2 | 0.245 | 0.210 | -14% |
-| 10 | 4 | 0.166 | 0.153 | -8% |
-| 10 | 6 | 0.144 | 0.152 | **+6%** |
-| 11 | 1 | 1.328 | 1.308 | -2% |
-| 11 | 2 | 1.084 | 0.932 | -14% |
-| 11 | 4 | 0.690 | 0.625 | -9% |
-| 11 | 6 | 0.512 | 0.555 | **+8%** |
-| 12 | 1 | 7.057 | 6.756 | -4% |
-| 12 | 2 | 5.415 | 4.614 | -15% |
-| 12 | 4 | 3.317 | 3.047 | -8% |
-| 12 | 6 | 2.357 | 2.499 | **+6%** |
-| 13 | 1 | 41.561 | 39.461 | -5% |
-| 13 | 2 | 32.116 | 26.611 | -17% |
-| 13 | 4 | 19.216 | 16.859 | -12% |
-| 13 | 6 | 13.177 | 13.718 | **+4%** |
+Both built Release `-O3`. `MTPNDD_LOG_LEVEL=1`. THP=never, no
+hugepages. All 16 cells N=10..13 × W=1,2,4,6.
 
-Clear pattern:
+| N | W | HEAD | upstream | Δ% |
+|---|---|-----:|---------:|-----:|
+| 10 | 1 | 0.253 | 0.246 | −3% |
+| 10 | 2 | 0.234 | 0.185 | −21% |
+| 10 | 4 | 0.152 | 0.138 | −9% |
+| 10 | 6 | 0.116 | 0.125 | **+8%** |
+| 11 | 1 | 1.201 | 1.190 | −1% |
+| 11 | 2 | 0.997 | 0.807 | −19% |
+| 11 | 4 | 0.618 | 0.559 | −10% |
+| 11 | 6 | 0.451 | 0.481 | **+7%** |
+| 12 | 1 | 6.281 | 6.094 | −3% |
+| 12 | 2 | 5.072 | 4.153 | −18% |
+| 12 | 4 | 3.037 | 2.689 | −12% |
+| 12 | 6 | 2.050 | 2.287 | **+12%** |
+| 13 | 1 | 37.988 | 36.411 | −4% |
+| 13 | 2 | 29.663 | 23.812 | −20% |
+| 13 | 4 | 17.463 | 15.218 | −13% |
+| 13 | 6 | 12.357 | 12.522 | **+1%** |
 
-- **Low-to-moderate parallelism (W=1..4): upstream wins 2–17%.**
-  Lace 1.6 task dispatch and upstream Sylvan 1.10 cache/weak-memory
-  refinements account for this.
-- **High parallelism (W=6): HEAD wins 4–8%.** Our MTPNDD-side
-  multi-worker optimizations (per-worker slab pool caches, nodetable
-  bucket sharding, batched-SYNC item tasks) keep scaling a bit better
-  than upstream+refs alone. This suggests per-worker protect (not
-  ported) or something in our lace idle tuning still contributes at W=6
-  beyond what per-worker refs covers.
+Clear shape:
+
+| Worker count | Winner | Magnitude | Why |
+|---|---|---|---|
+| W=1 | upstream | 1–4% (noise-ish) | Lace 1.6 single-thread dispatch slightly cheaper |
+| W=2 | **upstream** | 18–21% | Lace 1.6 task handling dominates at low parallelism |
+| W=4 | upstream | 9–13% | Upstream's wins still show through per-worker refs |
+| W=6 | **HEAD** | 1–12% | MTPNDD-side multi-worker optimizations (nodetable sharding, batched-SYNC item tasks, per-worker slab caches) still outpace pure upstream+refs |
+
+Geometric mean across the 16 cells: upstream ≈ 6% faster overall, but
+the result is worker-count dependent.
+
+#### Why the W=6 cross-over is interesting
+
+At W=6, HEAD is faster even though upstream has the same per-worker
+refs sharding. Two candidate causes:
+1. **Per-worker protect (not ported)** — at high worker counts,
+   `mtbdd_protected` contention may return as a bottleneck; our
+   feature/c has the protect sharding too.
+2. **Lace idle tuning** — `a445451` tweaked backoff thresholds; Lace
+   1.6.2's defaults may behave differently under our workload.
+
+Either could be tested in a follow-up by porting `9806634` to the
+submodule branch or by probing Lace 1.6.2's backoff knobs.
+
+#### Takeaway
+
+The upstream-based layout is a **modest net win** on nqueens: clearly
+better at low-to-moderate parallelism, slightly worse at W=6. Big
+algorithmic wins would require porting more of the W=6-specific
+optimizations (per-worker protect is the most likely candidate) — but
+the data doesn't justify urgency.
 
 ---
 
