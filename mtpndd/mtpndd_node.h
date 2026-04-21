@@ -29,7 +29,11 @@
 // TODO: cache line friendly
 // TODO: like JDD, use a t_list data structure for both node memory pool and node table
 struct mtpndd_node_s {
-    atomic_uint_fast32_t ref_count;     // UINT32_MAX = protected (never collected)
+    /* _Atomic uint32_t (not uint_fast32_t which is 8 bytes on x86_64) —
+     * saves 4 bytes and eliminates a 4-byte hole before field_id,
+     * shrinking the node from 24 to 16 bytes. UINT32_MAX is the
+     * "protected" sentinel; plain uint32 can hold it. */
+    _Atomic uint32_t ref_count;
     uint32_t field_id;
     union {
         struct mtpndd_edge_s *edges;   // internal nodes
