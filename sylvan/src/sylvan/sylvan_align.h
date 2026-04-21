@@ -25,6 +25,10 @@
 #ifndef SYLVAN_ALIGN_H
 #define SYLVAN_ALIGN_H
 
+// 2 MiB hugepage size on x86_64; rounding is used consistently in alloc/free/clear
+// so munmap and MAP_FIXED remaps see the same size the kernel mapped.
+#define SYLVAN_HUGEPAGE_SIZE ((size_t)2 * 1024 * 1024)
+
 #ifdef __cplusplus
 namespace sylvan {
 #endif
@@ -33,14 +37,28 @@ namespace sylvan {
 extern "C" {
 #endif /* __cplusplus */
 
+static inline size_t
+sylvan_align_round(size_t size)
+{
+#if SYLVAN_USE_MMAP
+    return (size + SYLVAN_HUGEPAGE_SIZE - 1) & ~(SYLVAN_HUGEPAGE_SIZE - 1);
+#else
+    return (size + LINE_SIZE - 1) & ~((size_t)(LINE_SIZE - 1));
+#endif
+}
+
 static inline void*
 alloc_aligned(size_t size)
-{ 
-    // make sure size is a multiple of LINE_SIZE
-    size = (size + LINE_SIZE - 1) & (~(LINE_SIZE - 1));
+{
+    size = sylvan_align_round(size);
     void* res;
 #if SYLVAN_USE_MMAP
-    res = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    res = mmap(0, size, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (res == MAP_FAILED) {
+        res = mmap(0, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    }
     if (res == MAP_FAILED) return 0;
 #else
 #if defined(_MSC_VER) || defined(__MINGW64_VERSION_MAJOR)
@@ -58,8 +76,7 @@ alloc_aligned(size_t size)
 static inline void
 free_aligned(void* ptr, size_t size)
 {
-    // make sure size is a multiple of LINE_SIZE
-    size = (size + LINE_SIZE - 1) & (~(LINE_SIZE - 1));
+    size = sylvan_align_round(size);
 #if SYLVAN_USE_MMAP
     munmap(ptr, size);
 #elif defined(_MSC_VER) || defined(__MINGW64_VERSION_MAJOR)
@@ -75,11 +92,15 @@ free_aligned(void* ptr, size_t size)
 static inline void
 clear_aligned(void* ptr, size_t size)
 {
-    // make sure size is a multiple of LINE_SIZE
-    size = (size + LINE_SIZE - 1) & (~(LINE_SIZE - 1));
+    size = sylvan_align_round(size);
 #if SYLVAN_USE_MMAP
-    // this is a trick to use mmap to try and reassign fresh zero'ed pages to the region
-    void* res = mmap(ptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    // Try reassigning fresh zero'd hugepages first, fall back through small pages to memset.
+    void* res = mmap(ptr, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_HUGETLB, -1, 0);
+    if (res == MAP_FAILED) {
+        res = mmap(ptr, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    }
     if (res == MAP_FAILED) memset(ptr, 0, size);
 #else
     memset(ptr, 0, size);
