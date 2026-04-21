@@ -27,10 +27,20 @@ class MTPNDDTest {
 
     @BeforeAll
     static void setupLibraryPath() {
-        Path candidate = Paths.get("build", resolveLibraryName()).toAbsolutePath();
+        // Prefer explicit system property (set by mvn -Dorg.ants.mtpndd.library.path=...).
+        // Fall back to the legacy in-tree jni/build/ location, then the top-level build/jni/ location.
+        String explicit = System.getProperty("org.ants.mtpndd.library.path");
+        if (explicit != null && Files.exists(Paths.get(explicit))) {
+            MTPNDDEngine.isInitialized();
+            return;
+        }
+        Path legacy = Paths.get("build", resolveLibraryName()).toAbsolutePath();
+        Path toplevel = Paths.get("..", "build", "jni", resolveLibraryName()).toAbsolutePath();
+        Path candidate = Files.exists(legacy) ? legacy : toplevel;
         if (!Files.exists(candidate)) {
-            throw new IllegalStateException("JNI library not found at " + candidate
-                    + ". Please build it with `cmake -B build && cmake --build build` inside the jni/ directory.");
+            throw new IllegalStateException("JNI library not found at " + legacy + " or " + toplevel
+                    + ". Build it via top-level `cmake -B build && cmake --build build`, "
+                    + "or pass -Dorg.ants.mtpndd.library.path=<path> to mvn test.");
         }
         System.setProperty("org.ants.mtpndd.library.path", candidate.toString());
         // Trigger class loading

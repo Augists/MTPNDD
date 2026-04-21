@@ -23,9 +23,16 @@ class MTPNDDFractionTest {
 
     @BeforeAll
     static void setupLibraryPath() {
-        Path candidate = Paths.get("build", resolveLibraryName()).toAbsolutePath();
+        String explicit = System.getProperty("org.ants.mtpndd.library.path");
+        if (explicit != null && Files.exists(Paths.get(explicit))) {
+            MTPNDDEngine.isInitialized();
+            return;
+        }
+        Path legacy = Paths.get("build", resolveLibraryName()).toAbsolutePath();
+        Path toplevel = Paths.get("..", "build", "jni", resolveLibraryName()).toAbsolutePath();
+        Path candidate = Files.exists(legacy) ? legacy : toplevel;
         if (!Files.exists(candidate)) {
-            throw new IllegalStateException("JNI library not found at " + candidate);
+            throw new IllegalStateException("JNI library not found at " + legacy + " or " + toplevel);
         }
         System.setProperty("org.ants.mtpndd.library.path", candidate.toString());
         MTPNDDEngine.isInitialized();
