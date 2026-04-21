@@ -1,8 +1,8 @@
 #include "mtpndd.h"
 #include "mtpndd_common.h"
 #include "sylvan_mtbdd.h"
-#include "sylvan_refs.h"
 #include "sylvan_stats.h"
+#include <lace.h>
 
 #include <inttypes.h>
 #include <math.h>
@@ -165,10 +165,18 @@ static bool declare_fields(size_t n) {
 
 static size_t g_n_workers = 0;
 
-static bool run_benchmark(size_t n) {
-    struct timespec start_ts = {0}, end_ts = {0};
-    clock_gettime(CLOCK_MONOTONIC, &start_ts);
+/*
+ * Lace 1.6.x requires that all code invoking Sylvan/MTPNDD TASKs
+ * (mtpndd_and, sylvan_and, ...) runs inside a Lace worker context.
+ * Calling RUN() repeatedly from the main thread goes through the
+ * external-task dispatch path, which deadlocks/hangs. The main-thread
+ * code therefore does only setup (lace_start, sylvan_init, mtpndd_init),
+ * then enters worker context once via RUN(bench_do_work, ...), and
+ * tears down after.
+ */
+VOID_TASK_DECL_3(bench_do_work, size_t, bool*, struct timespec*)
 
+static bool run_benchmark(size_t n) {
     size_t bdd_size = 1 + (size_t)fmax(1000.0, pow(4.4, (double)n - 6.0) * 1000.0);
     size_t bdd_cache = 320000;
     size_t ndd_size = 100000000;
@@ -214,10 +222,22 @@ static bool run_benchmark(size_t n) {
         return false;
     }
 
+    struct timespec start_ts = {0};
+    clock_gettime(CLOCK_MONOTONIC, &start_ts);
+
+    bool ok = false;
+    RUN(bench_do_work, n, &ok, &start_ts);
+    mtpndd_quit();
+    return ok;
+}
+
+VOID_TASK_IMPL_3(bench_do_work, size_t, n, bool*, ok_out, struct timespec*, start_ts) {
+    struct timespec end_ts = {0};
+
     if (!declare_fields(n)) {
         fprintf(stderr, "declare_fields failed\n");
-        mtpndd_quit();
-        return false;
+        *ok_out = false;
+        return;
     }
 
     mtpndd_t **or_batch = (mtpndd_t **)calloc(n, sizeof(mtpndd_t *));
@@ -226,7 +246,8 @@ static bool run_benchmark(size_t n) {
         fprintf(stderr, "allocation failed\n");
         free(or_batch);
         free(imp_batch);
-        return false;
+        *ok_out = false;
+        return;
     }
 
     for (size_t i = 0; i < n; ++i) {
@@ -273,7 +294,7 @@ static bool run_benchmark(size_t n) {
     mtpndd_deref(queen);
 
     clock_gettime(CLOCK_MONOTONIC, &end_ts);
-    double elapsed = timespec_diff_seconds(&start_ts, &end_ts);
+    double elapsed = timespec_diff_seconds(start_ts, &end_ts);
 
     printf("\t%.3f\t%" PRIu64 "\n", elapsed, solutions);
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
@@ -369,8 +390,8 @@ static bool run_benchmark(size_t n) {
     free(or_batch);
     free(imp_batch);
     sylvan_stats_report(stdout);
-    mtpndd_quit();
-    return true;
+    *ok_out = true;
+    return;
 
 build_fail:
     for (size_t i = 0; i < n; ++i) {
@@ -381,8 +402,8 @@ build_fail:
     }
     free(or_batch);
     free(imp_batch);
-    mtpndd_quit();
-    return false;
+    *ok_out = false;
+    return;
 }
 
 int main(int argc, char **argv) {

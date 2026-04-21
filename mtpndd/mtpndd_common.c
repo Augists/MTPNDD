@@ -858,8 +858,10 @@ mtpndd_error_t mtpndd_quit() {
     mtpndd_op_cache_destroy();
     mtpndd_memory_pools_shutdown();
 
-    lace_stop();
+    /* Lace 1.6 requires sylvan_quit() before lace_stop() — sylvan_quit()
+     * may issue RUN() for GC hooks and needs workers still alive. */
     sylvan_quit();
+    lace_stop();
 
     memset(&g_mtpndd_pal_config, 0, sizeof(g_mtpndd_pal_config));
     g_mtpndd_node_count = 0;
