@@ -283,6 +283,49 @@ tuning, or something in MTPNDD's own per-worker slab / nodetable
 sharding reaching further into high-parallelism territory than the
 per-worker refs alone does. This is a follow-up for a future session.
 
+### Follow-up: investigating the W=6 Lace-backoff hypothesis
+
+Interleaved 5-run comparison at N=12 W=6, legacy
+(`legacy-vendored-sylvan` tag, Lace 1.5 + 8524df9 custom backoff) vs
+new (upstream submodule, Lace 1.6.2 default backoff):
+
+| run | legacy | new | |
+|---|-------:|----:|--|
+| 1 | 2.206 | 2.328 | |
+| 2 | 2.167 | 2.320 | |
+| 3 | 2.135 | 2.416 | |
+| 4 | 2.073 | 2.266 | |
+| 5 | 2.062 | 2.261 | |
+| **mean** | **2.129** | **2.318** | gap +8.9% |
+
+Probed three hypotheses for the gap, all negative:
+
+- **`LACE_BACKOFF=OFF`** (make Lace 1.6.2 pure-spin): new runs climbed
+  to ~2.46 mean with one 2.92 outlier. Confirms that *some* backoff
+  helps — Lace 1.6.2's default is already doing useful work.
+- **Match the backoff parameters**: patched
+  `LACE_IDLE_STAGE1_LIMIT=2048`, `LACE_IDLE_FUTEX_TIMEOUT_MIN=50` /
+  `_MAX=50` to mirror legacy 8524df9's 256/2048/50μs shape. No
+  improvement (~2.29 mean).
+- **Leapfrog backoff**: Lace 1.6.2's `lace_leapfrog` (the SYNC-wait
+  loop inside a worker) has **no backoff at all** — it busy-spins.
+  Our legacy 8524df9 added progressive backoff to leapfrog too.
+  Patched that in with sched_yield after 256 iterations, sleep(50μs)
+  after 2048. No measurable change (~2.27 mean). Probably the streaks
+  don't reach 256 often enough for the patch to fire.
+
+Conclusion: the 8.9% W=6 gap is *not* explained by Lace backoff
+tuning alone. Candidates for further investigation (deferred):
+- Lace 1.5 vs Lace 1.6 task-stealing algorithm differences (1.6.0
+  did a major overhaul including split/grow heuristics);
+- Interaction between MTPNDD's own per-worker slab pool caches and
+  Lace 1.6's scheduler decisions;
+- Cache-line padding or atomic-op ordering tweaks between Lace
+  versions.
+
+Given the gap is bounded (≤ ~12%) and only appears at high worker
+counts, treating it as "migration cost" and closing the investigation.
+
 #### Takeaway
 
 The upstream-based layout is a **modest net win** on nqueens: clearly
