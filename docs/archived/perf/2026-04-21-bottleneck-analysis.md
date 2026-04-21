@@ -318,3 +318,49 @@ costs in half. The remaining top three functions are the algorithmic
 core — nodetable canonicalization, AND recursion, op cache lookup —
 which are the "work MTPNDD is paid to do". Further gains would need
 algorithmic rework, not plumbing fixes.
+
+### One more squeeze: inlining mtpndd_hash_node_identity
+
+While reviewing the post-opt profile, noticed that
+`mtpndd_hash_node_identity` is called twice per op-cache lookup
+(lhs + rhs) and from three other hot sites, but was a non-inline
+cross-TU function — every call cost register spills plus the call
+itself. Moving it to `mtpndd_node.h` as `static inline` gave a flat
+−1.6 to −5.0% across the 16-cell matrix (mean ~−2.5%).
+
+This is the shape you expect from a pure code-density fix: no worker
+count dependence, applied uniformly.
+
+### Final end-to-end comparison (legacy vs new)
+
+3-run interleaved means, plain Release -O3 on both sides.
+
+| N | W | legacy | new | new+PGO | new Δ | new+PGO Δ |
+|---|---|------:|----:|-------:|-----:|-------:|
+| 10 | 1 | 0.256 | 0.246 | 0.224 | −3.9% | −12.5% |
+| 10 | 2 | 0.228 | 0.173 | 0.158 | −24.1% | −30.7% |
+| 10 | 4 | 0.150 | 0.115 | 0.107 | −23.3% | −28.7% |
+| 10 | 6 | 0.133 | 0.101 | 0.099 | −24.1% | −25.6% |
+| 11 | 1 | 1.162 | 1.141 | 1.032 | −1.8% | −11.2% |
+| 11 | 2 | 0.965 | 0.714 | 0.664 | −26.0% | −31.2% |
+| 11 | 4 | 0.608 | 0.440 | 0.412 | −27.6% | −32.2% |
+| 11 | 6 | 0.435 | 0.329 | 0.314 | −24.4% | −27.8% |
+| 12 | 1 | 6.320 | 6.051 | 5.542 | −4.3% | −12.3% |
+| 12 | 2 | 5.139 | 3.693 | 3.442 | −28.1% | −33.0% |
+| 12 | 4 | 3.082 | 2.148 | 2.027 | −30.3% | −34.2% |
+| 12 | 6 | 2.061 | 1.546 | 1.479 | −25.0% | −28.2% |
+| 13 | 1 | 38.018 | 35.580 | 33.061 | −6.4% | −13.0% |
+| 13 | 2 | 29.663 | 21.569 | 20.050 | −27.3% | −32.4% |
+| 13 | 4 | 17.604 | 12.163 | 11.420 | −30.9% | −35.1% |
+| 13 | 6 | 11.664 | 8.633 | 8.234 | −26.0% | −29.4% |
+
+Pattern:
+- W=1: modest (−2 to −6% plain, −11 to −13% with PGO). Single-thread
+  baseline gets the Lace/compiler wins but not the contention fixes.
+- **W≥2: −24 to −35% across the board.** Contention removal
+  (per-worker refs sharding, ref coalescing cache, slab in_use
+  per-worker) dominates.
+
+Geometric mean across all 16 cells:
+- new:      ~−22% vs legacy
+- new+PGO:  ~−27% vs legacy
