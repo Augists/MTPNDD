@@ -280,3 +280,41 @@ have even less probability of helping.
 
 - **Item 5** (NUMA / CPU pinning): needs a larger machine.
 - **Item 6** (op-cache sharding): speculative, 5.6% ceiling.
+
+## Final profile snapshot (post-optimizations)
+
+Ran perf again on the fully-optimized binary (`build/` — cache + slab +
+node shrink, no PGO) at N=12 W=6:
+
+| Counter | Before | After | Δ |
+|---|--:|--:|--:|
+| wall time | 2.37 s | 1.81 s | **−24%** |
+| task-clock | 12.3 s | 8.54 s | −31% |
+| instructions | 25.4 G | 25.8 G | ~same |
+| cycles | 42.9 G | 28.7 G | −33% |
+| IPC | 0.59 | **0.90** | +53% |
+| cache-refs | 2.84 G | 0.996 G | −65% |
+| cache-misses | 325 M | 313 M | ~same |
+
+IPC jumped from 0.59 to 0.90 — the workload is meaningfully less
+memory-bound now. Same instruction count but 33% fewer cycles means
+the CPU is stalling much less.
+
+### Top function redistribution
+
+| Function | Before | After | Δ |
+|---|--:|--:|--:|
+| `refs_up` | 15.89% | *dropped out of top 15* | |
+| `refs_down` | 11.98% | *dropped out of top 15* | |
+| `find_node_in_nodetable` | 11.52% | **17.03%** (new #1) | |
+| `mtpndd_and_rec_CALL` | 9.19% | **15.31%** (new #2) | |
+| `mtpndd_op_cache_lookup_binary` | 5.62% | **12.21%** (new #3) | |
+| `mtpndd_memory_acquire_edge_entry` | 8.22% | 3.21% | |
+| `mtbdd_ref` | 2.48% | 4.98% | |
+| `mtbdd_deref` | 1.86% | 3.13% | |
+
+The ref cache obliterated the refs hot path. The slab fix cut acquire
+costs in half. The remaining top three functions are the algorithmic
+core — nodetable canonicalization, AND recursion, op cache lookup —
+which are the "work MTPNDD is paid to do". Further gains would need
+algorithmic rework, not plumbing fixes.
