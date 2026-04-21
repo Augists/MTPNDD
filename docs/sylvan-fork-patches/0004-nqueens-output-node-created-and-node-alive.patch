@@ -1,0 +1,29 @@
+From bde688bc24d367e7edfeac447fbced2c57514e82 Mon Sep 17 00:00:00 2001
+From: Augists <augists@duck.com>
+Date: Sun, 1 Mar 2026 09:49:22 +0800
+Subject: [PATCH 4/4] nqueens: output node created and node alive
+
+---
+ examples/nqueens_fast.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/examples/nqueens_fast.c b/examples/nqueens_fast.c
+index e09c860..8ae3829 100644
+--- a/examples/nqueens_fast.c
++++ b/examples/nqueens_fast.c
+@@ -144,9 +144,10 @@ main(int argc, char **argv)
+     sylvan_stats_t snapshot;
+     sylvan_stats_snapshot(&snapshot);
+     uint64_t nodes_created = snapshot.counters[BDD_NODES_CREATED];
++    size_t nodes_alive = sylvan_nodecount(res);
+ 
+-    printf("NQUEENS_METRICS n=%zu solutions=%.0f nodes=%" PRIu64 "\n",
+-        board_size, solutions, nodes_created);
++    printf("NQUEENS_METRICS n=%zu solutions=%.0f nodes_created=%" PRIu64 " nodes_alive=%zu\n",
++        board_size, solutions, nodes_created, nodes_alive);
+ 
+     sylvan_unprotect(&vars);
+     sylvan_unprotect(&res);
+-- 
+2.53.0
+

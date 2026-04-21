@@ -1,0 +1,30 @@
+From 41f83e7b1b027b3779140dfd1d3540f1db070b17 Mon Sep 17 00:00:00 2001
+From: Augists ArchToy <augists@archtoy.com>
+Date: Fri, 14 Nov 2025 17:37:23 +0800
+Subject: [PATCH 3/4] fix(nqueens): larger max nodes and max cache when n = 11
+ or 12
+
+---
+ examples/nqueens_fast.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/examples/nqueens_fast.c b/examples/nqueens_fast.c
+index 896d712..e09c860 100644
+--- a/examples/nqueens_fast.c
++++ b/examples/nqueens_fast.c
+@@ -55,7 +55,11 @@ main(int argc, char **argv)
+ 
+     lace_start(workers, 1000000);
+ 
+-    sylvan_set_sizes(1LL<<21, 1LL<<27, 1LL<<19, 1LL<<25);
++    uint64_t min_nodes = 1LL<<21;
++    uint64_t max_nodes = board_size >= 12 ? 1LL<<29 : board_size >= 11 ? 1LL<<28 : 1LL<<26;
++    uint64_t min_cache = 1LL<<19;
++    uint64_t max_cache = board_size >= 12 ? 1LL<<27 : board_size >= 11 ? 1LL<<26 : 1LL<<24;
++    sylvan_set_sizes(min_nodes, max_nodes, min_cache, max_cache);
+     sylvan_init_package();
+     sylvan_init_bdd();
+ 
+-- 
+2.53.0
+
