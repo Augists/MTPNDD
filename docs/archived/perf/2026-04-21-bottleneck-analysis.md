@@ -248,8 +248,35 @@ Same scaling pattern as the ref cache: neutral at W=1, strong at W≥4.
 N=12 W=6 is now 23% ahead of the pre-migration legacy-vendored-sylvan
 baseline (1.65s vs 2.13s).
 
+### Item 3 — cache-line node layout (negative result)
+
+Inspected hot structs with `gdb ptype /o`:
+
+| struct | size | notes |
+|---|---:|---|
+| `mtpndd_node_s` | 24 B | 4-byte hole before `field_id` (from `atomic_uint_fast32_t` being 8 bytes on x86_64) |
+| `edge_bucket_entry_s` | 24 B | clean, but 24 B is cacheline-awkward |
+| `mtpndd_edge_s` | 48 B | 7 bytes padding after `bool buckets_malloced` |
+
+Shipped the cleanest of these: switched `ref_count` from
+`atomic_uint_fast32_t` to `_Atomic uint32_t`, shrinking the node from
+24 to 16 bytes (4/cacheline, no straddle).
+
+Result: **noise**. Full N=10..13 × W=1..6 matrix, most cells within
+±1%, one W=6 outlier at +4%. Hypothesis was wrong: MTPNDD node access
+is dispersed by hash lookups, so cacheline density at struct
+granularity doesn't materialize into miss-rate gains. Kept the change
+as hygiene (400 KB memory saved at N=12 scale, cleaner layout) but
+it doesn't contribute to the performance story.
+
+Decided not to pursue the two other candidates (packing
+`buckets_malloced` into `bucket_count` to reclaim the 7-byte pad in
+`mtpndd_edge_s`; round `edge_bucket_entry_s` to 32 B with padding):
+the first adds masking overhead on every access, the second would
+*grow* the struct. With Item 3's node shrink producing nothing, these
+have even less probability of helping.
+
 ### Items left for future work
 
-- **Item 3** (cache-line node layout): needs a `pahole` pass.
 - **Item 5** (NUMA / CPU pinning): needs a larger machine.
 - **Item 6** (op-cache sharding): speculative, 5.6% ceiling.
