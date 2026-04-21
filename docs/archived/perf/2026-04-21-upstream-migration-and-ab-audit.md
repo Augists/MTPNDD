@@ -254,15 +254,34 @@ the result is worker-count dependent.
 #### Why the W=6 cross-over is interesting
 
 At W=6, HEAD is faster even though upstream has the same per-worker
-refs sharding. Two candidate causes:
+refs sharding. Two candidate causes were considered:
 1. **Per-worker protect (not ported)** — at high worker counts,
    `mtbdd_protected` contention may return as a bottleneck; our
    feature/c has the protect sharding too.
 2. **Lace idle tuning** — `a445451` tweaked backoff thresholds; Lace
    1.6.2's defaults may behave differently under our workload.
 
-Either could be tested in a follow-up by porting `9806634` to the
-submodule branch or by probing Lace 1.6.2's backoff knobs.
+Tested hypothesis 1 by porting `9806634` (per-worker protect add/del
+tables with GC reconciliation) to the submodule. Result at W=6 across
+the matrix: **it makes things worse, not better.**
+
+| N | W=6 with refs+cutoff | with +protect | change |
+|---|---------------------:|--------------:|-------:|
+| 10 | 0.125 | 0.154 | +23% ⚠ |
+| 11 | 0.481 | 0.490 | +2% |
+| 12 | 2.287 | 2.330 | +2% |
+| 13 | 12.522 | 13.304 | +6% ⚠ |
+
+Likely cause: the GC reconciliation merges every worker's add and del
+tables into a fresh merge table on each GC pass. For nqueens (which
+uses MTPNDD's own `temp_refs` rather than sylvan_protect for most
+intermediate values), the contention being eliminated is tiny, so the
+merge overhead dominates. The port was reverted from the submodule.
+
+So the W=6 cross-over is more likely hypothesis 2: Lace backoff
+tuning, or something in MTPNDD's own per-worker slab / nodetable
+sharding reaching further into high-parallelism territory than the
+per-worker refs alone does. This is a follow-up for a future session.
 
 #### Takeaway
 
