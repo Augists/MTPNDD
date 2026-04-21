@@ -22,6 +22,14 @@ typedef struct mtpndd_slab_block_s {
 typedef struct mtpndd_slab_local_s {
     void *free_list;
     size_t count;
+    /* Per-worker in-use counter. Avoids 6-way cacheline contention on a
+     * single global atomic in the acquire/release fast path. Summed at
+     * stats-read time to compute the global in-use count. Need not be
+     * atomic — only the owning worker writes, and readers tolerate a
+     * slightly stale total. */
+    size_t in_use;
+    /* Pad to cacheline size to isolate per-worker writes. */
+    char _pad[64 - 3 * sizeof(size_t)];
 } mtpndd_slab_local_t;
 
 typedef struct mtpndd_slab_pool_s {
@@ -30,7 +38,10 @@ typedef struct mtpndd_slab_pool_s {
     void *free_list;
     mtpndd_slab_block_t *blocks;
     size_t slab_count;
-    _Atomic size_t in_use;
+    /* Fallback in-use counter for non-Lace-worker callers (e.g. initial
+     * setup on the main thread before lace_start). Still atomic because
+     * that path uses pool->lock and is rare. */
+    _Atomic size_t in_use_global;
     size_t refill_batch;
     size_t local_max;
     pthread_mutex_t lock;
@@ -74,7 +85,7 @@ static void mtpndd_slab_pool_reset(mtpndd_slab_pool_t *pool) {
     pool->free_list = NULL;
     pool->blocks = NULL;
     pool->slab_count = 0;
-    atomic_store_explicit(&pool->in_use, 0, memory_order_relaxed);
+    atomic_store_explicit(&pool->in_use_global, 0, memory_order_relaxed);
     pool->refill_batch = MTPNDD_POOL_REFILL_BATCH_DEFAULT;
     pool->local_max = MTPNDD_POOL_LOCAL_MAX_DEFAULT;
     pool->lock_initialized = false;
@@ -186,7 +197,7 @@ static void *mtpndd_slab_pool_acquire(mtpndd_slab_pool_t *pool, bool *new_slab) 
             void *result = local->free_list;
             local->free_list = *((void **)result);
             if (local->count > 0) local->count--;
-            atomic_fetch_add_explicit(&pool->in_use, 1, memory_order_relaxed);
+            local->in_use++;
             return result;
         }
         return NULL;
@@ -206,7 +217,7 @@ static void *mtpndd_slab_pool_acquire(mtpndd_slab_pool_t *pool, bool *new_slab) 
     }
     result = pool->free_list;
     pool->free_list = *((void **)result);
-    atomic_fetch_add_explicit(&pool->in_use, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&pool->in_use_global, 1, memory_order_relaxed);
     pthread_mutex_unlock(&pool->lock);
     return result;
 }
@@ -222,8 +233,7 @@ static void mtpndd_slab_pool_release(mtpndd_slab_pool_t *pool, void *object) {
         *((void **)object) = local->free_list;
         local->free_list = object;
         local->count++;
-        size_t prev = atomic_load_explicit(&pool->in_use, memory_order_relaxed);
-        if (prev > 0) atomic_fetch_sub_explicit(&pool->in_use, 1, memory_order_relaxed);
+        if (local->in_use > 0) local->in_use--;
         if (local->count > pool->local_max) {
             mtpndd_slab_pool_spill_local(pool, local);
         }
@@ -233,8 +243,8 @@ static void mtpndd_slab_pool_release(mtpndd_slab_pool_t *pool, void *object) {
     pthread_mutex_lock(&pool->lock);
     *((void **)object) = pool->free_list;
     pool->free_list = object;
-    size_t prev = atomic_load_explicit(&pool->in_use, memory_order_relaxed);
-    if (prev > 0) atomic_fetch_sub_explicit(&pool->in_use, 1, memory_order_relaxed);
+    size_t prev = atomic_load_explicit(&pool->in_use_global, memory_order_relaxed);
+    if (prev > 0) atomic_fetch_sub_explicit(&pool->in_use_global, 1, memory_order_relaxed);
     pthread_mutex_unlock(&pool->lock);
 }
 
@@ -318,22 +328,32 @@ void mtpndd_memory_pools_shutdown(void) {
     mtpndd_slab_pool_destroy(&g_node_pool);
 }
 
+static size_t mtpndd_slab_pool_in_use_sum(const mtpndd_slab_pool_t *pool) {
+    size_t total = atomic_load_explicit(&pool->in_use_global, memory_order_relaxed);
+    if (pool->locals) {
+        for (size_t i = 0; i < pool->locals_count; i++) {
+            total += pool->locals[i].in_use;
+        }
+    }
+    return total;
+}
+
 void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats) {
     if (!stats) return;
     stats->node_slabs = g_node_pool.slab_count;
-    stats->node_in_use = atomic_load_explicit(&g_node_pool.in_use, memory_order_relaxed);
+    stats->node_in_use = mtpndd_slab_pool_in_use_sum(&g_node_pool);
     stats->node_capacity_per_slab = g_node_pool.objects_per_slab;
 
     stats->edge_entry_slabs = g_edge_entry_pool.slab_count;
-    stats->edge_entry_in_use = atomic_load_explicit(&g_edge_entry_pool.in_use, memory_order_relaxed);
+    stats->edge_entry_in_use = mtpndd_slab_pool_in_use_sum(&g_edge_entry_pool);
     stats->edge_entry_capacity_per_slab = g_edge_entry_pool.objects_per_slab;
 
     stats->nodetable_entry_slabs = g_nodetable_entry_pool.slab_count;
-    stats->nodetable_entry_in_use = atomic_load_explicit(&g_nodetable_entry_pool.in_use, memory_order_relaxed);
+    stats->nodetable_entry_in_use = mtpndd_slab_pool_in_use_sum(&g_nodetable_entry_pool);
     stats->nodetable_entry_capacity_per_slab = g_nodetable_entry_pool.objects_per_slab;
 
     stats->edge_map_slabs = g_edge_map_pool.slab_count;
-    stats->edge_map_in_use = atomic_load_explicit(&g_edge_map_pool.in_use, memory_order_relaxed);
+    stats->edge_map_in_use = mtpndd_slab_pool_in_use_sum(&g_edge_map_pool);
     stats->edge_map_capacity_per_slab = g_edge_map_pool.objects_per_slab;
 }
 
