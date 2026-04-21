@@ -52,7 +52,8 @@ typedef struct mtpndd_nodetable_s mtpndd_nodetable_t;
 typedef struct mtpndd_op_cache_s mtpndd_op_cache_t;
 typedef struct mtpndd_leaf_table_s mtpndd_leaf_table_t;
 
-size_t mtpndd_hash_node_identity(const mtpndd_node_t *node);
+/* mtpndd_hash_node_identity is defined inline in mtpndd_node.h (needs
+ * the struct definition). Callers should include mtpndd_node.h. */
 
 static inline size_t mtpndd_hash_u64(uint64_t key) {
     uint64_t value = key;

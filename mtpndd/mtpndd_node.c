@@ -281,20 +281,7 @@ void mtpndd_edge_map_init(mtpndd_edge_t *edges) {
     memset(edges->buckets, 0, bucket_cnt * sizeof(edge_bucket_entry_t *));
 }
 
-size_t mtpndd_hash_node_identity(const mtpndd_node_t *node) {
-    if (!node) return 0;
-
-    uint64_t hash = 1469598103934665603ULL; /* FNV offset basis */
-    uint64_t field_id = (uint64_t)node->field_id;
-    uintptr_t edges_addr = (uintptr_t)node->edges;
-
-    hash ^= field_id;
-    hash *= 1099511628211ULL;             /* FNV prime */
-    hash ^= edges_addr;
-    hash *= 1099511628211ULL;
-
-    return (size_t)hash;
-}
+/* mtpndd_hash_node_identity: moved to mtpndd_node.h as static inline. */
 
 static mtpndd_error_t mtpndd_edge_map_deep_clone(const mtpndd_edge_t *source, mtpndd_edge_t *dest) {
     dest->edge_count = source->edge_count;

@@ -4,6 +4,7 @@
 
 #include "mtpndd_operation_cache.h"
 #include "mtpndd_common.h"
+#include "mtpndd_node.h"  /* for inlined mtpndd_hash_node_identity */
 
 #include <stdlib.h>
 #include <stdbool.h>

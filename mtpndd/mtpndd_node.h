@@ -40,6 +40,21 @@ struct mtpndd_node_s {
         uint64_t leaf_value;            // leaves (field_id == MTPNDD_LEAF_FIELD_ID)
     };
 };
+
+/* Inlined identity hash of a canonicalized node — content-addressed by
+ * (field_id, edges pointer). Must be inline because it sits on the
+ * mtpndd_op_cache_lookup_binary hot path (12% self in profiling);
+ * keeping it in a separate TU costs a call + register spills per lookup. */
+static inline size_t mtpndd_hash_node_identity(const mtpndd_node_t *node)
+{
+    if (!node) return 0;
+    uint64_t hash = 1469598103934665603ULL; /* FNV-1a offset basis */
+    hash ^= (uint64_t)node->field_id;
+    hash *= 1099511628211ULL;               /* FNV prime */
+    hash ^= (uintptr_t)node->edges;
+    hash *= 1099511628211ULL;
+    return (size_t)hash;
+}
 /********************************
  * MTPNDD edge definition
  ********************************/
