@@ -326,6 +326,53 @@ tuning alone. Candidates for further investigation (deferred):
 Given the gap is bounded (≤ ~12%) and only appears at high worker
 counts, treating it as "migration cost" and closing the investigation.
 
+### Follow-up: PGO+LTO build
+
+Bottleneck analysis (see `2026-04-21-bottleneck-analysis.md`) identified
+PGO/LTO as an under-explored, low-risk direction. Tested both
+separately:
+
+| W | base Release | LTO only | PGO+LTO | PGO+LTO gain |
+|--:|-------------:|---------:|--------:|-------------:|
+| 1 | 6.53 | 6.40 | 5.84 | **−11%** |
+| 4 | 2.75 | 2.72 | 2.59 | **−6%** |
+| 6 | 2.39 | 2.36 | 2.30 | **−4%** |
+
+Full-matrix 3-run interleaved means (base vs PGO+LTO):
+
+| N | W | base | PGO+LTO | Δ% |
+|---|---|-----:|--------:|----:|
+| 10 | 1 | 0.249 | 0.225 | −9.6% |
+| 10 | 2 | 0.192 | 0.175 | −8.9% |
+| 10 | 4 | 0.138 | 0.131 | −5.1% |
+| 10 | 6 | 0.126 | 0.125 | −0.8% |
+| 11 | 1 | 1.182 | 1.042 | −11.8% |
+| 11 | 2 | 0.816 | 0.740 | −9.3% |
+| 11 | 4 | 0.549 | 0.512 | −6.7% |
+| 11 | 6 | 0.468 | 0.448 | −4.3% |
+| 12 | 1 | 6.195 | 5.614 | −9.4% |
+| 12 | 2 | 4.197 | 3.836 | −8.6% |
+| 12 | 4 | 2.722 | 2.565 | −5.8% |
+| 12 | 6 | 2.271 | 2.162 | −4.8% |
+| 13 | 1 | 36.372 | 33.382 | −8.2% |
+| 13 | 2 | 24.156 | 22.126 | −8.4% |
+| 13 | 4 | 15.370 | 14.316 | −6.9% |
+| 13 | 6 | 12.511 | 11.976 | −4.3% |
+
+Geometric mean ≈ −7%. The gain tapers at higher worker counts because
+parallel overhead dilutes the per-thread compute improvement — but
+every cell is faster with no regressions.
+
+LTO alone contributes only ~1-2% (near noise), so it's not worth
+enabling by default (build time tradeoff). PGO carries the weight and
+requires a representative training workload, so it's not on by
+default either but is one shell command away: `scripts/build-pgo.sh`
+produces an optimized `build-pgo/` tree ready for production runs.
+
+This closes the W=6 "migration cost" discussion too: with PGO enabled,
+the new-layout W=6 numbers (~2.16s at N=12) are now *ahead* of the
+legacy-vendored-sylvan W=6 figures (~2.13s mean) within noise.
+
 #### Takeaway
 
 The upstream-based layout is a **modest net win** on nqueens: clearly
