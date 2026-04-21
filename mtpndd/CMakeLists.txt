@@ -21,6 +21,14 @@ endif()
 
 if(TARGET sylvan::sylvan)
     target_link_libraries(mtpndd PUBLIC sylvan::sylvan)
+    # Expose sylvan's internal source dir so MTPNDD can include headers that
+    # are not part of the installed public set (e.g. sylvan_refs.h).
+    if(TARGET sylvan)
+        get_target_property(_sylvan_src_dir sylvan SOURCE_DIR)
+        if(_sylvan_src_dir)
+            target_include_directories(mtpndd PUBLIC ${_sylvan_src_dir})
+        endif()
+    endif()
 else()
     if(NOT DEFINED SYLVAN_ROOT)
         set(SYLVAN_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." CACHE PATH "Path to Sylvan root")
