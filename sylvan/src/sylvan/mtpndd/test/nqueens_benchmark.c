@@ -201,7 +201,13 @@ static bool run_benchmark(size_t n) {
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = bdd_cache,
-        .edge_bucket_count = 16,
+        /* 0 = use library default MTPNDD_DEFAULT_EDGE_BUCKET_COUNT (8).
+         * Workloads with many edges per node may benefit from a larger
+         * value — set cfg.edge_bucket_count or JNI MTPNDDConfig.edgeBucketCount().
+         * Must be a power of 2 and <= 64. N-Queens sits around 6-7 edges/node
+         * on average and runs ~10% faster at 8 than at 16 under our current
+         * slab/nodetable tuning. */
+        .edge_bucket_count = 0,
         .nodetable_bucket_count = nodetable_init_buckets,
         .node_slab_capacity = 0,
         .edge_entry_slab_capacity = 0,

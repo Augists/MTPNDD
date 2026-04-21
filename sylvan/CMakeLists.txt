@@ -7,6 +7,14 @@ project(sylvan
     LANGUAGES C CXX
 )
 
+# Default to Release for single-config generators so benchmark runs get
+# optimized. Without this, an empty CMAKE_BUILD_TYPE silently compiles at
+# -O0 and every timing measurement is meaningless.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
 add_library(sylvan STATIC)
 add_library(sylvan::sylvan ALIAS sylvan)
 
