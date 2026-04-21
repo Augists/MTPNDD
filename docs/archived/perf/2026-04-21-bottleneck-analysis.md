@@ -202,9 +202,54 @@ pre-migration measurement (2.13s). The "migration cost" story is
 fully inverted — the submodule layout with the two new optimizations
 is meaningfully faster than what we left behind.
 
+### Item 2 — slab allocator fast path
+
+Shipped as `perf(slab): per-worker in_use counter to drop
+shared-cacheline atomic`. The slab pool previously did an atomic RMW
+on a single shared `pool->in_use` counter on every acquire and every
+release. Under 6 workers, that's a single cache line bouncing between
+cores at the rate of allocation. The counter is only read by the
+debug stats snapshot, so moving it per-worker (padded to a cache
+line, summed at read time) is safe.
+
+Matrix (3-run interleaved means, Release -O3, on top of the ref
+coalescing cache):
+
+| N | W | rc-only | rc+slab | Δ% |
+|---|---|--------:|--------:|----:|
+| 10 | 1 | 0.264 | 0.269 | +1.9% |
+| 10 | 2 | 0.191 | 0.177 | −7.3% |
+| 10 | 4 | 0.130 | 0.115 | −11.5% |
+| 10 | 6 | 0.117 | 0.102 | **−12.8%** |
+| 11 | 1 | 1.192 | 1.176 | −1.3% |
+| 11 | 2 | 0.795 | 0.732 | −7.9% |
+| 11 | 4 | 0.504 | 0.451 | −10.5% |
+| 11 | 6 | 0.383 | 0.336 | **−12.3%** |
+| 12 | 1 | 6.254 | 6.214 | −0.6% |
+| 12 | 2 | 4.127 | 3.839 | −7.0% |
+| 12 | 4 | 2.495 | 2.226 | −10.8% |
+| 12 | 6 | 1.842 | 1.591 | **−13.6%** |
+| 13 | 1 | 37.358 | 37.115 | −0.7% |
+| 13 | 2 | 24.047 | 22.397 | −6.9% |
+| 13 | 4 | 14.069 | 12.590 | −10.5% |
+| 13 | 6 | 10.240 | 8.911 | **−13.0%** |
+
+Same scaling pattern as the ref cache: neutral at W=1, strong at W≥4.
+
+### Final stacked totals at N=12
+
+| W | baseline | +cache | +cache+slab | +all+PGO+LTO |
+|--:|---------:|-------:|------------:|-------------:|
+| 1 | 6.42 | 6.54 | 6.48 | **5.76** (−10%) |
+| 2 | 4.18 | 4.15 | 3.94 | **3.56** (−15%) |
+| 4 | 2.76 | 2.54 | 2.27 | **2.09** (−24%) |
+| 6 | 2.43 | 2.00 | 1.76 | **1.65** (−32%) |
+
+N=12 W=6 is now 23% ahead of the pre-migration legacy-vendored-sylvan
+baseline (1.65s vs 2.13s).
+
 ### Items left for future work
 
-- **Item 2** (slab allocator fast path): still untouched; ~15% of CPU.
 - **Item 3** (cache-line node layout): needs a `pahole` pass.
 - **Item 5** (NUMA / CPU pinning): needs a larger machine.
 - **Item 6** (op-cache sharding): speculative, 5.6% ceiling.
