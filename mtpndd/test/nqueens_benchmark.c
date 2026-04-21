@@ -1,6 +1,6 @@
 #include "mtpndd.h"
 #include "mtpndd_common.h"
-#include "sylvan_mtbdd.h"
+#include <sylvan.h>
 #include "sylvan_stats.h"
 #include <lace.h>
 
@@ -209,7 +209,11 @@ static bool run_benchmark(size_t n) {
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = bdd_cache,
-        .edge_bucket_count = 16,
+        /* 0 = use library default MTPNDD_DEFAULT_EDGE_BUCKET_COUNT (8).
+         * Workloads with denser edge distributions can set this to a
+         * power of 2 up to 64 via cfg.edge_bucket_count (or
+         * MTPNDDConfig.edgeBucketCount on the Java side). */
+        .edge_bucket_count = 0,
         .nodetable_bucket_count = nodetable_init_buckets,
         .node_slab_capacity = 0,
         .edge_entry_slab_capacity = 0,
@@ -220,6 +224,14 @@ static bool run_benchmark(size_t n) {
     if (mtpndd_init(&cfg) != MTPNDD_SUCCESS) {
         fprintf(stderr, "mtpndd_init failed: %s\n", mtpndd_error_string(mtpndd_get_last_error().code));
         return false;
+    }
+
+    /* Optional: control BDD-internal spawn depth cutoff for A/B testing.
+     * <0 (default) = unlimited SPAWN (upstream); 0 = force CALL everywhere;
+     * >0 = cap nested SPAWN depth. Set MTPNDD_BDD_SPAWN_CUTOFF to override. */
+    const char *cutoff_env = getenv("MTPNDD_BDD_SPAWN_CUTOFF");
+    if (cutoff_env && *cutoff_env) {
+        sylvan_set_spawn_depth_cutoff(atoi(cutoff_env));
     }
 
     struct timespec start_ts = {0};
