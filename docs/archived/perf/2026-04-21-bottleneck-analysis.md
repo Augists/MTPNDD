@@ -141,3 +141,70 @@ If another perf push is on the table, tackle items 1 (refs hot path)
 and 4 (PGO/LTO) in that order. Both are locally testable with a
 well-defined A/B. Item 2 (slab caches) is next. Items 3, 5, 6 are
 speculative without more measurement.
+
+## Follow-up: implemented items 4 and 1
+
+### Item 4 — PGO + LTO
+
+Shipped as `scripts/build-pgo.sh`. LTO alone 1–2% (noise); PGO carries
+the weight. Geometric mean ≈ −7%, consistent across the full N=10..13
+× W=1..6 matrix with no regressions. See
+`2026-04-21-upstream-migration-and-ab-audit.md` for the full table.
+
+### Item 1 — ref coalescing cache
+
+Shipped in the submodule on branch `feature/mtpndd-perworker-refs`,
+commit `c8bf561`. A 16-entry per-worker thread-local cache sits in
+front of the per-worker refs tables: mtbdd_ref / mtbdd_deref first try
+to coalesce into the cache (linear scan, 4 cache lines), evict
+round-robin when full, and flush at GC time via TOGETHER. Consecutive
+ref/deref of the same handle cancel out with no global traffic.
+
+Matrix (3-run interleaved means, plain Release -O3, no PGO):
+
+| N | W | no-cache | cache | Δ% |
+|---|---|---------:|------:|----:|
+| 10 | 1 | 0.255 | 0.255 | 0.0% |
+| 10 | 2 | 0.192 | 0.190 | −1.0% |
+| 10 | 4 | 0.138 | 0.131 | −5.1% |
+| 10 | 6 | 0.129 | 0.113 | **−12.4%** |
+| 11 | 1 | 1.161 | 1.177 | +1.4% |
+| 11 | 2 | 0.809 | 0.794 | −1.9% |
+| 11 | 4 | 0.548 | 0.503 | −8.2% |
+| 11 | 6 | 0.459 | 0.381 | **−17.0%** |
+| 12 | 1 | 6.198 | 6.253 | +0.9% |
+| 12 | 2 | 4.181 | 4.152 | −0.7% |
+| 12 | 4 | 2.719 | 2.497 | −8.2% |
+| 12 | 6 | 2.237 | 1.841 | **−17.7%** |
+| 13 | 1 | 36.345 | 37.048 | +1.9% |
+| 13 | 2 | 24.092 | 24.039 | −0.2% |
+| 13 | 4 | 15.328 | 14.072 | −8.2% |
+| 13 | 6 | 12.531 | 10.236 | **−18.3%** |
+
+Exactly the profile we'd predict: neutral on W=1 (no contention to
+coalesce), scales with worker count up to −18% at W=6. The small W=1
+regression (≤2%) is the 16-entry linear scan overhead without any
+coalescing benefit; could be fixed with a per-worker-count threshold
+but not worth the complexity given the gains elsewhere.
+
+### Stacked end-to-end gain
+
+At N=12 (3-run means), showing plain Release → +cache → +cache+PGO+LTO:
+
+| W | base | +cache | +cache+PGO+LTO | Δ base → all |
+|---|-----:|-------:|---------------:|-------------:|
+| 1 | 6.42 | 6.54 | 5.80 | **−10%** |
+| 4 | 2.76 | 2.54 | 2.33 | **−16%** |
+| 6 | 2.43 | 2.00 | 1.81 | **−25%** |
+
+The W=6 number is now 15% ahead of the legacy-vendored-sylvan
+pre-migration measurement (2.13s). The "migration cost" story is
+fully inverted — the submodule layout with the two new optimizations
+is meaningfully faster than what we left behind.
+
+### Items left for future work
+
+- **Item 2** (slab allocator fast path): still untouched; ~15% of CPU.
+- **Item 3** (cache-line node layout): needs a `pahole` pass.
+- **Item 5** (NUMA / CPU pinning): needs a larger machine.
+- **Item 6** (op-cache sharding): speculative, 5.6% ceiling.
