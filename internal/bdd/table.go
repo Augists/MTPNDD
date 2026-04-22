@@ -9,43 +9,58 @@ import (
 
 var nextBDDNodeID atomic.Uint64
 
-func init() { nextBDDNodeID.Store(100) } // leave room for terminals
+func init() { nextBDDNodeID.Store(100) }
 
 // ---------------------------------------------------------------------------
-// BDD node slab allocator. Mutex-guarded bump allocator.
+// BDD node slab (lock-free fast path).
 // ---------------------------------------------------------------------------
 
-const bddSlabChunk = 1 << 18
+const (
+	bddSlabChunk = 1 << 18
+	bddSlabShift = 18
+	bddSlabMask  = bddSlabChunk - 1
+	bddMaxChunks = 1 << 12
+)
 
 type bddSlabState struct {
-	mu     sync.Mutex
-	chunk  []Node
-	nextIx int
+	chunks [bddMaxChunks]atomic.Pointer[[]Node]
+	next   atomic.Int64
+	growMu sync.Mutex
 }
 
 var bddSlab bddSlabState
 
 func allocBDDNode() *Node {
-	bddSlab.mu.Lock()
-	if bddSlab.nextIx == len(bddSlab.chunk) {
-		bddSlab.chunk = make([]Node, bddSlabChunk)
-		bddSlab.nextIx = 0
+	gi := bddSlab.next.Add(1) - 1
+	chunkIdx := int(gi >> bddSlabShift)
+	slotIdx := int(gi) & bddSlabMask
+	if cp := bddSlab.chunks[chunkIdx].Load(); cp != nil {
+		return &(*cp)[slotIdx]
 	}
-	n := &bddSlab.chunk[bddSlab.nextIx]
-	bddSlab.nextIx++
-	bddSlab.mu.Unlock()
-	return n
+	bddSlab.growMu.Lock()
+	if bddSlab.chunks[chunkIdx].Load() == nil {
+		c := make([]Node, bddSlabChunk)
+		bddSlab.chunks[chunkIdx].Store(&c)
+	}
+	bddSlab.growMu.Unlock()
+	return &(*bddSlab.chunks[chunkIdx].Load())[slotIdx]
 }
 
 // ---------------------------------------------------------------------------
-// Unique table: sharded strong-pointer Go map (one *Node per key).
+// Unique table: linear-probed open-addressing hash table, per-shard.
 // ---------------------------------------------------------------------------
 
 const (
 	shardCount      = 64
 	shardMask       = shardCount - 1
-	initialShardCap = 256
+	initialShardCap = 512
+	shardResizeLoad = 7
 )
+
+type shardSlot struct {
+	hash uint64
+	node *Node
+}
 
 type nodeKey struct {
 	v  uint32
@@ -55,7 +70,9 @@ type nodeKey struct {
 
 type uniqueShard struct {
 	mu    sync.Mutex
-	table map[nodeKey]*Node
+	slots []shardSlot
+	mask  uint64
+	count int
 }
 
 type uniqueTable struct {
@@ -65,17 +82,18 @@ type uniqueTable struct {
 var unique = func() *uniqueTable {
 	t := &uniqueTable{}
 	for i := range t.shards {
-		t.shards[i].table = make(map[nodeKey]*Node, initialShardCap)
+		t.shards[i].slots = make([]shardSlot, initialShardCap)
+		t.shards[i].mask = uint64(initialShardCap - 1)
 	}
 	return t
 }()
 
-func shardIdx(k nodeKey) uint32 {
+func keyHash(k nodeKey) uint64 {
 	h := uint64(k.v) * 0x9E3779B97F4A7C15
 	h ^= uint64(k.lo) * 0xBF58476D1CE4E5B9
 	h ^= uint64(k.hi) * 0x94D049BB133111EB
 	h ^= h >> 32
-	return uint32(h) & shardMask
+	return h
 }
 
 func (t *uniqueTable) intern(v uint32, lo, hi *Node) *Node {
@@ -84,24 +102,55 @@ func (t *uniqueTable) intern(v uint32, lo, hi *Node) *Node {
 		lo: uintptr(unsafe.Pointer(lo)),
 		hi: uintptr(unsafe.Pointer(hi)),
 	}
-	s := &t.shards[shardIdx(k)]
+	h := keyHash(k)
+	s := &t.shards[h&shardMask]
 	s.mu.Lock()
-	if n, ok := s.table[k]; ok {
-		s.mu.Unlock()
-		runtime.KeepAlive(lo)
-		runtime.KeepAlive(hi)
-		return n
+	idx := h & s.mask
+	for {
+		slot := &s.slots[idx]
+		if slot.node == nil {
+			n := allocBDDNode()
+			n.Var = v
+			n.id = nextBDDNodeID.Add(1)
+			n.Low = lo
+			n.High = hi
+			slot.hash = h
+			slot.node = n
+			s.count++
+			if s.count*10 > len(s.slots)*shardResizeLoad {
+				s.resizeLocked()
+			}
+			s.mu.Unlock()
+			runtime.KeepAlive(lo)
+			runtime.KeepAlive(hi)
+			return n
+		}
+		if slot.hash == h {
+			n := slot.node
+			s.mu.Unlock()
+			runtime.KeepAlive(lo)
+			runtime.KeepAlive(hi)
+			return n
+		}
+		idx = (idx + 1) & s.mask
 	}
-	n := allocBDDNode()
-	n.Var = v
-	n.id = nextBDDNodeID.Add(1)
-	n.Low = lo
-	n.High = hi
-	s.table[k] = n
-	s.mu.Unlock()
-	runtime.KeepAlive(lo)
-	runtime.KeepAlive(hi)
-	return n
+}
+
+func (s *uniqueShard) resizeLocked() {
+	oldSlots := s.slots
+	newSize := len(oldSlots) * 2
+	s.slots = make([]shardSlot, newSize)
+	s.mask = uint64(newSize - 1)
+	for _, slot := range oldSlots {
+		if slot.node == nil {
+			continue
+		}
+		idx := slot.hash & s.mask
+		for s.slots[idx].node != nil {
+			idx = (idx + 1) & s.mask
+		}
+		s.slots[idx] = slot
+	}
 }
 
 // Reset clears all interned BDD nodes and the op cache.
@@ -110,11 +159,15 @@ func Reset() {
 	for i := range unique.shards {
 		s := &unique.shards[i]
 		s.mu.Lock()
-		for k := range s.table {
-			delete(s.table, k)
-		}
+		s.slots = make([]shardSlot, initialShardCap)
+		s.mask = uint64(initialShardCap - 1)
+		s.count = 0
 		s.mu.Unlock()
 	}
+	for i := range bddSlab.chunks {
+		bddSlab.chunks[i].Store(nil)
+	}
+	bddSlab.next.Store(0)
 }
 
 // TableSize returns the total number of live interned BDD nodes.
@@ -123,7 +176,7 @@ func TableSize() int {
 	for i := range unique.shards {
 		s := &unique.shards[i]
 		s.mu.Lock()
-		n += len(s.table)
+		n += s.count
 		s.mu.Unlock()
 	}
 	return n
