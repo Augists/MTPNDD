@@ -83,15 +83,19 @@ Default config is unchanged from v1.4. Cost of the compile-time-
 constant → runtime-variable mask transition on n-queens N=12:
 1.38 s → 1.55 s (~12 % regression, acceptable for flexibility).
 
-## v2.0 roadmap note (fattree12+)
+## v2.0 roadmap note (extreme-scale)
 
-Running sre-ndd `bgp_fattree12 MF=3` pushes the BDD slab past 8 G
-cumulative allocations in a single session. At 40 bytes/node that
-would exceed physical memory anyway — the real issue is that
-mtpndd-go v1.x pins every canonical node in the slab until Reset
-and has no equivalent of C's ref-counted slab-slot reuse.
+`sre-ndd bgp_fattree12 MF=3` overruns mtpndd-go's slab chunk directory
+(>8 G cumulative BDD allocations per session). On the 31 GB test
+machine the C reference also fails at this workload — SIGABRT, no
+completion — so MF=3 is an OOM for both backends on current hardware
+rather than a mtpndd-go-specific limit. `fattree12 MF=1` completes
+cleanly on both (Go 26.2 s, C 28.6 s, Go ~8 % faster).
 
-Fixing requires:
+That said, on a larger host the Go "pin until Reset" policy would
+eventually bite before C's ref-counted slab-slot reuse does.
+Addressing requires:
+
 1. Pin table at the JNI boundary; honour Java `refNative` /
    `derefNative` so Java handles keep their node alive until Java
    explicitly releases.
@@ -100,8 +104,8 @@ Fixing requires:
 3. Per-chunk free lists so vacated slab slots get reused.
 
 Deferred to v2.0; for v1.x, valid workloads are `fattree04`,
-`fattree08`, and anything else that stays under ~4 G cumulative
-BDD allocations per session.
+`fattree08`, and `fattree12 MF=1`, i.e. anything that stays under
+~4 G cumulative BDD allocations per session.
 
 ## 2026-04-23 — v1.4: 512K-slot op cache + fast-miss cacheGet
 
