@@ -1,7 +1,9 @@
-# Plan: open-addressing nodetable (future work)
+# Plan: open-addressing nodetable
 
-Status: **design note, not started**. Captured as the next-big-thing
-if/when we decide to chase more performance on `find_node_in_nodetable`.
+Status: **prototyped 2026-04-22 on branch `feature/c-open-addressing`,
+not merged** — regresses N-queens by 7–12% at W=6. Captured here as a
+reference for workloads where the cache-locality assumption *might*
+hold; N-queens is not one of them. Findings at end of doc.
 
 ## Motivation
 
@@ -119,3 +121,78 @@ work** including:
 - GC integration
 - Full benchmark regression
 - Decision to merge / keep-chained
+
+## 2026-04-22 prototype results
+
+Prototype lives on `feature/c-open-addressing` (2 commits on top of
+`feature/c` at `7b736be`):
+
+- `edfdb8d` — flat slot array (24 B: atomic `edges*`, `node*`,
+  `cached_hash`), lock-free linear-probe lookup, CAS insert with
+  PENDING sentinel, TOMBSTONE on GC delete. Drops shard spinlocks
+  and the `mtpndd_nodetable_bucket_entry` slab.
+- `c8f7111` — correctness fix: rehash must run inside Sylvan NEWFRAME
+  (workers parked). The prototype shipped with rehash in `gcOrGrow`
+  which races with concurrent lock-free inserters — latent at 2 M
+  slots because rehash never triggered, blatant when slots are
+  shrunk (lost entries, 14199 vs 14200 solutions at N=12).
+
+### A/B at N=12 (release build)
+
+| W | chained (feature/c) | open-addressing | Δ |
+|---|---:|---:|---|
+| 1 | 6.02 s | 6.07 s | +1% |
+| 4 | 2.13 s | 2.20 s | +3% |
+| 6 | 1.54 s | 1.72 s | **+12%** |
+
+### Hotspot shift (N=12 W=6)
+
+| Symbol | chained | OA |
+|--------|--------:|---:|
+| `find_node_in_nodetable` | 18.69% | 19.26% |
+| `mtpndd_mk` | 4.70% | 4.93% |
+| `pthread_spin_lock` | 4.27% | **0%** |
+
+Spinlock fully eliminated, but the 4.3% was absorbed by CAS cost and
+extra atomic loads on the lock-free read path. Net: slower.
+
+### Why the design-doc win didn't materialize
+
+The doc upper-bounded the win by the combined cost of `find_node` +
+`mtpndd_mk` + `pthread_spin_lock` (~27%). The hypothesis was that
+cache-friendly probing would shrink `find_node` itself. In practice
+load factor at N=12 is ~4% (88 k live nodes in 2 M slots): chained
+buckets are already mostly empty (0-1 entry), so a list walk costs
+one dereference — the same as an open-addressed probe. There is no
+list-walk cost to cut.
+
+### Experiment 2a: shrink initial slots to push load factor up
+
+Capping initial slots at 128 k pushes load to ~68%, so probes become
+the expected 2-4 hops. Result was **much worse** (N=12 W=1: 9.5 s,
+W=6: 4.3 s) because every rehash now runs under Sylvan NEWFRAME —
+each rehash triggers a full `sylvan_gc()` stop-the-world. A single
+field at high load can pay 3-5 rehashes over a run; each one
+dominates the savings.
+
+### When this might still be worth it
+
+The workload has to pay the table for the walk-vs-probe trade to
+matter. Candidates:
+
+- **High-load workloads** where buckets average > 2 entries. The
+  chained walk touches cold cachelines per hop; open addressing
+  stays in the first line(s).
+- **Miss-dominant lookups**. Chained walks to end-of-list before
+  returning miss; open addressing returns at the first NULL probe.
+- **Low-parallelism**. Per-slot CAS scales well, but the 6-worker
+  case here didn't see parallelism benefits — we were already
+  shard-parallel via 4 k spinlocks.
+
+### Migration note for downstream forks
+
+If porting to a codebase that matches the "worth it" criteria (e.g.
+the SRE NDD project at `~/sre-ndd`): the five files on
+`feature/c-open-addressing` are self-contained (no Sylvan submodule
+changes needed). Replicate the NEWFRAME rehash-site invariant — it
+is a correctness requirement, not a tuning knob.
