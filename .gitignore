@@ -18,3 +18,5 @@
 # Claude Code state (per-user; never committed)
 .claude/
 CLAUDE.md
+libmtpnddjni.h
+libmtpnddjni.so
