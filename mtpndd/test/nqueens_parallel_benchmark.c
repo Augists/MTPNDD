@@ -13,8 +13,6 @@
 #include "mtpndd.h"
 #include "mtpndd_common.h"
 #include <sylvan.h>
-#include "sylvan_mtbdd.h"
-#include "sylvan_refs.h"
 #include "sylvan_stats.h"
 #include <lace.h>
 
@@ -216,9 +214,16 @@ TASK_IMPL_3(mtpndd_t *, par_build_cell, size_t, row, size_t, col, size_t, n)
 
 static size_t g_n_workers = 0;
 
+/*
+ * Lace 1.6.x requires that all code invoking Sylvan/MTPNDD TASKs
+ * runs inside a Lace worker context. See nqueens_benchmark.c for the
+ * same pattern. The main thread does setup (lace_start + sylvan_init
+ * + mtpndd_init) then enters worker context once via RUN(bench_work),
+ * and tears down after.
+ */
+VOID_TASK_DECL_3(par_bench_work, size_t, bool*, struct timespec*)
+
 static bool run_parallel_benchmark(size_t n) {
-    struct timespec start_ts = {0}, end_ts = {0};
-    clock_gettime(CLOCK_MONOTONIC, &start_ts);
 
     /*
      * BDD table sizing for parallel build.
@@ -254,7 +259,7 @@ static bool run_parallel_benchmark(size_t n) {
         .bdd_nodetable_size = bdd_size,
         .mtpndd_nodetable_size = ndd_size,
         .op_cache_size = bdd_cache,
-        .edge_bucket_count = 16,
+        .edge_bucket_count = 0,  /* library default (8); settable via cfg */
         .nodetable_bucket_count = nodetable_init_buckets,
         .node_slab_capacity = 0,
         .edge_entry_slab_capacity = 0,
@@ -279,31 +284,41 @@ static bool run_parallel_benchmark(size_t n) {
         }
     }
 
+    struct timespec start_ts = {0};
+    clock_gettime(CLOCK_MONOTONIC, &start_ts);
+
+    bool ok = false;
+    RUN(par_bench_work, n, &ok, &start_ts);
+    mtpndd_quit();
+    return ok;
+}
+
+VOID_TASK_IMPL_3(par_bench_work, size_t, n, bool*, ok_out, struct timespec*, start_ts)
+{
+    struct timespec end_ts = {0};
+    mtpndd_t **or_batch = NULL;
+    mtpndd_t **imp_batch = NULL;
+    size_t total_cells = n * n;
+
     if (!declare_fields(n)) {
         fprintf(stderr, "declare_fields failed\n");
-        mtpndd_quit();
-        return false;
+        *ok_out = false;
+        return;
     }
 
-    mtpndd_t **or_batch = (mtpndd_t **)calloc(n, sizeof(mtpndd_t *));
-    size_t total_cells = n * n;
-    mtpndd_t **imp_batch = (mtpndd_t **)calloc(total_cells, sizeof(mtpndd_t *));
+    or_batch = (mtpndd_t **)calloc(n, sizeof(mtpndd_t *));
+    imp_batch = (mtpndd_t **)calloc(total_cells, sizeof(mtpndd_t *));
     if (!or_batch || !imp_batch) {
         fprintf(stderr, "allocation failed\n");
         free(or_batch);
         free(imp_batch);
-        mtpndd_quit();
-        return false;
+        *ok_out = false;
+        return;
     }
 
-    /*
-     * Acquire Lace worker context for the main thread.
-     * After mtpndd_init(), the calling thread is a valid Lace worker
-     * (lace_start() was called internally), so LACE_ME sets up
-     * __lace_worker / __lace_dq_head from the current worker state and
-     * SPAWN / SYNC work correctly.
-     */
-    LACE_ME;
+    /* We are inside a TASK (RUN'd from run_parallel_benchmark), so
+     * __lace_worker / __lace_dq_head are already in scope and
+     * SPAWN / SYNC / CALL work directly. Lace 1.6 removed LACE_ME. */
 
     /* ---- Phase 1: row-OR terms in parallel ---- */
     if (n == 1) {
@@ -372,12 +387,13 @@ static bool run_parallel_benchmark(size_t n) {
         mtpndd_deref(queen);
 
         clock_gettime(CLOCK_MONOTONIC, &end_ts);
-        double elapsed = timespec_diff_seconds(&start_ts, &end_ts);
+        double elapsed = timespec_diff_seconds(start_ts, &end_ts);
 
         printf("\t%.3f\t%" PRIu64 "\n", elapsed, solutions);
         fflush(stdout);
 
         sylvan_stats_report(stdout);
+        (void)start_ts;  /* for older compilers; start_ts is read via *start_ts */
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
         {
             mtpndd_stats_t *stats = &g_mtpndd_stats;
@@ -402,8 +418,8 @@ static bool run_parallel_benchmark(size_t n) {
             }
         }
 #endif
-        mtpndd_quit();
-        return true;
+        *ok_out = true;
+        return;
     }
 
 build_fail:
@@ -415,8 +431,8 @@ build_fail:
     }
     free(or_batch);
     free(imp_batch);
-    mtpndd_quit();
-    return false;
+    *ok_out = false;
+    return;
 }
 
 int main(int argc, char **argv) {
