@@ -524,17 +524,7 @@ unlock_and_return:
     return status;
 }
 
-bool mtpndd_is_true(mtpndd_t *ndd) {
-    return ndd == &MTPNDD_TRUE;
-}
-
-bool mtpndd_is_false(mtpndd_t *ndd) {
-    return ndd == &MTPNDD_FALSE;
-}
-
-bool mtpndd_is_terminal(mtpndd_t *ndd) {
-    return ndd->field_id >= MTPNDD_LEAF_FIELD_ID_MIN;
-}
+/* mtpndd_is_true / is_false / is_terminal are static inline in mtpndd_node.h. */
 
 static mtpndd_error_t mtpndd_exist_rec(mtpndd_t *a, uint32_t field, mtpndd_t **result);
 

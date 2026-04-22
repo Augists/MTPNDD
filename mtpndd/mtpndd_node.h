@@ -131,9 +131,23 @@ void mtpndd_edge_map_init(mtpndd_edge_t *edges);
 extern mtpndd_t MTPNDD_TRUE;
 extern mtpndd_t MTPNDD_FALSE;
 
-bool mtpndd_is_true(mtpndd_t *ndd);
-bool mtpndd_is_false(mtpndd_t *ndd);
-bool mtpndd_is_terminal(mtpndd_t *ndd);
+/* Single-load predicates — inlined because they sit on the
+ * mtpndd_and_rec hot path (mtpndd_is_terminal was 4.6% self as a
+ * cross-TU call before inlining). */
+static inline bool mtpndd_is_true(mtpndd_t *ndd)
+{
+    return ndd == &MTPNDD_TRUE;
+}
+
+static inline bool mtpndd_is_false(mtpndd_t *ndd)
+{
+    return ndd == &MTPNDD_FALSE;
+}
+
+static inline bool mtpndd_is_terminal(mtpndd_t *ndd)
+{
+    return ndd->field_id >= MTPNDD_LEAF_FIELD_ID_MIN;
+}
 
 /********************************
  * MTPNDD tuning
