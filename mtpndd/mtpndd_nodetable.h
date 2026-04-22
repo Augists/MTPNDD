@@ -7,6 +7,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include "mtpndd_common.h"
 #include "mtpndd_node.h"
@@ -16,40 +17,51 @@
 #endif
 
 /********************************
- * MTPNDD nodetable
+ * MTPNDD nodetable (open-addressing, linear probe)
+ *
+ * Slot states encoded in `edges`:
+ *   NULL       -> empty, never written
+ *   TOMBSTONE  -> previously occupied, evicted by GC
+ *   PENDING    -> reservation held by an in-progress inserter
+ *   otherwise  -> live entry; `node` and `cached_hash` are valid
+ *
+ * Writers claim a slot with CAS(edges, {NULL|TOMBSTONE} -> PENDING), then
+ * write node + cached_hash, then release-store the real `edges`.  Readers
+ * load `edges` with acquire; on live they can read node/cached_hash
+ * without further synchronization.  Readers spin on PENDING (short window,
+ * bounded by two stores + release fence).
+ *
+ * Rehash runs only during GC stop-the-world (Sylvan NEWFRAME), so the
+ * `slots`/`slot_count`/`mask` triple is not re-read concurrently with
+ * workers.  `rehash_mutex` serializes concurrent GCs.
  ********************************/
-typedef struct mtpndd_nodetable_bucket_entry_s {
-    struct mtpndd_nodetable_bucket_entry_s *next;
-    struct mtpndd_nodetable_bucket_entry_s *prev;
-    mtpndd_edge_t *edges;
+
+#define MTPNDD_OT_TOMBSTONE ((mtpndd_edge_t *)(uintptr_t)1)
+#define MTPNDD_OT_PENDING   ((mtpndd_edge_t *)(uintptr_t)2)
+
+static inline bool mtpndd_ot_is_live(const mtpndd_edge_t *e) {
+    return e != NULL && e != MTPNDD_OT_TOMBSTONE && e != MTPNDD_OT_PENDING;
+}
+
+typedef struct mtpndd_nodetable_slot_s {
+    _Atomic(mtpndd_edge_t *) edges;
     mtpndd_node_t *node;
-    /* Mirror of edges->cached_hash so the bucket-walk early-reject path
-     * can compare without chasing through the edges pointer. Lookup hit
-     * rate on the deep comparison is low (cached_hash of an unrelated
-     * entry rarely matches), so moving this one field in-line avoids a
-     * cache miss per non-matching entry. 40 bytes total, still one
-     * cache line. */
     uint64_t cached_hash;
-} mtpndd_nodetable_bucket_entry_t;
+} mtpndd_nodetable_slot_t; /* 24 bytes on 64-bit */
 
-// mtpndd_edge_t *edges -> mtpndd_node_t* node
 typedef struct mtpndd_nodetable_s {
-    size_t nodetable_bucket_count;
-    mtpndd_nodetable_bucket_entry_t **buckets;
-    _Atomic size_t entry_count; // number of nodes stored in this table
-    size_t load_threshold; // trigger rehash when entry_count >= load_threshold
-
-    // Concurrency:
-    // - bucket_locks shard access to buckets for lookups/inserts.
-    // - rehash_mutex ensures a single thread performs rehash at a time.
-    size_t bucket_lock_count; // power of two
-    pthread_spinlock_t *bucket_locks;
-    pthread_mutex_t rehash_mutex;
+    mtpndd_nodetable_slot_t *slots;
+    size_t slot_count;              /* power of two */
+    size_t mask;                    /* slot_count - 1 */
+    _Atomic size_t entry_count;
+    _Atomic size_t tombstone_count;
+    size_t load_threshold;          /* rehash when live+tombstone >= threshold */
+    pthread_mutex_t rehash_mutex;   /* serialize GC-time rehash */
 } mtpndd_nodetable_t;
 
 #define NODETABLE_HASH_VAL(key, nodetable) \
-    (((nodetable) && (nodetable)->nodetable_bucket_count) \
-        ? (size_t)(((key) ? (key)->cached_hash : 0) & ((nodetable)->nodetable_bucket_count - 1)) \
+    (((nodetable) && (nodetable)->slot_count) \
+        ? (size_t)(((key) ? (key)->cached_hash : 0) & (nodetable)->mask) \
         : 0)
 
 // Compare edge map CONTENT, not pointer
@@ -74,13 +86,9 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
 #define NODETABLE_RETURN(val) return (val)
 #endif
 
-    // Fast path: compare cached hash values first (like Java HashMap)
-    // Different hash means definitely not equal
     if (a->cached_hash != b->cached_hash) {
         NODETABLE_RETURN(false);
     }
-
-    // Hash match, now check edge count
     if (a->edge_count != b->edge_count) {
         NODETABLE_RETURN(false);
     }
@@ -88,8 +96,6 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
         NODETABLE_RETURN(true);
     }
 
-    // Full comparison only if hash and count match
-    // For each edge in 'a', find matching edge in 'b'
     size_t edge_bucket_cnt = a->bucket_count ? a->bucket_count : g_mtpndd_pal_config.edge_bucket_count;
     for (size_t i = 0; i < edge_bucket_cnt; i++) {
         edge_bucket_entry_t *entry_a = a->buckets ? a->buckets[i] : NULL;
@@ -98,11 +104,9 @@ static inline bool nodetable_edges_equal(const mtpndd_edge_t *a, const mtpndd_ed
             size_t steps = 0;
             compare_entries++;
 #endif
-            // Find this (child, label) pair in b
             mtpndd_node_t *child_a = entry_a->child;
             mtpndd_bdd_t label_a = atomic_load_explicit(&entry_a->label, memory_order_relaxed);
 
-            // Lookup in b's edge map
             bool found = false;
             if (b->buckets) {
                 size_t b_bucket = EDGE_MAP_BUCKET_INDEX(b, child_a);
@@ -146,16 +150,6 @@ record_compare:
 #undef NODETABLE_RETURN
     return true;
 }
-
-#define NODETABLE_BUCKET_ENTRY_EQUAL(entry, keyEdges) nodetable_edges_equal((entry)->edges, (keyEdges))
-
-#define FOR_EACH_ENTRY_IN_NODETABLE_BUCKET(emap, bucket_idx, entry) \
-    for (entry = emap->buckets[bucket_idx]; \
-        entry; \
-        entry = entry->next)
-#define FOR_EACH_ENTRY_IN_ALL_NODETABLE_BUCKETS(emap, entry) \
-    for (size_t _bkt = 0; _bkt < emap->nodetable_bucket_count; _bkt++) \
-        FOR_EACH_ENTRY_IN_NODETABLE_BUCKET(emap, _bkt, entry)
 
 mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge_t *edges);
 

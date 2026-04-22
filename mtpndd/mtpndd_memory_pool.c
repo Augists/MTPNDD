@@ -56,7 +56,6 @@ typedef struct mtpndd_slab_pool_s {
 
 static mtpndd_slab_pool_t g_node_pool = {0};
 static mtpndd_slab_pool_t g_edge_entry_pool = {0};
-static mtpndd_slab_pool_t g_nodetable_entry_pool = {0};
 static mtpndd_slab_pool_t g_edge_map_pool = {0};
 static size_t g_edge_bucket_count = 0;
 static size_t g_edge_bucket_array_offset = 0;
@@ -282,7 +281,6 @@ static bool mtpndd_slab_pool_init_locals(mtpndd_slab_pool_t *pool) {
 void mtpndd_memory_pools_init(void) {
     size_t node_capacity = g_mtpndd_pal_config.node_slab_capacity;
     size_t edge_capacity = g_mtpndd_pal_config.edge_entry_slab_capacity;
-    size_t nodetable_capacity = g_mtpndd_pal_config.nodetable_entry_slab_capacity;
     size_t edge_map_capacity = g_mtpndd_pal_config.edge_map_slab_capacity;
 
     unsigned int workers = lace_workers();
@@ -311,19 +309,15 @@ void mtpndd_memory_pools_init(void) {
                            edge_refill, edge_local);
     mtpndd_slab_pool_setup(&g_edge_entry_pool, sizeof(edge_bucket_entry_t), _Alignof(edge_bucket_entry_t), edge_capacity,
                            edge_refill, edge_local);
-    mtpndd_slab_pool_setup(&g_nodetable_entry_pool, sizeof(mtpndd_nodetable_bucket_entry_t), _Alignof(mtpndd_nodetable_bucket_entry_t), nodetable_capacity,
-                           MTPNDD_POOL_REFILL_BATCH_DEFAULT, MTPNDD_POOL_LOCAL_MAX_DEFAULT);
 
     // Must be called after lace_start() so lace_workers() is valid.
     (void)mtpndd_slab_pool_init_locals(&g_node_pool);
     (void)mtpndd_slab_pool_init_locals(&g_edge_entry_pool);
-    (void)mtpndd_slab_pool_init_locals(&g_nodetable_entry_pool);
     (void)mtpndd_slab_pool_init_locals(&g_edge_map_pool);
 }
 
 void mtpndd_memory_pools_shutdown(void) {
     mtpndd_slab_pool_destroy(&g_edge_map_pool);
-    mtpndd_slab_pool_destroy(&g_nodetable_entry_pool);
     mtpndd_slab_pool_destroy(&g_edge_entry_pool);
     mtpndd_slab_pool_destroy(&g_node_pool);
 }
@@ -348,10 +342,6 @@ void mtpndd_memory_pools_snapshot(mtpndd_memory_pool_stats_t *stats) {
     stats->edge_entry_in_use = mtpndd_slab_pool_in_use_sum(&g_edge_entry_pool);
     stats->edge_entry_capacity_per_slab = g_edge_entry_pool.objects_per_slab;
 
-    stats->nodetable_entry_slabs = g_nodetable_entry_pool.slab_count;
-    stats->nodetable_entry_in_use = mtpndd_slab_pool_in_use_sum(&g_nodetable_entry_pool);
-    stats->nodetable_entry_capacity_per_slab = g_nodetable_entry_pool.objects_per_slab;
-
     stats->edge_map_slabs = g_edge_map_pool.slab_count;
     stats->edge_map_in_use = mtpndd_slab_pool_in_use_sum(&g_edge_map_pool);
     stats->edge_map_capacity_per_slab = g_edge_map_pool.objects_per_slab;
@@ -362,11 +352,10 @@ void mtpndd_log_memory_pools(const char *phase) {
     mtpndd_memory_pool_stats_t stats = {0};
     mtpndd_memory_pools_snapshot(&stats);
     fprintf(stdout,
-            "[MTPNDD MEM] %s node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu | nodetable_entry slabs=%zu in_use=%zu | edge_map slabs=%zu in_use=%zu\n",
+            "[MTPNDD MEM] %s node slabs=%zu in_use=%zu slabCap=%zu | edge_entry slabs=%zu in_use=%zu | edge_map slabs=%zu in_use=%zu\n",
             phase ? phase : "unknown",
             stats.node_slabs, stats.node_in_use, stats.node_capacity_per_slab,
             stats.edge_entry_slabs, stats.edge_entry_in_use,
-            stats.nodetable_entry_slabs, stats.nodetable_entry_in_use,
             stats.edge_map_slabs, stats.edge_map_in_use);
     fflush(stdout);
 }
@@ -421,32 +410,6 @@ void mtpndd_memory_release_edge_entry(edge_bucket_entry_t *entry) {
     mtpndd_slab_pool_release(&g_edge_entry_pool, entry);
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     MTPNDD_STAT_ADD(edge_entry_pool_release_total, 1);
-#endif
-}
-
-mtpndd_nodetable_bucket_entry_t *mtpndd_memory_acquire_nodetable_entry(void) {
-    bool grew = false;
-    mtpndd_nodetable_bucket_entry_t *entry = (mtpndd_nodetable_bucket_entry_t *)mtpndd_slab_pool_acquire(&g_nodetable_entry_pool, &grew);
-    if (!entry) {
-        MTPNDD_SET_ERROR(MTPNDD_ERROR_OUT_OF_MEMORY);
-        return NULL;
-    }
-#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
-    MTPNDD_STAT_ADD(nodetable_entry_pool_acquire_total, 1);
-    if (grew) {
-        MTPNDD_STAT_ADD(nodetable_entry_pool_slab_total, 1);
-    }
-#endif
-    return entry;
-}
-
-void mtpndd_memory_release_nodetable_entry(mtpndd_nodetable_bucket_entry_t *entry) {
-    if (!entry) {
-        return;
-    }
-    mtpndd_slab_pool_release(&g_nodetable_entry_pool, entry);
-#if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
-    MTPNDD_STAT_ADD(nodetable_entry_pool_release_total, 1);
 #endif
 }
 

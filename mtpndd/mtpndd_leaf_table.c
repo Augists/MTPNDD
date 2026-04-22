@@ -249,10 +249,12 @@ static void mtpndd_leaf_gc_mark_from_roots(void) {
 
     for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
         mtpndd_nodetable_t *nt = g_mtpndd_config.node_tables_by_field[field];
-        if (!nt || !nt->buckets) continue;
-        for (size_t i = 0; i < nt->nodetable_bucket_count; ++i) {
-            for (mtpndd_nodetable_bucket_entry_t *ne = nt->buckets[i]; ne; ne = ne->next) {
-                mtpndd_node_t *node = ne->node;
+        if (!nt || !nt->slots) continue;
+        for (size_t i = 0; i < nt->slot_count; ++i) {
+            mtpndd_edge_t *slot_edges = atomic_load_explicit(&nt->slots[i].edges, memory_order_relaxed);
+            if (!mtpndd_ot_is_live(slot_edges)) continue;
+            mtpndd_node_t *node = nt->slots[i].node;
+            {
                 if (!node || !node->edges || !node->edges->buckets) continue;
                 size_t bc = node->edges->bucket_count
                         ? node->edges->bucket_count
