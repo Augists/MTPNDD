@@ -23,8 +23,8 @@ type opSlot struct {
 }
 
 const (
-	opCacheSize           = 1 << 20
-	bddCacheClearInterval = 1 << 22
+	opCacheSize           = 1 << 19
+	bddCacheClearInterval = 1 << 21
 )
 
 var (
@@ -52,11 +52,11 @@ func cacheGet(tag opTag, a, b *Node, aux uint32) (*Node, bool) {
 		return nil, false
 	}
 	fpV := s.fp
-	resV := s.res
-	if s.seq.Load() != seq1 {
+	if fpV != fp {
 		return nil, false
 	}
-	if fpV != fp {
+	resV := s.res
+	if s.seq.Load() != seq1 {
 		return nil, false
 	}
 	return resV, true

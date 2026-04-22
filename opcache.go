@@ -26,8 +26,8 @@ type nddOpSlot struct {
 }
 
 const (
-	nddOpCacheSize        = 1 << 20
-	nddCacheClearInterval = 1 << 22
+	nddOpCacheSize        = 1 << 19
+	nddCacheClearInterval = 1 << 21
 )
 
 var (
@@ -55,11 +55,14 @@ func nddCacheGet(tag nddOpTag, a, b *Node, aux uint32) (*Node, bool) {
 		return nil, false
 	}
 	fpV := s.fp
-	resV := s.res
-	if s.seq.Load() != seq1 {
+	// Fast-miss exit. On an fp mismatch we return a miss regardless of
+	// any concurrent writer, so the second seq-load check is only needed
+	// when we are about to return a real result.
+	if fpV != fp {
 		return nil, false
 	}
-	if fpV != fp {
+	resV := s.res
+	if s.seq.Load() != seq1 {
 		return nil, false
 	}
 	return resV, true
