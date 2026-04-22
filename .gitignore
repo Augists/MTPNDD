@@ -1,0 +1,20 @@
+# Go build artifacts
+*.test
+*.out
+
+# Profiling artifacts
+**/*.prof
+**/*.pprof
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+
+# Claude Code state (per-user; never committed)
+.claude/
+CLAUDE.md
