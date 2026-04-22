@@ -44,14 +44,39 @@ static inline void mtpndd_ot_cpu_relax(void) {
 #endif
 }
 
+/* Sylvan GC pre-hook: runs inside NEWFRAME, all Lace workers parked.
+ * This is the ONLY place where it is safe to rehash / resize nodetables,
+ * because lock-free readers/writers in mtpndd_mk never check for rehash. */
 void mtpndd_gc_before_sylvan(void) {
     bool expected = false;
     if (!atomic_compare_exchange_strong(&g_mtpndd_gc_running, &expected, true)) {
-        // avoid gc loop
-        return;
+        return; /* already in progress (re-entrance guard) */
     }
 
     gc_internal();
+
+    /* If a user-initiated gcOrGrow asked for growth (low memory), honor it. */
+    if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_node_count
+            < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
+        grow_internal();
+    }
+
+    /* Per-table rehash to drop tombstones / grow if load is high. */
+    for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
+        mtpndd_nodetable_t *t = g_mtpndd_config.node_tables_by_field[field];
+        if (!t) continue;
+        size_t live = atomic_load_explicit(&t->entry_count, memory_order_relaxed);
+        size_t tomb = atomic_load_explicit(&t->tombstone_count, memory_order_relaxed);
+        if (live + tomb >= t->load_threshold) {
+            size_t target = t->slot_count;
+            if (live * 2 >= t->load_threshold) {
+                target = t->slot_count * 2;
+            }
+            pthread_mutex_lock(&t->rehash_mutex);
+            (void)mtpndd_nodetable_rehash(t, target);
+            pthread_mutex_unlock(&t->rehash_mutex);
+        }
+    }
 
     mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
     mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
@@ -480,6 +505,9 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
 /* ------------------------------------------------------------------ *
  * GC sweep and rehash (runs stop-the-world inside Sylvan NEWFRAME)
  * ------------------------------------------------------------------ */
+/* Request a full GC/grow/rehash cycle. The actual work runs inside
+ * `mtpndd_gc_before_sylvan` under Sylvan NEWFRAME, where all Lace
+ * workers are parked and it is safe to swap slot arrays. */
 static void gcOrGrow(void) {
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     struct timespec gc_timer_start = {0};
@@ -487,45 +515,7 @@ static void gcOrGrow(void) {
     mtpndd_log_memory_pools("pre-gc");
 #endif
 
-    bool expected = false;
-    if (!atomic_compare_exchange_strong(&g_mtpndd_gc_running, &expected, true)) {
-        return;
-    }
-
-    gc_internal();
-
-    if (g_mtpndd_pal_config.mtpndd_nodetable_size - g_mtpndd_node_count
-            < g_mtpndd_pal_config.quick_growth_threshold * g_mtpndd_pal_config.mtpndd_nodetable_size) {
-        grow_internal();
-    }
-
-    /* If any per-table tombstone/live ratio is high, still rehash that
-     * table to keep probe chains short. */
-    for (uint32_t field = 1; field <= g_mtpndd_config.field_count; ++field) {
-        mtpndd_nodetable_t *t = g_mtpndd_config.node_tables_by_field[field];
-        if (!t) continue;
-        size_t live = atomic_load_explicit(&t->entry_count, memory_order_relaxed);
-        size_t tomb = atomic_load_explicit(&t->tombstone_count, memory_order_relaxed);
-        if (live + tomb >= t->load_threshold) {
-            size_t target = t->slot_count;
-            /* Grow only if live alone is over half of threshold; otherwise
-             * just rehash to the same size to drop tombstones. */
-            if (live * 2 >= t->load_threshold) {
-                target = t->slot_count * 2;
-            }
-            pthread_mutex_lock(&t->rehash_mutex);
-            (void)mtpndd_nodetable_rehash(t, target);
-            pthread_mutex_unlock(&t->rehash_mutex);
-        }
-    }
-
-    mtpndd_op_cache_clear(g_mtpndd_config.and_cache);
-    mtpndd_op_cache_clear(g_mtpndd_config.or_cache);
-    mtpndd_op_cache_clear(g_mtpndd_config.not_cache);
-
     sylvan_gc();
-
-    atomic_store(&g_mtpndd_gc_running, false);
 
 #if MTPNDD_LOG_LEVEL >= MTPNDD_LOG_LEVEL_DEBUG
     mtpndd_log_memory_pools("post-gc");
