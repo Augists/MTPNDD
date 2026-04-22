@@ -50,7 +50,6 @@ func And(a, b *Node) *Node {
 
 func andSameField(a, b *Node) *Node {
 	total := len(a.edges) * len(b.edges)
-	edges := make([]edge, 0, total)
 	parallel := total >= spawnPairThreshold
 
 	if parallel {
@@ -81,26 +80,32 @@ func andSameField(a, b *Node) *Node {
 		for _, f := range futs {
 			f.Wait()
 		}
+		edges := make([]edge, 0, total)
 		for _, it := range items {
 			if it.label == nil || it.child == False {
 				continue
 			}
 			edges = append(edges, edge{child: it.child, label: it.label})
 		}
-	} else {
-		for i := range a.edges {
-			for j := range b.edges {
-				ai, bj := a.edges[i], b.edges[j]
-				label := bdd.And(ai.label, bj.label)
-				if label == bdd.False {
-					continue
-				}
-				child := And(ai.child, bj.child)
-				if child == False {
-					continue
-				}
-				edges = append(edges, edge{child: child, label: label})
+		return mk(a.fieldID, edges)
+	}
+
+	// Sequential path: use a stack-resident array as the working buffer.
+	// mk copies on miss, so the slice does not escape into the Node.
+	var stack [16]edge
+	edges := stack[:0]
+	for i := range a.edges {
+		for j := range b.edges {
+			ai, bj := a.edges[i], b.edges[j]
+			label := bdd.And(ai.label, bj.label)
+			if label == bdd.False {
+				continue
 			}
+			child := And(ai.child, bj.child)
+			if child == False {
+				continue
+			}
+			edges = append(edges, edge{child: child, label: label})
 		}
 	}
 	return mk(a.fieldID, edges)
@@ -108,7 +113,6 @@ func andSameField(a, b *Node) *Node {
 
 func andDiffField(a, b *Node) *Node {
 	parallel := len(a.edges) >= spawnPairThreshold
-	edges := make([]edge, 0, len(a.edges))
 	if parallel {
 		children := make([]*Node, len(a.edges))
 		futs := make([]*work.Future, len(a.edges))
@@ -120,20 +124,23 @@ func andDiffField(a, b *Node) *Node {
 		for _, f := range futs {
 			f.Wait()
 		}
+		edges := make([]edge, 0, len(a.edges))
 		for i, e := range a.edges {
 			if children[i] == False {
 				continue
 			}
 			edges = append(edges, edge{child: children[i], label: e.label})
 		}
-	} else {
-		for _, e := range a.edges {
-			child := And(e.child, b)
-			if child == False {
-				continue
-			}
-			edges = append(edges, edge{child: child, label: e.label})
+		return mk(a.fieldID, edges)
+	}
+	var stack [16]edge
+	edges := stack[:0]
+	for _, e := range a.edges {
+		child := And(e.child, b)
+		if child == False {
+			continue
 		}
+		edges = append(edges, edge{child: child, label: e.label})
 	}
 	return mk(a.fieldID, edges)
 }
@@ -184,7 +191,8 @@ func orSameField(a, b *Node) *Node {
 		residualB[j] = e.label
 	}
 
-	edges := make([]edge, 0, len(a.edges)+len(b.edges))
+	var stack [16]edge
+	edges := stack[:0]
 	for i := range a.edges {
 		for j := range b.edges {
 			intersect := bdd.And(a.edges[i].label, b.edges[j].label)
@@ -213,7 +221,8 @@ func orSameField(a, b *Node) *Node {
 
 func orDiffField(a, b *Node) *Node {
 	residualB := bdd.True
-	edges := make([]edge, 0, len(a.edges)+1)
+	var stack [16]edge
+	edges := stack[:0]
 	for _, e := range a.edges {
 		notLabel := bdd.Not(e.label)
 		residualB = bdd.And(residualB, notLabel)
@@ -238,7 +247,8 @@ func Not(a *Node) *Node {
 		return r
 	}
 	residual := bdd.True
-	edges := make([]edge, 0, len(a.edges)+1)
+	var stack [16]edge
+	edges := stack[:0]
 	for _, e := range a.edges {
 		notLabel := bdd.Not(e.label)
 		residual = bdd.And(residual, notLabel)
@@ -276,7 +286,8 @@ func Exist(a *Node, fieldID uint32) *Node {
 			res = Or(res, e.child)
 		}
 	} else {
-		edges := make([]edge, 0, len(a.edges))
+		var stack [16]edge
+		edges := stack[:0]
 		for _, e := range a.edges {
 			child := Exist(e.child, fieldID)
 			if child == False {

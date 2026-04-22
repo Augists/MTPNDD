@@ -111,10 +111,16 @@ func mk(fieldID uint32, edges []edge) *Node {
 	for {
 		slot := &s.slots[idx]
 		if slot.node == nil {
+			// Miss: copy caller's edges into a tight node-owned
+			// slice. Lets callers pass transient buffers (e.g.
+			// stack-allocated) without worrying about ownership
+			// transfer.
+			owned := make([]edge, len(edges))
+			copy(owned, edges)
 			n := allocNDDNode()
 			n.fieldID = fieldID
 			n.id = nextNDDNodeID.Add(1)
-			n.edges = edges
+			n.edges = owned
 			n.hash = h
 			slot.hash = h
 			slot.node = n
