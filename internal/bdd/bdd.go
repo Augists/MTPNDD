@@ -33,10 +33,11 @@ func IsTerminal(n *Node) bool { return n == True || n == False }
 
 // Mk returns the canonical node (v, lo, hi), applying the BDD reduction rule.
 func Mk(v uint32, lo, hi *Node) *Node {
+	ensureInit()
 	if lo == hi {
 		return lo
 	}
-	return unique.intern(v, lo, hi)
+	return intern(v, lo, hi)
 }
 
 // IthVar returns a BDD representing the positive literal for variable v.

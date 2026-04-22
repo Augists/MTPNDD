@@ -16,23 +16,18 @@ const (
 
 // nddOpSlot is a compact 24-byte slot: seqlock counter, 64-bit
 // fingerprint encoding (tag, aux, idA, idB), and a strong result
-// pointer. The full fingerprint replaces the separate tag/aux/idA/idB
-// fields, cutting the slot size from 40 to 24 bytes and improving
-// L3/L2 locality at N ≥ 13. Collision probability ~2⁻⁶⁴.
+// pointer. See docs/design-decisions.md § 4.
 type nddOpSlot struct {
 	seq atomic.Uint64
 	fp  uint64
 	res *Node
 }
 
-const (
-	nddOpCacheSize        = 1 << 19
-	nddCacheClearInterval = 1 << 21
-)
-
 var (
-	nddOpCache       [nddOpCacheSize]nddOpSlot
-	nddCachePutCount atomic.Uint64
+	nddOpCache            []nddOpSlot
+	nddOpCacheMask        uint64
+	nddCacheClearInterval uint64
+	nddCachePutCount      atomic.Uint64
 )
 
 func nddFingerprint(tag nddOpTag, idA, idB uint64, aux uint32) uint64 {
@@ -49,15 +44,12 @@ func nddCacheGet(tag nddOpTag, a, b *Node, aux uint32) (*Node, bool) {
 		idB = b.id
 	}
 	fp := nddFingerprint(tag, a.id, idB, aux)
-	s := &nddOpCache[fp&(nddOpCacheSize-1)]
+	s := &nddOpCache[fp&nddOpCacheMask]
 	seq1 := s.seq.Load()
 	if seq1&1 != 0 {
 		return nil, false
 	}
 	fpV := s.fp
-	// Fast-miss exit. On an fp mismatch we return a miss regardless of
-	// any concurrent writer, so the second seq-load check is only needed
-	// when we are about to return a real result.
 	if fpV != fp {
 		return nil, false
 	}
@@ -74,7 +66,7 @@ func nddCachePut(tag nddOpTag, a, b, res *Node, aux uint32) {
 		idB = b.id
 	}
 	fp := nddFingerprint(tag, a.id, idB, aux)
-	s := &nddOpCache[fp&(nddOpCacheSize-1)]
+	s := &nddOpCache[fp&nddOpCacheMask]
 	seq := s.seq.Load()
 	if seq&1 != 0 || !s.seq.CompareAndSwap(seq, seq+1) {
 		return

@@ -7,10 +7,11 @@ import (
 	"github.com/Augists/mtpndd-go/internal/work"
 )
 
-// spawnPairThreshold is the cartesian-product size at which And/Or begin to
-// spawn per-pair sub-tasks. Below this threshold every pair is computed
-// inline. Goroutine spawn costs ~1-5µs so this needs to stay conservative.
-const spawnPairThreshold = 4
+// spawnPairThreshold is populated from Config at Init time. Below this
+// threshold same-field And/Or runs inline; at or above it they fan out one
+// goroutine per (i, j) pair. Goroutine spawn costs ~1-5 µs so the value
+// needs to stay conservative.
+var spawnPairThreshold = 4
 
 // And returns a AND b (boolean NDD conjunction).
 func And(a, b *Node) *Node {

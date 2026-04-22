@@ -14,22 +14,17 @@ const (
 	opExist
 )
 
-// opSlot is a compact 24-byte slot: seqlock counter + fingerprint +
-// strong result pointer. See mtpndd/opcache.go for the rationale.
 type opSlot struct {
 	seq atomic.Uint64
 	fp  uint64
 	res *Node
 }
 
-const (
-	opCacheSize           = 1 << 19
-	bddCacheClearInterval = 1 << 21
-)
-
 var (
-	opCache          [opCacheSize]opSlot
-	bddCachePutCount atomic.Uint64
+	opCache               []opSlot
+	opCacheMask           uint64
+	bddCacheClearInterval uint64
+	bddCachePutCount      atomic.Uint64
 )
 
 func bddFingerprint(tag opTag, idA, idB uint64, aux uint32) uint64 {
@@ -46,7 +41,7 @@ func cacheGet(tag opTag, a, b *Node, aux uint32) (*Node, bool) {
 		idB = b.id
 	}
 	fp := bddFingerprint(tag, a.id, idB, aux)
-	s := &opCache[fp&(opCacheSize-1)]
+	s := &opCache[fp&opCacheMask]
 	seq1 := s.seq.Load()
 	if seq1&1 != 0 {
 		return nil, false
@@ -68,7 +63,7 @@ func cachePut(tag opTag, a, b, res *Node, aux uint32) {
 		idB = b.id
 	}
 	fp := bddFingerprint(tag, a.id, idB, aux)
-	s := &opCache[fp&(opCacheSize-1)]
+	s := &opCache[fp&opCacheMask]
 	seq := s.seq.Load()
 	if seq&1 != 0 || !s.seq.CompareAndSwap(seq, seq+1) {
 		return

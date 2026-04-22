@@ -9,31 +9,35 @@ import (
 
 var nextNDDNodeID atomic.Uint64
 
-func init() { nextNDDNodeID.Store(100) }
+func init() { nextNDDNodeID.Store(100) } // leave room for terminals
 
 // ---------------------------------------------------------------------------
 // Node slab allocator (lock-free fast path).
 // ---------------------------------------------------------------------------
 
-const (
-	nddSlabChunk = 1 << 18
-	nddSlabShift = 18
-	nddSlabMask  = nddSlabChunk - 1
-	nddMaxChunks = 1 << 12 // ~1 G node upper bound
+// nddMaxChunks caps the slab chunk directory. With the default chunk size
+// 2^18 nodes, this gives a 1 G-node hard ceiling; the directory itself is
+// nddMaxChunks * 8 bytes = 32 KB regardless of how much is used.
+const nddMaxChunks = 1 << 12
+
+var (
+	nddSlabChunk int
+	nddSlabShift uint
+	nddSlabMask  uint64
 )
 
 type nddSlabState struct {
 	chunks [nddMaxChunks]atomic.Pointer[[]Node]
 	next   atomic.Int64
-	growMu sync.Mutex // only held while publishing a new chunk
+	growMu sync.Mutex
 }
 
 var nddSlab nddSlabState
 
 func allocNDDNode() *Node {
 	gi := nddSlab.next.Add(1) - 1
-	chunkIdx := int(gi >> nddSlabShift)
-	slotIdx := int(gi) & nddSlabMask
+	chunkIdx := int(uint64(gi) >> nddSlabShift)
+	slotIdx := int(uint64(gi) & nddSlabMask)
 	if cp := nddSlab.chunks[chunkIdx].Load(); cp != nil {
 		return &(*cp)[slotIdx]
 	}
@@ -50,16 +54,18 @@ func allocNDDNode() *Node {
 // Unique table: linear-probed open-addressing hash table, per-shard.
 // ---------------------------------------------------------------------------
 
-const (
-	nddShardCount   = 64
-	nddShardMask    = nddShardCount - 1
-	initialShardCap = 1024
-	shardResizeLoad = 7
+const shardResizeLoad = 7 // resize when count*10 > len*shardResizeLoad
+
+var (
+	nddShardCount       int
+	nddShardMask        uint64
+	nddInitialShardCap  int
+	nddInitialShardMask uint64
 )
 
 type nddSlot struct {
 	hash uint64
-	node *Node // nil = empty
+	node *Node
 }
 
 type nddShard struct {
@@ -69,14 +75,38 @@ type nddShard struct {
 	count int
 }
 
-var ndUnique = func() *[nddShardCount]nddShard {
-	var t [nddShardCount]nddShard
-	for i := range t {
-		t[i].slots = make([]nddSlot, initialShardCap)
-		t[i].mask = uint64(initialShardCap - 1)
+var ndUnique []nddShard
+
+// allocateNDD sizes all module-level structures. Called exactly once from
+// the runtime init path (engine.go's Init).
+func allocateNDD(cfg SubConfig) {
+	nddOpCache = make([]nddOpSlot, cfg.OpCacheSize)
+	nddOpCacheMask = uint64(cfg.OpCacheSize - 1)
+	nddCacheClearInterval = cfg.CacheClearInterval
+
+	nddSlabChunk = cfg.SlabChunkSize
+	nddSlabShift = uint(log2Pow2(cfg.SlabChunkSize))
+	nddSlabMask = uint64(cfg.SlabChunkSize - 1)
+
+	nddShardCount = cfg.ShardCount
+	nddShardMask = uint64(cfg.ShardCount - 1)
+	nddInitialShardCap = cfg.InitialShardCap
+	nddInitialShardMask = uint64(cfg.InitialShardCap - 1)
+	ndUnique = make([]nddShard, cfg.ShardCount)
+	for i := range ndUnique {
+		ndUnique[i].slots = make([]nddSlot, cfg.InitialShardCap)
+		ndUnique[i].mask = nddInitialShardMask
 	}
-	return &t
-}()
+}
+
+func log2Pow2(v int) int {
+	n := 0
+	for v > 1 {
+		v >>= 1
+		n++
+	}
+	return n
+}
 
 func mk(fieldID uint32, edges []edge) *Node {
 	w := 0
@@ -104,17 +134,10 @@ func mk(fieldID uint32, edges []edge) *Node {
 
 	s := &ndUnique[h&nddShardMask]
 	s.mu.Lock()
-	// On a hash match we return the candidate without doing a secondary
-	// edgesEqual compare. The 64-bit fingerprint is a safe full key at
-	// the collision rate we care about (~2⁻⁶⁴).
 	idx := h & s.mask
 	for {
 		slot := &s.slots[idx]
 		if slot.node == nil {
-			// Miss: copy caller's edges into a tight node-owned
-			// slice. Lets callers pass transient buffers (e.g.
-			// stack-allocated) without worrying about ownership
-			// transfer.
 			owned := make([]edge, len(edges))
 			copy(owned, edges)
 			n := allocNDDNode()
@@ -178,8 +201,8 @@ func Reset() {
 	for i := range ndUnique {
 		s := &ndUnique[i]
 		s.mu.Lock()
-		s.slots = make([]nddSlot, initialShardCap)
-		s.mask = uint64(initialShardCap - 1)
+		s.slots = make([]nddSlot, nddInitialShardCap)
+		s.mask = nddInitialShardMask
 		s.count = 0
 		s.mu.Unlock()
 	}
