@@ -226,6 +226,7 @@ func (s *uniqueShard) resizeLocked() {
 // Reset clears all interned BDD nodes and the op cache.
 func Reset() {
 	clearBDDCache()
+	ResetSatCountCache()
 	for i := range shards {
 		s := &shards[i]
 		s.mu.Lock()

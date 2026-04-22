@@ -1,6 +1,8 @@
 package bdd
 
 import (
+	"sync"
+
 	"github.com/Augists/mtpndd-go/internal/work"
 )
 
@@ -166,6 +168,29 @@ func ExistMany(f *Node, vars []uint32) *Node {
 
 // SatCount returns the number of satisfying assignments over `nvars`
 // variables. Variables not mentioned in f are treated as free.
+//
+// Results are memoised in a process-global table keyed by (node, nvars).
+// Nodes are immutable for the life of a session so the memo is valid
+// until Reset() (which clears it via ResetSatCountCache below).
+type satKey struct {
+	node  *Node
+	nvars uint32
+}
+
+var satMemo struct {
+	mu sync.RWMutex
+	m  map[satKey]float64
+}
+
+func init() { satMemo.m = make(map[satKey]float64, 4096) }
+
+// ResetSatCountCache drops all memoised values. Called from bdd.Reset.
+func ResetSatCountCache() {
+	satMemo.mu.Lock()
+	satMemo.m = make(map[satKey]float64, 4096)
+	satMemo.mu.Unlock()
+}
+
 func SatCount(f *Node, nvars uint32) float64 {
 	if f == False {
 		return 0
@@ -183,12 +208,22 @@ func satCountRec(f *Node, depth, nvars uint32) float64 {
 	if f == True {
 		return pow2(nvars - depth)
 	}
-	// Skipped variables between depth and f.Var contribute 2^skip.
 	skip := f.Var - depth
 	factor := pow2(skip)
+	key := satKey{node: f, nvars: nvars}
+	satMemo.mu.RLock()
+	if v, ok := satMemo.m[key]; ok {
+		satMemo.mu.RUnlock()
+		return factor * v
+	}
+	satMemo.mu.RUnlock()
 	lo := satCountRec(f.Low, f.Var+1, nvars)
 	hi := satCountRec(f.High, f.Var+1, nvars)
-	return factor * (lo + hi)
+	sum := lo + hi
+	satMemo.mu.Lock()
+	satMemo.m[key] = sum
+	satMemo.mu.Unlock()
+	return factor * sum
 }
 
 func pow2(n uint32) float64 {

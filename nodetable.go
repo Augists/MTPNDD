@@ -198,6 +198,7 @@ outer:
 // Reset clears the NDD and BDD unique tables plus the op caches.
 func Reset() {
 	clearNDDCache()
+	resetSatCountCache()
 	for i := range ndUnique {
 		s := &ndUnique[i]
 		s.mu.Lock()
