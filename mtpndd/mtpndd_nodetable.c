@@ -214,6 +214,10 @@ mtpndd_node_t *find_node_in_nodetable(mtpndd_nodetable_t *nodetable, mtpndd_edge
 
     for (mtpndd_nodetable_bucket_entry_t *entry = nodetable->buckets[hash];
          entry; entry = entry->next) {
+        /* Fast reject without dereferencing entry->edges (cold cacheline
+         * for unrelated entries). The in-entry cached_hash mirrors
+         * entry->edges->cached_hash, set on insert. */
+        if (entry->cached_hash != cached_hash) continue;
         mtpndd_edge_t *entry_edges = entry->edges;
         if (entry_edges == edges) {
             found = entry->node;
@@ -446,6 +450,7 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     }
     new_entry->edges = edges;
     new_entry->node = node;
+    new_entry->cached_hash = edges->cached_hash;
     mtpndd_nodetable_lock_hash(nodetable, edges->cached_hash);
     size_t hash = NODETABLE_HASH_VAL(edges, nodetable);
     mtpndd_nodetable_bucket_entry_t *existing_entry = nodetable->buckets[hash];
@@ -456,7 +461,8 @@ void mtpndd_mk(uint32_t field, mtpndd_edge_t *edges, mtpndd_node_t **result) {
     MTPNDD_MK_SWITCH(MTPNDD_MK_BUCKET_SCAN);
 #endif
     while (existing_entry) {
-        if (NODETABLE_BUCKET_ENTRY_EQUAL(existing_entry, edges)) {
+        if (existing_entry->cached_hash == edges->cached_hash
+            && NODETABLE_BUCKET_ENTRY_EQUAL(existing_entry, edges)) {
             break;
         }
         existing_entry = existing_entry->next;
@@ -699,7 +705,7 @@ static bool mtpndd_nodetable_rehash(mtpndd_nodetable_t *table, size_t new_bucket
         mtpndd_nodetable_bucket_entry_t *entry = table->buckets[i];
         while (entry) {
             mtpndd_nodetable_bucket_entry_t *next_entry = entry->next;
-            size_t hash = new_bucket_count ? (size_t)((entry->edges ? entry->edges->cached_hash : 0) & (new_bucket_count - 1)) : 0;
+            size_t hash = new_bucket_count ? (size_t)(entry->cached_hash & (new_bucket_count - 1)) : 0;
             entry->prev = NULL;
             entry->next = new_buckets[hash];
             if (entry->next) {

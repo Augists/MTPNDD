@@ -23,6 +23,13 @@ typedef struct mtpndd_nodetable_bucket_entry_s {
     struct mtpndd_nodetable_bucket_entry_s *prev;
     mtpndd_edge_t *edges;
     mtpndd_node_t *node;
+    /* Mirror of edges->cached_hash so the bucket-walk early-reject path
+     * can compare without chasing through the edges pointer. Lookup hit
+     * rate on the deep comparison is low (cached_hash of an unrelated
+     * entry rarely matches), so moving this one field in-line avoids a
+     * cache miss per non-matching entry. 40 bytes total, still one
+     * cache line. */
+    uint64_t cached_hash;
 } mtpndd_nodetable_bucket_entry_t;
 
 // mtpndd_edge_t *edges -> mtpndd_node_t* node
