@@ -6,7 +6,6 @@ package mtpndd
 
 import (
 	"math"
-	"sort"
 	"unsafe"
 
 	"github.com/Augists/mtpndd-go/internal/bdd"
@@ -16,18 +15,15 @@ import (
 const terminalField uint32 = math.MaxUint32
 
 // Node is an NDD node. Internal state is immutable once interned.
-//
-// An interior node has fieldID < terminalField and one or more outgoing edges;
-// each edge carries a BDD label over the current field's variables and points
-// to a child NDD representing the remaining fields. Terminals have no edges.
-//
-// The edges slice is kept sorted by uintptr(child) ascending so two nodes that
-// represent the same edge set are bit-identical (enabling structural hashing).
 type Node struct {
 	fieldID uint32
+	id      uint64 // monotonic; enables cheap cache-operand validation without weak pointers
 	edges   []edge
 	hash    uint64
 }
+
+// ID returns the node's unique id. Terminals use small reserved values.
+func (n *Node) ID() uint64 { return n.id }
 
 // edge is one (child, label) pair in a node's outgoing edge set.
 type edge struct {
@@ -37,8 +33,8 @@ type edge struct {
 
 // True and False are the two NDD terminals.
 var (
-	True  = &Node{fieldID: terminalField}
-	False = &Node{fieldID: terminalField}
+	True  = &Node{fieldID: terminalField, id: 1}
+	False = &Node{fieldID: terminalField, id: 2}
 )
 
 // IsTerminal reports whether n is True or False.
@@ -49,10 +45,6 @@ func (n *Node) FieldID() uint32 { return n.fieldID }
 
 // --- hashing ---------------------------------------------------------------
 
-// edgeHash mixes one (child, label) pair into a 64-bit digest. The XOR of
-// per-edge hashes in a node's edge set is order-independent, so two nodes
-// with the same set of edges produce the same cumulative hash regardless of
-// insertion order.
 func edgeHash(child *Node, label *bdd.Node) uint64 {
 	h := uint64(uintptr(unsafe.Pointer(child))) * 0x9E3779B97F4A7C15
 	h ^= uint64(uintptr(unsafe.Pointer(label))) * 0xBF58476D1CE4E5B9
@@ -62,7 +54,6 @@ func edgeHash(child *Node, label *bdd.Node) uint64 {
 	return h
 }
 
-// mixFieldHash folds fieldID into the cumulative edge hash.
 func mixFieldHash(field uint32, edgeXor uint64) uint64 {
 	h := uint64(field) * 0x94D049BB133111EB
 	h ^= edgeXor
@@ -70,23 +61,31 @@ func mixFieldHash(field uint32, edgeXor uint64) uint64 {
 	return h
 }
 
-// --- edge-list canonicalization -------------------------------------------
-
-// sortEdges orders edges by child pointer then label pointer ascending so that
-// equal sets canonicalize to equal slices.
+// sortEdges orders edges by child pointer then label pointer ascending.
+// Specialised insertion sort; nearly all edge lists are ≤ 4 items, and
+// sort.Slice was reflection-heavy.
 func sortEdges(es []edge) {
-	sort.Slice(es, func(i, j int) bool {
-		ai := uintptr(unsafe.Pointer(es[i].child))
-		aj := uintptr(unsafe.Pointer(es[j].child))
-		if ai != aj {
-			return ai < aj
+	if len(es) < 2 {
+		return
+	}
+	for i := 1; i < len(es); i++ {
+		cur := es[i]
+		curC := uintptr(unsafe.Pointer(cur.child))
+		curL := uintptr(unsafe.Pointer(cur.label))
+		j := i - 1
+		for j >= 0 {
+			pC := uintptr(unsafe.Pointer(es[j].child))
+			if pC < curC || (pC == curC && uintptr(unsafe.Pointer(es[j].label)) <= curL) {
+				break
+			}
+			es[j+1] = es[j]
+			j--
 		}
-		return uintptr(unsafe.Pointer(es[i].label)) < uintptr(unsafe.Pointer(es[j].label))
-	})
+		es[j+1] = cur
+	}
 }
 
-// edgesEqual compares two already-sorted edge lists for pointer-identical
-// equality.
+// edgesEqual compares two already-sorted edge lists.
 func edgesEqual(a, b []edge) bool {
 	if len(a) != len(b) {
 		return false

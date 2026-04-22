@@ -3,14 +3,47 @@ package bdd
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"unsafe"
-	"weak"
 )
+
+var nextBDDNodeID atomic.Uint64
+
+func init() { nextBDDNodeID.Store(100) } // leave room for terminals
+
+// ---------------------------------------------------------------------------
+// BDD node slab allocator. Mutex-guarded bump allocator.
+// ---------------------------------------------------------------------------
+
+const bddSlabChunk = 1 << 18
+
+type bddSlabState struct {
+	mu     sync.Mutex
+	chunk  []Node
+	nextIx int
+}
+
+var bddSlab bddSlabState
+
+func allocBDDNode() *Node {
+	bddSlab.mu.Lock()
+	if bddSlab.nextIx == len(bddSlab.chunk) {
+		bddSlab.chunk = make([]Node, bddSlabChunk)
+		bddSlab.nextIx = 0
+	}
+	n := &bddSlab.chunk[bddSlab.nextIx]
+	bddSlab.nextIx++
+	bddSlab.mu.Unlock()
+	return n
+}
+
+// ---------------------------------------------------------------------------
+// Unique table: sharded strong-pointer Go map (one *Node per key).
+// ---------------------------------------------------------------------------
 
 const (
 	shardCount      = 64
 	shardMask       = shardCount - 1
-	sweepEvery      = 4096
 	initialShardCap = 256
 )
 
@@ -21,9 +54,8 @@ type nodeKey struct {
 }
 
 type uniqueShard struct {
-	mu       sync.Mutex
-	table    map[nodeKey]weak.Pointer[Node]
-	opsSince uint32
+	mu    sync.Mutex
+	table map[nodeKey]*Node
 }
 
 type uniqueTable struct {
@@ -33,7 +65,7 @@ type uniqueTable struct {
 var unique = func() *uniqueTable {
 	t := &uniqueTable{}
 	for i := range t.shards {
-		t.shards[i].table = make(map[nodeKey]weak.Pointer[Node], initialShardCap)
+		t.shards[i].table = make(map[nodeKey]*Node, initialShardCap)
 	}
 	return t
 }()
@@ -54,36 +86,38 @@ func (t *uniqueTable) intern(v uint32, lo, hi *Node) *Node {
 	}
 	s := &t.shards[shardIdx(k)]
 	s.mu.Lock()
-	if wp, ok := s.table[k]; ok {
-		if n := wp.Value(); n != nil {
-			s.mu.Unlock()
-			runtime.KeepAlive(lo)
-			runtime.KeepAlive(hi)
-			return n
-		}
+	if n, ok := s.table[k]; ok {
+		s.mu.Unlock()
+		runtime.KeepAlive(lo)
+		runtime.KeepAlive(hi)
+		return n
 	}
-	n := &Node{Var: v, Low: lo, High: hi}
-	s.table[k] = weak.Make(n)
-	s.opsSince++
-	if s.opsSince >= sweepEvery {
-		s.opsSince = 0
-		s.sweepLocked()
-	}
+	n := allocBDDNode()
+	n.Var = v
+	n.id = nextBDDNodeID.Add(1)
+	n.Low = lo
+	n.High = hi
+	s.table[k] = n
 	s.mu.Unlock()
 	runtime.KeepAlive(lo)
 	runtime.KeepAlive(hi)
 	return n
 }
 
-func (s *uniqueShard) sweepLocked() {
-	for k, wp := range s.table {
-		if wp.Value() == nil {
+// Reset clears all interned BDD nodes and the op cache.
+func Reset() {
+	clearBDDCache()
+	for i := range unique.shards {
+		s := &unique.shards[i]
+		s.mu.Lock()
+		for k := range s.table {
 			delete(s.table, k)
 		}
+		s.mu.Unlock()
 	}
 }
 
-// TableSize returns the approximate number of live entries across all shards.
+// TableSize returns the total number of live interned BDD nodes.
 func TableSize() int {
 	n := 0
 	for i := range unique.shards {

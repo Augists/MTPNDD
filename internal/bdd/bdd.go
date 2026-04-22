@@ -1,15 +1,5 @@
 // Package bdd implements a small, parallel, reduced-ordered binary decision
 // diagram library with two terminal values (True, False).
-//
-// Design notes:
-//
-//   - Nodes are canonicalized through a sharded unique table. The table holds
-//     weak references so that unreachable nodes become eligible for the Go GC
-//     without any explicit Ref/Deref calls.
-//   - Edge labels in MTPNDD are BDDs from this package; the NDD layer holds
-//     strong *Node references inside its edge maps, so any live NDD node
-//     keeps its BDD labels alive automatically.
-//   - Variable ordering is by varIdx ascending (smaller index = closer to root).
 package bdd
 
 import (
@@ -19,17 +9,23 @@ import (
 // terminalVar is the sentinel variable index used for the True/False leaves.
 const terminalVar uint32 = math.MaxUint32
 
-// Node is a BDD node.
+// Node is a BDD node. id is a monotonically-increasing identifier assigned at
+// creation; it is used by op caches to validate operand identity without
+// needing weak pointers.
 type Node struct {
 	Var  uint32
+	id   uint64
 	Low  *Node
 	High *Node
 }
 
+// ID returns the node's unique id. 0 is reserved for the two terminals.
+func (n *Node) ID() uint64 { return n.id }
+
 // True and False are the two BDD terminals.
 var (
-	True  = &Node{Var: terminalVar}
-	False = &Node{Var: terminalVar}
+	True  = &Node{Var: terminalVar, id: 1}
+	False = &Node{Var: terminalVar, id: 2}
 )
 
 // IsTerminal reports whether n is True or False.
@@ -49,7 +45,6 @@ func IthVar(v uint32) *Node { return Mk(v, False, True) }
 // NIthVar returns a BDD representing the negative literal for variable v.
 func NIthVar(v uint32) *Node { return Mk(v, True, False) }
 
-// cofactor returns (f|v=0, f|v=1) where v is assumed <= f.Var.
 func cofactor(f *Node, v uint32) (*Node, *Node) {
 	if f.Var == v {
 		return f.Low, f.High
@@ -57,7 +52,6 @@ func cofactor(f *Node, v uint32) (*Node, *Node) {
 	return f, f
 }
 
-// topVar returns the smaller of the two variable indices.
 func topVar(a, b *Node) uint32 {
 	va, vb := a.Var, b.Var
 	if va < vb {

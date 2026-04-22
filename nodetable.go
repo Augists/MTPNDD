@@ -2,36 +2,64 @@ package mtpndd
 
 import (
 	"sync"
-	"weak"
+	"sync/atomic"
 
 	"github.com/Augists/mtpndd-go/internal/bdd"
 )
 
+var nextNDDNodeID atomic.Uint64
+
+func init() { nextNDDNodeID.Store(100) } // leave room for terminals
+
+// ---------------------------------------------------------------------------
+// Node slab allocator (mutex-guarded bump allocator).
+// ---------------------------------------------------------------------------
+
+const nddSlabChunk = 1 << 18 // 256K nodes per chunk
+
+type nddSlabState struct {
+	mu     sync.Mutex
+	chunk  []Node
+	nextIx int
+}
+
+var nddSlab nddSlabState
+
+func allocNDDNode() *Node {
+	nddSlab.mu.Lock()
+	if nddSlab.nextIx == len(nddSlab.chunk) {
+		nddSlab.chunk = make([]Node, nddSlabChunk)
+		nddSlab.nextIx = 0
+	}
+	n := &nddSlab.chunk[nddSlab.nextIx]
+	nddSlab.nextIx++
+	nddSlab.mu.Unlock()
+	return n
+}
+
+// ---------------------------------------------------------------------------
+// Unique table: sharded strong-pointer Go map with hash-collision chain.
+// ---------------------------------------------------------------------------
+
 const (
 	nddShardCount = 64
 	nddShardMask  = nddShardCount - 1
-	nddSweepEvery = 4096
 )
 
 type nddShard struct {
-	mu       sync.Mutex
-	table    map[uint64][]weak.Pointer[Node] // cumulative hash -> candidates
-	opsSince uint32
+	mu    sync.Mutex
+	table map[uint64][]*Node // cumulative hash -> candidates
 }
 
 var ndUnique = func() *[nddShardCount]nddShard {
 	var t [nddShardCount]nddShard
 	for i := range t {
-		t[i].table = make(map[uint64][]weak.Pointer[Node], 64)
+		t[i].table = make(map[uint64][]*Node, 64)
 	}
 	return &t
 }()
 
-// mk returns the canonical NDD node for (fieldID, edges). The edges slice
-// must be a fresh buffer: on a hit it is discarded; on a miss it is retained
-// inside the new node after being sorted in place.
 func mk(fieldID uint32, edges []edge) *Node {
-	// Drop dead edges (label=False or child=False) in place.
 	w := 0
 	for _, e := range edges {
 		if e.label == bdd.False || e.child == False {
@@ -57,48 +85,22 @@ func mk(fieldID uint32, edges []edge) *Node {
 
 	s := &ndUnique[h&nddShardMask]
 	s.mu.Lock()
-	for _, wp := range s.table[h] {
-		if n := wp.Value(); n != nil {
-			if n.fieldID == fieldID && edgesEqual(n.edges, edges) {
-				s.mu.Unlock()
-				return n
-			}
+	for _, n := range s.table[h] {
+		if n.fieldID == fieldID && edgesEqual(n.edges, edges) {
+			s.mu.Unlock()
+			return n
 		}
 	}
-	n := &Node{
-		fieldID: fieldID,
-		edges:   edges,
-		hash:    h,
-	}
-	s.table[h] = append(s.table[h], weak.Make(n))
-	s.opsSince++
-	if s.opsSince >= nddSweepEvery {
-		s.opsSince = 0
-		s.sweepLocked()
-	}
+	n := allocNDDNode()
+	n.fieldID = fieldID
+	n.id = nextNDDNodeID.Add(1)
+	n.edges = edges
+	n.hash = h
+	s.table[h] = append(s.table[h], n)
 	s.mu.Unlock()
 	return n
 }
 
-func (s *nddShard) sweepLocked() {
-	for h, bucket := range s.table {
-		w := 0
-		for _, wp := range bucket {
-			if wp.Value() != nil {
-				bucket[w] = wp
-				w++
-			}
-		}
-		if w == 0 {
-			delete(s.table, h)
-		} else {
-			s.table[h] = bucket[:w]
-		}
-	}
-}
-
-// mergeDuplicateChildren combines entries sharing the same child by OR-ing
-// their BDD labels.
 func mergeDuplicateChildren(edges []edge) []edge {
 	out := edges[:0]
 outer:
@@ -114,6 +116,22 @@ outer:
 	return out
 }
 
+// Reset clears the NDD and BDD unique tables plus the op caches.
+// Nodes are session-scoped now that the tables hold strong references;
+// call Reset between independent computations to release memory.
+func Reset() {
+	clearNDDCache()
+	for i := range ndUnique {
+		s := &ndUnique[i]
+		s.mu.Lock()
+		for h := range s.table {
+			delete(s.table, h)
+		}
+		s.mu.Unlock()
+	}
+	bdd.Reset()
+}
+
 // TableSize returns the approximate number of live interior NDD nodes.
 func TableSize() int {
 	n := 0
@@ -121,11 +139,7 @@ func TableSize() int {
 		s := &ndUnique[i]
 		s.mu.Lock()
 		for _, bucket := range s.table {
-			for _, wp := range bucket {
-				if wp.Value() != nil {
-					n++
-				}
-			}
+			n += len(bucket)
 		}
 		s.mu.Unlock()
 	}
