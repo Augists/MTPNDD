@@ -196,3 +196,71 @@ the SRE NDD project at `~/sre-ndd`): the five files on
 `feature/c-open-addressing` are self-contained (no Sylvan submodule
 changes needed). Replicate the NEWFRAME rehash-site invariant — it
 is a correctness requirement, not a tuning knob.
+
+## 2026-04-22 cross-validation on sre-ndd
+
+Tested the "worth-it" hypothesis on the SRE NDD project workload
+(bgp_fattree08 MF=3 workers=4). sre-ndd hits **34% nodetable load
+factor** (vs 4% for N-queens at N=12), so per the criteria above
+should have been a good candidate for open addressing.
+
+Procedure: bumped sre-ndd's mtpndd submodule from the pre-migration
+`ea7bcfe` pin to our current `feature/c` head, updated sre-ndd's
+`run.sh` to the new single-tree cmake layout, verified build + smoke
+runs, captured chained baseline, swapped submodule to
+`feature/c-open-addressing`, re-ran.
+
+### Result
+
+| | Chained | OA | Δ |
+|---|---:|---:|---|
+| `total` (NDDConfig2spec) | 85.36 s | 91.02 s | **+6.6%** |
+| final load factor        | 34.13% | 25.87% | (OA rehashed up 3×) |
+
+OA still regressed on the higher-load workload. The explanation is
+the same as for N-queens, amplified: OA's rehash requires Sylvan
+NEWFRAME stop-the-world (`mtpndd_gc_before_sylvan`), so every
+per-table rehash costs one full `sylvan_gc()`. Chained's
+`maybe_rehash` runs under a shard spinlock in-place, with no global
+pause. On the sre-ndd run we observed **3 sylvan_gc's that reclaimed
+zero nodes** — pure rehash overhead, triggered by OA's load
+threshold.
+
+This is an architectural cost that no amount of tuning will fix
+under the current synchronization model.
+
+## 2026-04-22 unrelated finding: Lace 1.6 external-RUN regression
+
+While setting up the sre-ndd A/B, chained-on-new-layout ran at
+85 s while chained-on-old-layout (Sylvan 1.9.1 + Lace 1.5, pinned
+at `ea7bcfe`) had been 44 s on the same workload. A **2× regression
+independent of open addressing**, introduced by the 2026-04-21
+Sylvan+Lace migration.
+
+`perf record` on the chained-new-layout run puts **`lace_run_task`
+at 23.8% and `lace_worker_thread` at 17.7%** of CPU, together ~45%.
+Hot functions from mtpndd itself (`find_node_in_nodetable`,
+`mtpndd_mk`, `mtpndd_and_rec`) dropped out of the top 10. The
+regression is entirely in Lace scheduling, not in mtpndd logic.
+
+Mechanism: Lace 1.6 routes `RUN()` calls from non-worker threads
+(e.g. the JVM main thread calling `mtpndd_and` via JNI) through an
+external-task queue, parking the caller and waking a worker per
+call. Lace 1.5 let external callers temporarily steal a worker
+slot. N-queens is unaffected because its benchmark wraps all work
+in one top-level `VOID_TASK`; sre-ndd's JNI-per-op pattern fires
+hundreds of thousands of `RUN()`s and so pays the queue cost on
+each one.
+
+Mitigations (not attempted, out of scope here):
+- Donate the JVM main thread as a persistent Lace worker at init
+  (requires a Sylvan/Lace API addition).
+- Add a fast path to Lace 1.6 for single-external-caller RUN().
+- Push `mtpndd_and_batch` / `mtpndd_*_reduce` into sre-ndd's Java
+  layer so the RUN() frequency drops.
+
+Impact on this document: the open-addressing comparison stays valid
+as a relative measurement (both arms paid the same Lace tax), but
+the absolute numbers here and in sre-ndd's bench archive are
+inflated vs historical pre-migration baselines until the Lace
+regression is addressed.
