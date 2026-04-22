@@ -93,7 +93,13 @@ func log2Pow2(v int) int {
 // BDD node slab.
 // ---------------------------------------------------------------------------
 
-const bddMaxChunks = 1 << 12
+// bddMaxChunks caps the slab chunk directory. With the default
+// SlabChunkSize of 2^18 nodes per chunk this gives a 2^33 ≈ 8 G node
+// hard ceiling. The directory itself is bddMaxChunks * 8 bytes = 256 KB
+// regardless of how many chunks are live, so the overhead is free.
+// sre-ndd bgp_fattree12 consumes over 1 G BDD nodes cumulatively; the
+// earlier 2^12 ceiling panicked there.
+const bddMaxChunks = 1 << 15
 
 var (
 	bddSlabChunk int

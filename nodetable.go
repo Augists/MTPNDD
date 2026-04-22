@@ -15,10 +15,12 @@ func init() { nextNDDNodeID.Store(100) } // leave room for terminals
 // Node slab allocator (lock-free fast path).
 // ---------------------------------------------------------------------------
 
-// nddMaxChunks caps the slab chunk directory. With the default chunk size
-// 2^18 nodes, this gives a 1 G-node hard ceiling; the directory itself is
-// nddMaxChunks * 8 bytes = 32 KB regardless of how much is used.
-const nddMaxChunks = 1 << 12
+// nddMaxChunks caps the slab chunk directory. With the default chunk
+// size of 2^18 nodes this gives a 2^33 ≈ 8 G-node hard ceiling; the
+// directory itself is nddMaxChunks * 8 bytes = 256 KB regardless of
+// live chunk count. Raised from 2^12 after sre-ndd bgp_fattree12
+// overflowed the earlier ~1 G cap during a single session.
+const nddMaxChunks = 1 << 15
 
 var (
 	nddSlabChunk int
