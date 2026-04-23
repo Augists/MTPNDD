@@ -12,9 +12,6 @@ package main
 import "C"
 
 import (
-	"net/http"
-	_ "net/http/pprof"
-	"os"
 	"runtime"
 	"sync/atomic"
 	"unsafe"
@@ -25,17 +22,6 @@ import (
 
 // main is required for c-shared mode but must never run.
 func main() {}
-
-// If PPROF_PORT is set, expose the runtime profiling endpoints on that
-// TCP port so external tools can curl http://127.0.0.1:$PPROF_PORT/debug/
-// pprof/profile while the JNI is running.
-func init() {
-	if port := os.Getenv("PPROF_PORT"); port != "" {
-		go func() {
-			_ = http.ListenAndServe("127.0.0.1:"+port, nil)
-		}()
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Handle conversion.

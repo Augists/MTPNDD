@@ -17,8 +17,12 @@ export CGO_CFLAGS="-I$JAVA_HOME/include -I$JAVA_HOME/include/linux"
 
 # Build from this directory; the package path must be stable so cgo
 # produces predictable symbol names.
+# -tags pprof enables the optional PPROF_PORT env-var hook for capturing
+# CPU profiles from a running JNI load. Without the tag, net/http is not
+# linked and the .so stays around ~2.8 MB.
 go build \
     -buildmode=c-shared \
+    -tags "${TAGS:-}" \
     -o libmtpnddjni.so \
     .
 
