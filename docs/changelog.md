@@ -2,6 +2,42 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.17: store unique-table slot pointer as uintptr
+
+Companion to v1.15's op-cache change. The BDD and NDD unique-table
+slots held the node as `*Node`, which GC had to scan. But nodes are
+already rooted through the slab (`bddSlab.chunks[]` atomic pointers to
+`[]Node` arrays), so the slot's pointer was purely redundant for
+reachability.
+
+Convert both slot types to `uintptr`; reads/writes round-trip via
+`unsafe.Pointer`. Safe because `Reset()` clears every slot before
+dropping slab chunks, and nodes live for the whole session in between.
+
+### Impact
+
+| workload | v1.16 | v1.17 | delta |
+| --- | --- | --- | --- |
+| ft08 MF=3 w=4 | 14.60 s (5-run med) | **14.40 s** | **−1.4 %** |
+| ft12 MF=3 w=4 | 217.9 s (1 run) | 218.9 s (2-run med) | +0.5 % noise |
+
+ft08 gets a real win because GC is a bigger fraction of a short run.
+On ft12 the unique-table slot array (~256 MB) is dwarfed by the slab
+(~4–5 GB of Node backing store), which GC still must scan — so the
+savings show up in the noise floor rather than wall time.
+
+Write-barrier elimination on slot stores also helps `intern`'s insert
+path; on fattree12 the insert count is small (~1 per unique node)
+so the effect is modest. On fattree08 with smaller slab, relative
+effect is larger.
+
+### Correctness
+
+`lint` warns "possible misuse of unsafe.Pointer" on the uintptr→*Node
+reverse cast — conservative because the analyzer doesn't know nodes
+are slab-pinned. Same pattern already lived in the op cache since
+v1.15 without issue.
+
 ## 2026-04-23 — v1.16: lower unique-table resize threshold from 70 % to 50 %
 
 `bdd.intern`'s hot line `if slot.node == nil` was **5.51 s flat / 14.6 %**

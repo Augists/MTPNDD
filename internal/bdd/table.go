@@ -149,9 +149,14 @@ var (
 	bddInitialShardMask uint64
 )
 
+// shardSlot stores the node as uintptr to keep the unique-table array
+// out of GC's pointer-bitmap sweep. The slab (bddSlab.chunks) is what
+// actually roots nodes; this slot's pointer was redundant for GC
+// rooting. Reset() clears slots before dropping slab chunks, so the
+// uintptr can never dangle while the slot is live.
 type shardSlot struct {
 	hash uint64
-	node *Node
+	node uintptr
 }
 
 type nodeKey struct {
@@ -189,14 +194,14 @@ func intern(v uint32, lo, hi *Node) *Node {
 	idx := h & s.mask
 	for {
 		slot := &s.slots[idx]
-		if slot.node == nil {
+		if slot.node == 0 {
 			n := allocBDDNode()
 			n.Var = v
 			n.id = nextBDDNodeID.Add(1)
 			n.Low = lo
 			n.High = hi
 			slot.hash = h
-			slot.node = n
+			slot.node = uintptr(unsafe.Pointer(n))
 			s.count++
 			if s.count*10 > len(s.slots)*shardResizeLoad {
 				s.resizeLocked()
@@ -207,7 +212,7 @@ func intern(v uint32, lo, hi *Node) *Node {
 			return n
 		}
 		if slot.hash == h {
-			n := slot.node
+			n := (*Node)(unsafe.Pointer(slot.node))
 			s.mu.Unlock()
 			runtime.KeepAlive(lo)
 			runtime.KeepAlive(hi)
@@ -223,11 +228,11 @@ func (s *uniqueShard) resizeLocked() {
 	s.slots = make([]shardSlot, newSize)
 	s.mask = uint64(newSize - 1)
 	for _, slot := range oldSlots {
-		if slot.node == nil {
+		if slot.node == 0 {
 			continue
 		}
 		idx := slot.hash & s.mask
-		for s.slots[idx].node != nil {
+		for s.slots[idx].node != 0 {
 			idx = (idx + 1) & s.mask
 		}
 		s.slots[idx] = slot

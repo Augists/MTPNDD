@@ -3,6 +3,7 @@ package mtpndd
 import (
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/Augists/mtpndd-go/internal/bdd"
 )
@@ -65,9 +66,11 @@ var (
 	nddInitialShardMask uint64
 )
 
+// nddSlot stores the node as uintptr; see internal/bdd/table.go for
+// rationale (nodes rooted by slab, slot pointer was redundant for GC).
 type nddSlot struct {
 	hash uint64
-	node *Node
+	node uintptr
 }
 
 type nddShard struct {
@@ -166,7 +169,7 @@ func mk(fieldID uint32, edges []edge) *Node {
 	idx := h & s.mask
 	for {
 		slot := &s.slots[idx]
-		if slot.node == nil {
+		if slot.node == 0 {
 			owned := s.allocEdgesLocked(len(edges))
 			copy(owned, edges)
 			n := allocNDDNode()
@@ -175,7 +178,7 @@ func mk(fieldID uint32, edges []edge) *Node {
 			n.edges = owned
 			n.hash = h
 			slot.hash = h
-			slot.node = n
+			slot.node = uintptr(unsafe.Pointer(n))
 			s.count++
 			if s.count*10 > len(s.slots)*shardResizeLoad {
 				s.resizeLocked()
@@ -184,7 +187,7 @@ func mk(fieldID uint32, edges []edge) *Node {
 			return n
 		}
 		if slot.hash == h {
-			n := slot.node
+			n := (*Node)(unsafe.Pointer(slot.node))
 			s.mu.Unlock()
 			return n
 		}
@@ -198,11 +201,11 @@ func (s *nddShard) resizeLocked() {
 	s.slots = make([]nddSlot, newSize)
 	s.mask = uint64(newSize - 1)
 	for _, slot := range oldSlots {
-		if slot.node == nil {
+		if slot.node == 0 {
 			continue
 		}
 		idx := slot.hash & s.mask
-		for s.slots[idx].node != nil {
+		for s.slots[idx].node != 0 {
 			idx = (idx + 1) & s.mask
 		}
 		s.slots[idx] = slot
