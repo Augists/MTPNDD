@@ -6,14 +6,15 @@ and goroutine-based parallelism. Ships as both a Go package and a
 `cgo -buildmode=c-shared` `libmtpnddjni.so` drop-in for the existing
 Java `org.ants.mtpndd` wrapper.
 
-On the `sre-ndd` network-verification workloads (single run, 4 workers,
-vs. mtpndd-c / Sylvan+Lace C backend):
+On the `sre-ndd` network-verification workloads (4 Java workers),
+`feature/go` v1.18 `libmtpnddjni.so` vs. `feature/c`
+`libmtpnddjni.so` (Sylvan 1.10 + Lace 1.6):
 
-| workload        | Go v1.17 | C      | Go / C |
-| --------------- | -------- | ------ | ------ |
-| ft08 MF=3 (w=4) | 14.4 s   | 32.4 s | 0.44×  (**2.25× faster**) |
-| ft12 MF=1 (w=4) | 19.8 s   | 26.5 s | 0.75×  (1.34× faster) |
-| ft12 MF=3 (w=4) | 218.9 s  | 565.8 s | 0.39× (**2.60× faster**) |
+| workload        | `feature/go` v1.18 | `feature/c` | Go / C |
+| --------------- | -------- | ------- | ------ |
+| ft08 MF=3 (w=4) | 14.0 s   | 32.4 s  | 0.43×  (**2.31× faster**) |
+| ft12 MF=1 (w=4) | 19.25 s  | 26.47 s | 0.73×  (1.38× faster) |
+| ft12 MF=3 (w=4) | 198.29 s | 578.29 s | 0.34× (**2.92× faster**, both 3-run median) |
 
 On the smaller n-queens benchmark, `mtpndd-go` is **14–22 % faster**
 than the C reference at N = 10..13 on 6 workers.
@@ -22,7 +23,7 @@ See [`docs/performance.md`](docs/performance.md) for the optimization
 journey and [`docs/benchmarking.md`](docs/benchmarking.md) for
 reproduction.
 
-## Scope (v1.17)
+## Scope (v1.18)
 
 - Pure-Go BDD (`internal/bdd`) with `True` / `False` terminals,
   `Mk / IthVar / NIthVar / And / Or / Xor / Not / Exist / SatCount`.

@@ -8,7 +8,7 @@ rewrite on the `feature/go` branch.
 Pre-existing C/Sylvan/Lace documentation was moved to `docs_c_legacy/` during
 the Go port; look there for history of the C implementation.
 
-## Scope of the Go port (v1.17)
+## Scope of the Go port (v1.18)
 
 - Pure-Go BDD library with True / False terminals, `ithvar`, `and`, `or`,
   `not`, `xor`, `exist`, `satcount`.
@@ -62,13 +62,15 @@ the Go port; look there for history of the C implementation.
 
 ### SRE (sre-ndd) workloads — via `jni/` libmtpnddjni.so (w=4)
 
-Measured on the same 31 GB host, `-Xmx32768m`, JDK 23.
+Measured on the same 31 GB host, `-Xmx32768m`, JDK 23. "Go" = the
+`feature/go` v1.18 .so; "C" = the `feature/c` .so (Sylvan 1.10 +
+Lace 1.6).
 
-| workload   | Go v1.17 | C       | Go / C | notes |
+| workload   | Go v1.18 (`feature/go`) | C (`feature/c`) | Go / C | notes |
 | ---------- | -------- | ------- | ------ | ----- |
-| ft08 MF=3  | 14.4 s   | 32.4 s  | 0.44×  | 5-run median |
-| ft12 MF=1  | 19.8 s   | 26.5 s  | 0.75×  | 3-run median |
-| ft12 MF=3  | 218.9 s  | 565.8 s | 0.39×  | single run; Go's global SatCount memo is the dominant lever (C SatCount 289 s vs Go 10.5 s) |
+| ft08 MF=3  | 14.0 s   | 32.4 s  | 0.43×  | 5-run median |
+| ft12 MF=1  | 19.25 s  | 26.47 s | 0.73×  | |
+| ft12 MF=3  | 198.29 s | 578.29 s | 0.34× | both 3-run median (2026-04-24). Go's global SatCount memo is the dominant lever (C SatCount 289 s vs Go 10.5 s); v1.18 `bdd.Diff` added another −9 % |
 
 See [`changelog.md`](changelog.md) v1.6 onward for the SRE-driven
 optimization trail (JNI bridge, SatCount memo, goroutine-spawn
