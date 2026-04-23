@@ -13,6 +13,7 @@ const (
 	opXor
 	opNot
 	opExist
+	opDiff
 )
 
 // opSlot stores the result pointer as a uintptr to keep the op cache out

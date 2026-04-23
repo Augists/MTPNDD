@@ -2,6 +2,50 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.18: dedicated `bdd.Diff(f, g) = f & ~g` to collapse Not+And
+
+Biggest single win of the session. `orSameField` / `orDiffField` /
+`ndd.Not` all had a pattern `notLabel = bdd.Not(e.label); residual =
+bdd.And(residual, notLabel)` — two BDD op-cache lookups plus an
+intermediate NOT node allocation per pair. At SRE ft12 MF=3 this
+path is exercised across the 6 M NDD Or calls and 5.5 M NDD Not
+calls; the downstream BDD op counts dominate the profile.
+
+Added `bdd.Diff(f, g)` as a first-class BDD op with its own `opDiff`
+cache tag and a direct recursive implementation (cofactor, mk, seqlock
+cachePut). Replaced three Not+And sites in `ops.go`:
+
+- `orSameField`: two `Diff` calls per (i,j) pair replace one `Not` +
+  two `And`s. Net: −1 BDD op per pair.
+- `orDiffField`: one `Diff` call per a-edge replaces one `Not` + one
+  `And`.
+- `Not (NDD)`: same substitution in the residual-accumulation loop.
+
+### Impact (fattree12 MF=3 w=4, single run each)
+
+| op | v1.17 | v1.18 | delta |
+| --- | --- | --- | --- |
+| And (33.3 M) | 61.7 s | 60.9 s | −1.3 % |
+| **Or (6.1 M)** | **78.3 s** | **61.3 s** | **−21.7 %** |
+| **Not (5.5 M)** | **33.8 s** | **27.2 s** | **−19.5 %** |
+| SatCount (5.3 M) | 10.5 s | 10.4 s | noise |
+| MTPNDD TOTAL | 186.0 s | **166.2 s** | **−10.6 %** |
+| Wall | 218.9 s | **199.1 s** | **−9.0 %** |
+
+Or and Not see the largest drop because they exercised the Not+And
+pattern the most. And (outer NDD And) is mostly unaffected since
+`andSameField` calls only `bdd.And`.
+
+### Impact (fattree08 MF=3 w=4)
+
+14.40 s → **14.00 s** (5-run medians, **−2.8 %**). Same qualitative
+improvement but smaller absolute because ft08 has ~100× less Or/Not
+work.
+
+### Cumulative vs C on fattree12 MF=3
+
+Go wall 199.1 s vs C 565.8 s → **2.84× faster** (was 2.60× at v1.17).
+
 ## 2026-04-23 — failed experiment: cap NDD op cache at 2^20 (24 MB, L3-resident)
 
 Not merged.

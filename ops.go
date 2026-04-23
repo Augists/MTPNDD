@@ -202,9 +202,10 @@ func orSameField(a, b *Node) *Node {
 			if intersect == bdd.False {
 				continue
 			}
-			notIntersect := bdd.Not(intersect)
-			residualA[i] = bdd.And(residualA[i], notIntersect)
-			residualB[j] = bdd.And(residualB[j], notIntersect)
+			// residualA/B &= ~intersect, directly via dedicated Diff.
+			// Avoids one bdd.Not + one bdd.And per pair.
+			residualA[i] = bdd.Diff(residualA[i], intersect)
+			residualB[j] = bdd.Diff(residualB[j], intersect)
 			child := Or(a.edges[i].child, b.edges[j].child)
 			edges = append(edges, edge{child: child, label: intersect})
 		}
@@ -227,8 +228,7 @@ func orDiffField(a, b *Node) *Node {
 	var stack [16]edge
 	edges := stack[:0]
 	for _, e := range a.edges {
-		notLabel := bdd.Not(e.label)
-		residualB = bdd.And(residualB, notLabel)
+		residualB = bdd.Diff(residualB, e.label)
 		child := Or(e.child, b)
 		edges = append(edges, edge{child: child, label: e.label})
 	}
@@ -253,8 +253,7 @@ func Not(a *Node) *Node {
 	var stack [16]edge
 	edges := stack[:0]
 	for _, e := range a.edges {
-		notLabel := bdd.Not(e.label)
-		residual = bdd.And(residual, notLabel)
+		residual = bdd.Diff(residual, e.label)
 		child := Not(e.child)
 		if child == False {
 			continue

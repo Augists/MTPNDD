@@ -136,6 +136,38 @@ func Xor(f, g *Node) *Node {
 	return r
 }
 
+// Diff returns f AND NOT g. Equivalent to And(f, Not(g)) but computed
+// directly so (1) no intermediate NOT node is created and (2) the op
+// cache entry is keyed on (f, g) instead of on (f, Not(g)), which means
+// the cascading recursive calls also hit Diff cache entries rather than
+// And-on-transient-Not-result entries. Used by NDD orSameField to
+// subtract intersect labels from residuals.
+func Diff(f, g *Node) *Node {
+	if f == False || g == True {
+		return False
+	}
+	if g == False {
+		return f
+	}
+	if f == g {
+		return False
+	}
+	if f == True {
+		return Not(g)
+	}
+	if r, ok := cacheGet(opDiff, f, g, 0); ok {
+		return r
+	}
+	v := topVar(f, g)
+	f0, f1 := cofactor(f, v)
+	g0, g1 := cofactor(g, v)
+	lo := Diff(f0, g0)
+	hi := Diff(f1, g1)
+	r := Mk(v, lo, hi)
+	cachePut(opDiff, f, g, r, 0)
+	return r
+}
+
 // Exist returns ∃v. f.
 func Exist(f *Node, v uint32) *Node {
 	if IsTerminal(f) {
