@@ -2,10 +2,54 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.15: store op-cache result as uintptr (GC-invisible)
+
+Op-cache slots held `res *Node`. With SRE's 16 M-slot BDD cache (+ a
+similar NDD cache), GC was scanning ~134 M byte of pointer fields per
+cycle and applying write barriers on every cachePut. Profile on
+fattree12 MF=3 w=4 showed:
+- GC-related cum: `scanObject 4.78 s + findObject 1.27 s + ...
+  = 9.3 s / 38.2 s = **24 %** of CPU`
+- `cachePut` flat **2.25 s** (5.9 %) — most of it write-barrier code.
+
+Since nodes are pinned by the unique table for the life of a session,
+the op cache doesn't need GC to trace it. Change `res` to `uintptr`;
+reads do `(*Node)(unsafe.Pointer(res))`, writes do
+`uintptr(unsafe.Pointer(res))`. Safe because:
+- Reader's returned `*Node` is always live — unique table still holds
+  the strong ref.
+- No dangling uintptr: `Reset()` clears every slot *before* dropping
+  the slab chunks that back the nodes.
+
+### Impact (fattree12 MF=3 w=4)
+
+| metric | v1.14 | v1.15 | delta |
+|---|---|---|---|
+| Wall | 229.2 s | **224.1 s** | −2.2 % |
+| MTPNDD TOTAL | 194.4 s | 190.8 s | −1.9 % |
+| Or | 80.6 s | 78.3 s | −2.9 % |
+| cachePut flat (pprof) | 2.25 s | 1.33 s | −41 % |
+| GC cum (pprof) | 9.3 s | 7.4 s | −20 % |
+
+`cachePut` drops ~40 % because storing a uintptr skips the GC write
+barrier entirely; scanObject/findObject drop because the op cache
+is no longer in the pointer-bitmap sweep.
+
+### Impact (fattree08 MF=3 w=4)
+
+14.68 s → 14.46 s (~1.5 %). Smaller cache (2 M slots, 48 MB) meant
+lower GC load to begin with.
+
+### Impact (n-queens N=12)
+
+Unchanged — cache is 512 K slots (12 MB); GC was already cheap.
+
 ## 2026-04-23 — v1.14: skip cache-put counter atomic when clears are off
 
-Found on fattree12 MF=3 profile (the first sre-ndd workload where v1.13
-lets us run without crashing). Under heavy concurrency the cache-put
+Found on the fattree12 MF=3 profile (first time this workload was
+deliberately profiled — it runs fine on v1.x, the earlier SIGBUS seen
+in a scratch hs_err was on a much older .so, not a real mtpndd-go
+limit). Under heavy concurrency the cache-put
 code path was spending **880 ms flat / 2.3 % of CPU** on a single line:
 
 ```go

@@ -2,6 +2,7 @@ package mtpndd
 
 import (
 	"sync/atomic"
+	"unsafe"
 )
 
 type nddOpTag uint8
@@ -14,13 +15,16 @@ const (
 	opExist
 )
 
-// nddOpSlot is a compact 24-byte slot: seqlock counter, 64-bit
-// fingerprint encoding (tag, aux, idA, idB), and a strong result
-// pointer. See docs/design-decisions.md § 4.
+// nddOpSlot is a compact 24-byte slot: seqlock counter, 64-bit fingerprint,
+// and a result pointer stored as uintptr so GC does not scan the entire
+// op-cache array. Nodes are pinned by the unique table for the life of a
+// session; Reset() clears slots before freeing nodes so the uintptr can
+// never go dangling while the slot is live. See docs/design-decisions.md §4
+// and the v1.15 changelog entry.
 type nddOpSlot struct {
 	seq atomic.Uint64
 	fp  uint64
-	res *Node
+	res uintptr
 }
 
 var (
@@ -57,7 +61,7 @@ func nddCacheGet(tag nddOpTag, a, b *Node, aux uint32) (*Node, bool) {
 	if s.seq.Load() != seq1 {
 		return nil, false
 	}
-	return resV, true
+	return (*Node)(unsafe.Pointer(resV)), true
 }
 
 func nddCachePut(tag nddOpTag, a, b, res *Node, aux uint32) {
@@ -72,7 +76,7 @@ func nddCachePut(tag nddOpTag, a, b, res *Node, aux uint32) {
 		return
 	}
 	s.fp = fp
-	s.res = res
+	s.res = uintptr(unsafe.Pointer(res))
 	s.seq.Store(seq + 2)
 	if nddCacheClearInterval < (1 << 40) {
 		if c := nddCachePutCount.Add(1); c%nddCacheClearInterval == 0 {
@@ -89,7 +93,7 @@ func clearNDDCache() {
 			continue
 		}
 		s.fp = 0
-		s.res = nil
+		s.res = 0
 		s.seq.Store(seq + 2)
 	}
 }
