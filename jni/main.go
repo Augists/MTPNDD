@@ -100,10 +100,13 @@ func mapInitArgs(
 	if v := roundUpPow2(int64(bddTable)); v >= 256 {
 		cfg.BDD.InitialShardCap = capForShard(int(v), cfg.BDD.ShardCount)
 	}
-	if v := roundUpPow2(int64(nodeSlab)); v >= 1024 {
-		cfg.NDD.SlabChunkSize = int(v)
-		cfg.BDD.SlabChunkSize = int(v)
-	}
+	// Intentionally ignore nodeSlabCapacity. In mtpndd-c it's the
+	// *batch* size for per-worker refill (small — e.g. 2048); in
+	// mtpndd-go SlabChunkSize is the *bulk* allocation unit
+	// (default 2^18). Applying mtpndd-c's 2048 here shrinks chunks
+	// by 128× and makes the chunk directory overflow at much smaller
+	// workloads than intended.
+	_ = nodeSlab
 	return cfg
 }
 
