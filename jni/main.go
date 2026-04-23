@@ -91,9 +91,14 @@ func mapInitArgs(
 	if v := roundUpPow2(int64(opCache)); v >= 1024 {
 		cfg.NDD.OpCacheSize = int(v)
 		cfg.BDD.OpCacheSize = int(v)
-		cfg.NDD.CacheClearInterval = uint64(v) * 4
-		cfg.BDD.CacheClearInterval = uint64(v) * 4
 	}
+	// Disable periodic cache wipes for JNI callers. With the strong-ref
+	// unique table, cached Node pointers stay valid for the life of the
+	// session, so wipes add no safety — just drop otherwise-live hits.
+	// On SRE fattree08 MF=3 the default 2^21 interval triggers mid-run
+	// and forces a cold rebuild of the cache.
+	cfg.NDD.CacheClearInterval = 1 << 62
+	cfg.BDD.CacheClearInterval = 1 << 62
 	if v := roundUpPow2(int64(mtpnddTable)); v >= 256 {
 		cfg.NDD.InitialShardCap = capForShard(int(v), cfg.NDD.ShardCount)
 	}

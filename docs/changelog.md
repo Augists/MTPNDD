@@ -2,6 +2,85 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.10: disable periodic op-cache wipes for JNI callers
+
+Small but real SRE win on fattree08 MF=3 w=4: 15.42 s → 15.03 s
+(~2.5 %, 5-run medians in the same session). Variance also tightened
+(5-run range 0.29 s vs baseline 0.67 s).
+
+Root cause: the JNI init path mapped the Java-side opCache argument
+(2^19 slots) to `CacheClearInterval = opCache * 4 = 2^21` puts.
+sre-ndd fattree08 MF=3 executes ~3.5 M And/Or ops per run, so the
+interval triggers mid-session and `clearBDDCache` wipes every slot,
+forcing a cold rebuild.
+
+With the strong-ref unique table, cached `*Node` entries stay valid
+for the entire session (until `Reset`), so the wipe adds no safety.
+It's pure throw-away of live hits. For JNI callers the wipe is now
+effectively disabled (`CacheClearInterval = 1 << 62`). Go-native
+callers (nqueens CLI) keep the default 2^21 — smaller op counts
+there mean the interval is never hit anyway, but the default stays
+conservative.
+
+### SRE impact (bgp_fattree08 MF=3 w=4, same-session A/B)
+
+| variant             | median    | 5-run range |
+| ------------------- | --------- | ----------- |
+| baseline (with wipe)| 15.42 s   | 15.14–15.81 |
+| no periodic wipe    | **15.03** | 14.78–15.07 |
+
+fattree12 MF=1 w=4 is flat (20.00 s vs prior 19.79 s — within noise);
+the cache fits the op count there without needing to survive a wipe.
+
+## 2026-04-23 — failed experiment: pack opSlot 24 → 16 B (seq in fp LSB)
+
+Not merged — recorded here so it isn't retried.
+
+Hypothesis: `cacheGet` line `seq1 & 1 != 0` was 1.61 s / 2.10 s in the
+pprof profile — cache-miss latency fetching a 24-byte `opSlot`. Merging
+the seqlock lock bit into the fingerprint's LSB (bit 0 = 1 means
+writer in progress; valid fingerprints always even) would:
+1. Shrink slot 24 → 16 B, so the 2^19-slot cache fits 8 MB (was 12 MB).
+2. Align every slot to a 64 B line (24-byte slots straddle lines).
+3. Remove one atomic load in the fast-miss path.
+
+Result: **3 % slower** in a same-session A/B — 15.88 s packed median
+vs 15.42 s baseline median (7 and 5 runs on fattree08 MF=3 w=4).
+
+Why it didn't win: 12 MB already fits comfortably in L3 on this 6-core
+host (≥ 12 MB L3), so shrinking the working set didn't translate to
+fewer DRAM misses. The line-straddle savings were offset by extra
+atomic ops — `fp.Load`/`fp.Store` now atomic, where the old `fp` was
+a plain uint64 protected by the adjacent seq word. pprof's "1.61 s on
+the seq1 check" overstates the fixable cost: most of it is the L1
+fill for the slot, which must happen regardless of layout.
+
+Lesson: when the working set already fits in L3, shrinking it further
+is zero-value. Aim instead for reducing the *number* of slot accesses
+(smarter hashing, better locality, higher hit rate).
+
+## 2026-04-23 — failed experiment: move BDD unique-table hash onto Node
+
+Not merged.
+
+Hypothesis: `bdd.intern` profiled at 11.6 % flat with `slot.node == nil`
+at 520 ms. Slot is `{hash uint64; node *Node}` = 16 B → 4 slots per
+64 B line. Shrinking to just `*Node` (hash moved onto the Node itself)
+would put 8 slots per line, halving probe cache-line fetches.
+
+Result: **10 % slower** — 16.62 s median vs 15.13 s baseline, 3 runs
+each on fattree08 MF=3 w=4.
+
+Why it regressed: the old inline `slot.hash` let collision probes be
+rejected without dereferencing the Node pointer. Moving `hash` onto
+Node forces a pointer chase on every probe step. The chase cost
+exceeded the cache-density win — `*Node` targets live in the slab,
+different cache lines from the slot array, so each probe now touches
+two lines instead of one.
+
+Lesson: for probe-heavy hash tables, inline *everything the probe loop
+reads*. Only indirect what's returned on a hit.
+
 ## 2026-04-23 — v1.9: disable in-Go goroutine spawning for JNI callers
 
 Huge SRE win — fattree08 MF=3 w=4 went from 28.9 s to 15.7 s
