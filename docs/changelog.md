@@ -2,6 +2,46 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.9: disable in-Go goroutine spawning for JNI callers
+
+Huge SRE win — fattree08 MF=3 w=4 went from 28.9 s to 15.7 s
+(1.84× faster), making Go **2.06× faster than C** on that workload.
+
+Root cause, exposed by pprof of the running JNI: 25 %+ of Go CPU was
+in goroutine machinery (`runtime.futex`, `runtime.schedule`,
+`work.Go.func1`). Every same-field And/Or with cartesian product ≥ 4
+spawned sub-goroutines. But sre-ndd runs N Java threads each making
+independent JNI calls, so the outer parallelism already saturated
+cores; the inner goroutines just over-subscribed the scheduler and
+wasted CPU on scheduling overhead.
+
+Fix: `mapInitArgs` in the JNI bridge now sets
+`cfg.SpawnPairThreshold = 1024`, effectively turning off in-Go
+spawning for JNI callers. Go-native callers (the `cmd/nqueens-bench`
+CLI) keep the default of 4 and still benefit from intra-op
+parallelism — nqueens N=12 stays at ~1.5 s.
+
+### SRE impact (bgp_fattree08 MF=3, 3-run median)
+
+| workers | Go before | Go after | C     | Go after vs C |
+| ------- | --------- | -------- | ----- | ------------- |
+| w=1     | 37.14 s   | 16.28 s  | 35.78 | 2.20× faster  |
+| w=2     | 29.01 s   | 15.56 s  | 33.05 | 2.12× faster  |
+| w=4     | 28.91 s   | 15.13 s  | 32.40 | 2.14× faster  |
+| w=6     | 28.93 s   | 15.25 s  | 32.11 | 2.10× faster  |
+
+### Full sweep against C (at w=4)
+
+| workload        | Go     | C     | Go / C |
+| --------------- | ------ | ----- | ------ |
+| ft04 MF=1       | 0.48 s | 0.49  | parity |
+| ft04 MF=2       | 0.37 s | 0.36  | parity |
+| ft04 MF=3       | 0.37 s | 0.36  | parity |
+| ft08 MF=1       | 2.52 s | 3.38  | 0.75×  |
+| ft08 MF=2       | 5.71 s | 10.89 | 0.52×  |
+| ft08 MF=3       | 15.13 s| 32.40 | 0.47×  |
+| ft12 MF=1       | 19.79 s| 26.47 | 0.75×  |
+
 ## 2026-04-23 — v1.8: MaxChunks 2^12 → 2^15 (raised slab ceiling)
 
 Bumped the slab chunk-directory cap in both the NDD (`nodetable.go`)
