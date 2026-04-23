@@ -2,6 +2,24 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.11: precompute 2^bitWidth / 2^bddVarBase on Field
+
+Small but clean SRE win: fattree08 MF=3 w=4 drops 15.03 → 14.59 s
+(5-run medians in the same session, ~3 %).
+
+`pow2int` was a `for range n { p *= 2 }` scalar loop called on every
+satCountRec invocation — 170 ms flat (1.4 %) in the pprof profile,
+plus the labelCount path had a division by `pow2int(field.bddVarBase)`
+per edge.
+
+Two changes on `Field`:
+- Cache `pow2BitWidth = math.Ldexp(1, BitWidth)` at DeclareField time.
+- Cache `pow2Base = math.Ldexp(1, bddVarBase)` too; satCountRec now
+  multiplies by the reciprocal rather than dividing per edge.
+
+Computed once at field creation, then constant for the life of the
+session. No API change; `pow2int` helper deleted.
+
 ## 2026-04-23 — v1.10: disable periodic op-cache wipes for JNI callers
 
 Small but real SRE win on fattree08 MF=3 w=4: 15.42 s → 15.03 s

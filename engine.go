@@ -2,6 +2,7 @@ package mtpndd
 
 import (
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/Augists/mtpndd-go/internal/bdd"
@@ -134,6 +135,12 @@ type Field struct {
 
 	bddVarBase uint32
 
+	// pow2BitWidth = 2^BitWidth, pow2Base = 2^bddVarBase. Precomputed so
+	// SatCount doesn't loop-multiply on every call (was 170 ms flat /
+	// 1.4 % on sre-ndd fattree08 MF=3).
+	pow2BitWidth float64
+	pow2Base     float64
+
 	varNodes    []*Node
 	notVarNodes []*Node
 }
@@ -171,9 +178,11 @@ func (e *Engine) DeclareField(bitWidth uint32) *Field {
 		panic("mtpndd: cannot declare field after GenerateFields")
 	}
 	f := &Field{
-		ID:         uint32(len(e.fields)),
-		BitWidth:   bitWidth,
-		bddVarBase: e.totalBits,
+		ID:           uint32(len(e.fields)),
+		BitWidth:     bitWidth,
+		bddVarBase:   e.totalBits,
+		pow2BitWidth: math.Ldexp(1, int(bitWidth)),
+		pow2Base:     math.Ldexp(1, int(e.totalBits)),
 	}
 	e.fields = append(e.fields, f)
 	e.totalBits += bitWidth

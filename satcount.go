@@ -70,14 +70,14 @@ func satCountRec(n *Node, fieldIdx int, engine *Engine) float64 {
 	if n == True {
 		r := 1.0
 		for i := fieldIdx; i < len(engine.fields); i++ {
-			r *= pow2int(engine.fields[i].BitWidth)
+			r *= engine.fields[i].pow2BitWidth
 		}
 		return r
 	}
 	// Skip over fields n does not constrain at this level.
 	skipFactor := 1.0
 	for fieldIdx < len(engine.fields) && engine.fields[fieldIdx].ID != n.fieldID {
-		skipFactor *= pow2int(engine.fields[fieldIdx].BitWidth)
+		skipFactor *= engine.fields[fieldIdx].pow2BitWidth
 		fieldIdx++
 	}
 	key := satCountKey{node: n, fieldIx: int32(fieldIdx)}
@@ -91,10 +91,11 @@ func satCountRec(n *Node, fieldIdx int, engine *Engine) float64 {
 
 	field := engine.fields[fieldIdx]
 	bitsUpTo := field.bddVarBase + field.BitWidth
+	invPow2Base := 1.0 / field.pow2Base
 
 	total := 0.0
 	for _, e := range n.edges {
-		labelCount := bdd.SatCount(e.label, bitsUpTo) / pow2int(field.bddVarBase)
+		labelCount := bdd.SatCount(e.label, bitsUpTo) * invPow2Base
 		childCount := satCountRec(e.child, fieldIdx+1, engine)
 		total += labelCount * childCount
 	}
@@ -102,12 +103,4 @@ func satCountRec(n *Node, fieldIdx int, engine *Engine) float64 {
 	shard.m[key] = total
 	shard.mu.Unlock()
 	return skipFactor * total
-}
-
-func pow2int(n uint32) float64 {
-	p := 1.0
-	for range n {
-		p *= 2
-	}
-	return p
 }
