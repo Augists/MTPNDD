@@ -75,6 +75,33 @@ type nddShard struct {
 	slots []nddSlot
 	mask  uint64
 	count int
+
+	// Edge arena — bump-allocates edge slices for newly-interned nodes
+	// under the shard lock. Avoids one runtime.mallocgc per mk-miss
+	// (130 ms cum / ~8 % GC time on sre-ndd fattree08 MF=3).
+	edgeChunk []edge
+	edgeOff   int
+}
+
+const shardEdgeChunkSize = 4096
+
+// allocEdgesLocked must be called with s.mu held. Returns a slice of length n
+// backed by the shard's edge arena. Slices returned here are never freed
+// until mtpndd.Reset() drops the chunks.
+func (s *nddShard) allocEdgesLocked(n int) []edge {
+	if n == 0 {
+		return nil
+	}
+	if n > shardEdgeChunkSize {
+		return make([]edge, n)
+	}
+	if s.edgeOff+n > len(s.edgeChunk) {
+		s.edgeChunk = make([]edge, shardEdgeChunkSize)
+		s.edgeOff = 0
+	}
+	out := s.edgeChunk[s.edgeOff : s.edgeOff+n : s.edgeOff+n]
+	s.edgeOff += n
+	return out
 }
 
 var ndUnique []nddShard
@@ -140,7 +167,7 @@ func mk(fieldID uint32, edges []edge) *Node {
 	for {
 		slot := &s.slots[idx]
 		if slot.node == nil {
-			owned := make([]edge, len(edges))
+			owned := s.allocEdgesLocked(len(edges))
 			copy(owned, edges)
 			n := allocNDDNode()
 			n.fieldID = fieldID
@@ -207,6 +234,8 @@ func Reset() {
 		s.slots = make([]nddSlot, nddInitialShardCap)
 		s.mask = nddInitialShardMask
 		s.count = 0
+		s.edgeChunk = nil
+		s.edgeOff = 0
 		s.mu.Unlock()
 	}
 	for i := range nddSlab.chunks {

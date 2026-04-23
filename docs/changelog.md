@@ -2,6 +2,26 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.12: per-shard edge arena in NDD mk
+
+Small win on sre-ndd fattree08 MF=3 w=4: ~1.3 % (same-session A/B,
+14.88 s baseline → 14.70 s arena; 5 and 10 run medians).
+
+`mk` allocated a fresh `[]edge` per newly-interned node
+(`make([]edge, len(edges))` then `copy`). 130 ms cum in pprof, plus
+general GC pressure (scanObject / mallocgcSmallScanNoHeader
+~5–7 % combined).
+
+Each `nddShard` now owns an `edgeChunk []edge` and an offset. The
+miss-path bump-allocates out of the current chunk under the existing
+shard lock; on chunk exhaustion it allocates a new 4096-edge chunk.
+Nodes are never freed except on `Reset()` so the arena grows
+monotonically, matching the node slab's lifetime policy.
+
+Amortises one runtime.mallocgc per node down to one per ~4096 edges.
+No API change. Reset now clears `edgeChunk`/`edgeOff` alongside the
+slot arrays.
+
 ## 2026-04-23 — v1.11: precompute 2^bitWidth / 2^bddVarBase on Field
 
 Small but clean SRE win: fattree08 MF=3 w=4 drops 15.03 → 14.59 s
