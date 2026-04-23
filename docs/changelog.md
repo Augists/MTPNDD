@@ -2,6 +2,34 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — failed experiment: pad opSlot 24 → 32 B (eliminate line straddle)
+
+Not merged — second time this experiment has failed (first was v1.10's
+different packing attempt).
+
+Hypothesis: 24-byte slots don't align cleanly to 64 B lines — 1 in 3
+slots straddles two cache lines. At SRE ft12 scale the op cache is
+384 MB (16 M slots), far past L3, so every lookup is DRAM; a straddled
+slot costs 2 DRAM fetches. Padding to 32 B gives exactly 2 slots per
+line with zero straddle.
+
+Result: **5 % slower** — ft12 MF=3 w=4 went 218.9 s → 230.1 s.
+
+Why it regressed: the straddle only matters when a lookup *reads all
+three fields* (hit). On a miss the fast-reject path reads only `seq`
+(8 bytes) — always on the first line regardless of layout. With cache
+hit rates well under 100 %, the majority of lookups are misses and
+never paid the straddle cost.
+
+Meanwhile, padding grew the total cache from 384 MB → 512 MB (+33 %).
+Every miss's DRAM fetch now competes with a larger working set for
+the same L3 and memory bandwidth. The additional pressure on other
+paths exceeded the straddle savings on the rarer hit path.
+
+Lesson: padding for alignment is "free" when the working set already
+fits in L3; with an L3-spilling table it costs DRAM bandwidth
+proportional to the new size, which swamps the per-hit latency win.
+
 ## 2026-04-23 — v1.17: store unique-table slot pointer as uintptr
 
 Companion to v1.15's op-cache change. The BDD and NDD unique-table
