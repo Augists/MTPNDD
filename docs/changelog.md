@@ -2,6 +2,31 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.13: open-addressed SatCount memo (replace sharded map)
+
+Small SRE win: ~1 % (same-session A/B, 14.80 s v1.12 → 14.66 s open-
+addressed; 5 and 10 run medians on fattree08 MF=3 w=4).
+
+The memo was a `[64]{RWMutex, map[satCountKey]float64}`. `mapaccess2`
+flat was 0.27 s (2.2 %), plus RLock/RUnlock per lookup and GC work
+on the growing maps (`scanObject` / `findObject` tied closely to map
+entry count).
+
+Replaced with a single 2²²-slot open-addressed table (24 B/slot
+seqlock layout, 96 MB total). Fingerprint = mixed hash of
+`(nodePtr >> 3)` and `fieldIdx`. Readers: one atomic seq load,
+fingerprint compare, float64 load, seq re-load — zero mutex work.
+Collisions overwrite the victim, which is simply recomputed on
+its next lookup. 64-bit fingerprint means false hits are ~2⁻⁶⁴.
+
+Peak memo size on fattree08 MF=3 is 1–2 M entries, so 4 M slots
+keeps load factor ≤ 50 % and collision rate negligible in the
+steady state.
+
+Memory cost vs. the old map is actually higher (map grew to ~50 MB;
+now fixed 96 MB), but the machine has 31 GB and we'd rather trade
+RAM for consistent low-latency probes.
+
 ## 2026-04-23 — v1.12: per-shard edge arena in NDD mk
 
 Small win on sre-ndd fattree08 MF=3 w=4: ~1.3 % (same-session A/B,

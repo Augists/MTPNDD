@@ -1,7 +1,7 @@
 package mtpndd
 
 import (
-	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/Augists/mtpndd-go/internal/bdd"
@@ -11,38 +11,69 @@ import (
 // variables declared by engine. Fields that n does not mention at a given
 // level contribute free factors of 2^bitWidth.
 //
-// Intermediate subgraph counts are memoised in a sharded global map keyed
-// by (node, fieldIdx). Nodes are immutable for the life of a session so the
-// memo is valid until mtpndd.Reset() (which clears it). The sharding keeps
-// RWMutex contention low at 4+ worker concurrency (sre-ndd workloads do
-// millions of concurrent SatCount calls).
-type satCountKey struct {
-	node    *Node
-	fieldIx int32
-}
+// Intermediate (node, fieldIdx) → float64 results are memoised in a global
+// open-addressed table with per-slot seqlocks. Nodes are immutable for the
+// life of a session so memo entries stay valid until mtpndd.Reset() clears
+// the table. Collisions overwrite the previous occupant; the victim is
+// simply recomputed next time. The 64-bit fingerprint includes the node
+// pointer and fieldIdx so false hits are ~2⁻⁶⁴ per lookup.
 
 const (
-	satMemoShards = 64
-	satMemoMask   = satMemoShards - 1
+	// 2^22 slots × 24 B = 96 MB. SRE fattree08 MF=3 memo peaks around
+	// 1-2 M entries, so 4 M slots keeps load factor ≤ 50 % and avoids
+	// collision-driven recomputation in the steady state.
+	satMemoSlots = 1 << 22
+	satMemoMask  = satMemoSlots - 1
 )
 
-type satMemoShard struct {
-	mu sync.RWMutex
-	m  map[satCountKey]float64
+type satMemoSlot struct {
+	seq atomic.Uint64
+	fp  uint64
+	res float64
 }
 
-var satMemoTable [satMemoShards]satMemoShard
+var satMemoTable [satMemoSlots]satMemoSlot
 
-func init() {
-	for i := range satMemoTable {
-		satMemoTable[i].m = make(map[satCountKey]float64, 256)
+func satMemoFingerprint(node *Node, fieldIdx int32) uint64 {
+	h := uint64(uintptr(unsafe.Pointer(node))) * 0x9E3779B97F4A7C15
+	h ^= uint64(uint32(fieldIdx)) * 0xBF58476D1CE4E5B9
+	h ^= h >> 32
+	h *= 0xFF51AFD7ED558CCD
+	h ^= h >> 32
+	if h == 0 {
+		h = 1
 	}
+	return h
 }
 
-func satShardFor(k satCountKey) *satMemoShard {
-	// Spread by node pointer low bits + fieldIdx.
-	h := uint64(uintptr(unsafe.Pointer(k.node)))>>3 ^ uint64(k.fieldIx)
-	return &satMemoTable[h&satMemoMask]
+func satMemoGet(node *Node, fieldIdx int32) (float64, bool) {
+	fp := satMemoFingerprint(node, fieldIdx)
+	s := &satMemoTable[fp&satMemoMask]
+	seq1 := s.seq.Load()
+	if seq1&1 != 0 {
+		return 0, false
+	}
+	fpV := s.fp
+	if fpV != fp {
+		return 0, false
+	}
+	res := s.res
+	if s.seq.Load() != seq1 {
+		return 0, false
+	}
+	return res, true
+}
+
+func satMemoPut(node *Node, fieldIdx int32, v float64) {
+	fp := satMemoFingerprint(node, fieldIdx)
+	s := &satMemoTable[fp&satMemoMask]
+	seq := s.seq.Load()
+	if seq&1 != 0 || !s.seq.CompareAndSwap(seq, seq+1) {
+		return
+	}
+	s.fp = fp
+	s.res = v
+	s.seq.Store(seq + 2)
 }
 
 // resetSatCountCache is called from Reset() to invalidate memoised values
@@ -50,9 +81,13 @@ func satShardFor(k satCountKey) *satMemoShard {
 func resetSatCountCache() {
 	for i := range satMemoTable {
 		s := &satMemoTable[i]
-		s.mu.Lock()
-		s.m = make(map[satCountKey]float64, 256)
-		s.mu.Unlock()
+		seq := s.seq.Load()
+		if seq&1 != 0 || !s.seq.CompareAndSwap(seq, seq+1) {
+			continue
+		}
+		s.fp = 0
+		s.res = 0
+		s.seq.Store(seq + 2)
 	}
 }
 
@@ -80,14 +115,10 @@ func satCountRec(n *Node, fieldIdx int, engine *Engine) float64 {
 		skipFactor *= engine.fields[fieldIdx].pow2BitWidth
 		fieldIdx++
 	}
-	key := satCountKey{node: n, fieldIx: int32(fieldIdx)}
-	shard := satShardFor(key)
-	shard.mu.RLock()
-	if v, ok := shard.m[key]; ok {
-		shard.mu.RUnlock()
+	fx := int32(fieldIdx)
+	if v, ok := satMemoGet(n, fx); ok {
 		return skipFactor * v
 	}
-	shard.mu.RUnlock()
 
 	field := engine.fields[fieldIdx]
 	bitsUpTo := field.bddVarBase + field.BitWidth
@@ -99,8 +130,6 @@ func satCountRec(n *Node, fieldIdx int, engine *Engine) float64 {
 		childCount := satCountRec(e.child, fieldIdx+1, engine)
 		total += labelCount * childCount
 	}
-	shard.mu.Lock()
-	shard.m[key] = total
-	shard.mu.Unlock()
+	satMemoPut(n, fx, total)
 	return skipFactor * total
 }
