@@ -2,6 +2,28 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — failed experiment: cap NDD op cache at 2^20 (24 MB, L3-resident)
+
+Not merged.
+
+Hypothesis: at SRE ft12 scale the caller sets opCache = 16 M for both
+BDD and NDD. NDD unique nodes are ~3-4 orders of magnitude fewer than
+BDD, so most of the 384 MB NDD cache is empty. Capping at 2^20 slots
+(24 MB) gets lookups into L3 (~10 ns) instead of DRAM (~100 ns).
+
+Result: **13 % slower** — ft12 MF=3 w=4 went 218.9 s → 247.6 s;
+MTPNDD TOTAL 186 s → 214 s.
+
+Why it regressed: a smaller NDD cache means more NDD misses. Each NDD
+miss cascades into recursive BDD And/Or/Not work (30 % flat in the
+profile). Downstream cost of extra BDD calls exceeded the DRAM savings
+on the 4 %-flat NDD lookups. SRE's hand-tuned cache size is right —
+don't second-guess it.
+
+Lesson: when a cache's direct cost is a small fraction of total, its
+SIZE matters more than its PER-LOOKUP latency because the cascading
+miss cost dominates.
+
 ## 2026-04-23 — failed experiment: pad opSlot 24 → 32 B (eliminate line straddle)
 
 Not merged — second time this experiment has failed (first was v1.10's
