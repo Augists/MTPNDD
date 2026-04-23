@@ -2,6 +2,30 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — fattree12 MF=3 full Go-vs-C comparison
+
+Measured against C backend (mtpndd-c feature/c `libmtpnddjni.so.c-backup`,
+Sylvan+Lace) — both backends complete the workload on the 31 GB host,
+single run each at `-Xmx32768m` w=4:
+
+| metric | Go v1.15 | C | C / Go |
+| --- | --- | --- | --- |
+| **Wall** | **224.1 s** | 565.8 s | **2.52×** |
+| MTPNDD TOTAL (Java timer) | 190.8 s | 539.7 s | 2.83× |
+| And (33.3 M calls) | 61.7 s | 109.7 s | 1.78× |
+| Or (6.1 M calls) | 78.3 s | 84.9 s | 1.08× |
+| Not (5.5 M calls) | 33.8 s | 53.4 s | 1.58× |
+| **SatCount (5.3 M calls)** | **10.5 s** | **289.3 s** | **27.6×** |
+| ref / deref | ~6 s | — | — |
+
+Go is **2.52× faster wall-time** on this workload. The lion's share of
+the win is SatCount: C recomputes the full DAG on every call, Go
+reuses the global memo introduced in v1.7. If SatCount were equal the
+overall ratio would be ~1.39× (Go still faster, but much less dramatic).
+
+Sanity: op counts are identical (same algorithm, same inputs), so the
+speedups reflect implementation differences and not different work.
+
 ## 2026-04-23 — v1.15: store op-cache result as uintptr (GC-invisible)
 
 Op-cache slots held `res *Node`. With SRE's 16 M-slot BDD cache (+ a
