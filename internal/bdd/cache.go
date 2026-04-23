@@ -71,8 +71,16 @@ func cachePut(tag opTag, a, b, res *Node, aux uint32) {
 	s.fp = fp
 	s.res = res
 	s.seq.Store(seq + 2)
-	if c := bddCachePutCount.Add(1); c%bddCacheClearInterval == 0 {
-		clearBDDCache()
+	// The periodic clear feature exists for hosts that want to cap cache
+	// footprint; under this project's strong-ref model it's mostly dead
+	// weight. When the interval is effectively disabled (as JNI callers
+	// set it) skip the atomic increment entirely — under concurrent load
+	// it becomes a cache-line-ping hotspot (880 ms flat / 2.3 % of CPU on
+	// sre-ndd fattree12 MF=3 at w=4).
+	if bddCacheClearInterval < (1 << 40) {
+		if c := bddCachePutCount.Add(1); c%bddCacheClearInterval == 0 {
+			clearBDDCache()
+		}
 	}
 }
 

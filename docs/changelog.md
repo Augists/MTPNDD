@@ -2,6 +2,41 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.14: skip cache-put counter atomic when clears are off
+
+Found on fattree12 MF=3 profile (the first sre-ndd workload where v1.13
+lets us run without crashing). Under heavy concurrency the cache-put
+code path was spending **880 ms flat / 2.3 % of CPU** on a single line:
+
+```go
+if c := bddCachePutCount.Add(1); c%bddCacheClearInterval == 0 { ... }
+```
+
+The `bddCachePutCount.Add(1)` is an atomic RMW on a shared global. With
+4 Go workers × 45 M cachePut calls, the counter cache line ping-pongs
+between cores relentlessly. And for JNI callers the interval is already
+`1 << 62` (v1.10 disabled periodic clears), so the increment is doing
+zero useful work.
+
+Gate both BDD and NDD cachePut's counter bump on
+`interval < (1 << 40)`. When the interval is effectively disabled the
+atomic and modulo are skipped entirely; when a caller does want periodic
+clears (default 2^21) the behavior is unchanged.
+
+### Impact
+
+- **fattree12 MF=3 w=4**: wall 240.4 s → **229.2 s (−4.7 %)**, Java-side
+  MTPNDD TOTAL 205.9 s → 194.4 s (−5.6 %). Per-op: And −6 %, Or −6 %,
+  Not −6 %.
+- **fattree08 MF=3 w=4**: 14.66 s → 14.68 s (noise; atomic contention
+  wasn't the bottleneck at this scale).
+- **n-queens N=12**: 1.60 s (unchanged — default interval still active
+  for Go-native callers).
+
+Lesson: atomic RMW on a global "just for a threshold check" is free at
+low concurrency and devastating at high concurrency. If the write is
+dead-weight on the hot path, skip it.
+
 ## 2026-04-23 — v1.13: open-addressed SatCount memo (replace sharded map)
 
 Small SRE win: ~1 % (same-session A/B, 14.80 s v1.12 → 14.66 s open-

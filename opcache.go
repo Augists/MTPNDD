@@ -74,8 +74,10 @@ func nddCachePut(tag nddOpTag, a, b, res *Node, aux uint32) {
 	s.fp = fp
 	s.res = res
 	s.seq.Store(seq + 2)
-	if c := nddCachePutCount.Add(1); c%nddCacheClearInterval == 0 {
-		clearNDDCache()
+	if nddCacheClearInterval < (1 << 40) {
+		if c := nddCachePutCount.Add(1); c%nddCacheClearInterval == 0 {
+			clearNDDCache()
+		}
 	}
 }
 
