@@ -135,7 +135,12 @@ func allocBDDNode() *Node {
 // Unique table.
 // ---------------------------------------------------------------------------
 
-const shardResizeLoad = 7
+// Resize when count*10 > len*shardResizeLoad; shardResizeLoad=5 means
+// expand at 50 % load. At 70 % (the previous value) linear-probe average
+// chain length was 1/(1-0.7) ≈ 3.3, each probe step a near-guaranteed
+// DRAM miss at SRE scale (256 MB table). Dropping to 50 % halves probe
+// steps on average at the cost of 2× peak table memory.
+const shardResizeLoad = 5
 
 var (
 	bddShardCount       int

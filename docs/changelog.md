@@ -2,6 +2,43 @@
 
 Dates reflect commits on the `feature/go` branch.
 
+## 2026-04-23 — v1.16: lower unique-table resize threshold from 70 % to 50 %
+
+`bdd.intern`'s hot line `if slot.node == nil` was **5.51 s flat / 14.6 %**
+of the fattree12 MF=3 profile — a direct DRAM-latency hit because the
+BDD unique table is 256 MB at that scale, well past L3. At the old
+70 % resize trigger, linear-probe average chain length ≈ 1/(1−0.7)
+≈ 3.3 steps; every step a near-guaranteed DRAM miss.
+
+Drop the resize threshold to 50 % (`shardResizeLoad 7 → 5`). Avg chain
+length drops to ≈ 2; cache-miss count halves on probe sequences.
+Cost: table consumes up to 2× memory at peak (trivial on a 31 GB
+host; no change on fattree04/08).
+
+### Impact (fattree12 MF=3 w=4)
+
+| metric | v1.15 | v1.16 | delta |
+| --- | --- | --- | --- |
+| Wall | 224.1 s | **217.9 s** | **−2.8 %** |
+| MTPNDD TOTAL | 190.8 s | 185.6 s | −2.7 % |
+| And (33.3 M) | 61.7 s | 60.3 s | −2.3 % |
+| Or (6.1 M) | 78.3 s | 75.9 s | −3.1 % |
+| Not (5.5 M) | 33.8 s | 32.7 s | −3.3 % |
+| SatCount | 10.5 s | 10.3 s | −1.9 % |
+
+Per-op is uniformly 2–3 % faster — consistent with "every intern+Mk
+path saves some probe steps."
+
+### Impact (fattree08 MF=3 w=4)
+
+5-run same-session A/B in noise: 14.52 s (70 %) vs 14.60 s (50 %).
+Table is only ~16 MB at this scale, fits L3 roughly; probe-step cost
+is small to begin with. Not a regression, not a win.
+
+### Cumulative vs C on fattree12 MF=3
+
+Go wall 217.9 s vs C 565.8 s → **2.60× faster** (was 2.52× at v1.15).
+
 ## 2026-04-23 — fattree12 MF=3 full Go-vs-C comparison
 
 Measured against C backend (mtpndd-c feature/c `libmtpnddjni.so.c-backup`,

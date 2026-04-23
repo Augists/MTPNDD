@@ -56,7 +56,7 @@ func allocNDDNode() *Node {
 // Unique table: linear-probed open-addressing hash table, per-shard.
 // ---------------------------------------------------------------------------
 
-const shardResizeLoad = 7 // resize when count*10 > len*shardResizeLoad
+const shardResizeLoad = 5 // resize at 50 % load; see internal/bdd/table.go for rationale
 
 var (
 	nddShardCount       int
