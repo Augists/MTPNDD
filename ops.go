@@ -13,7 +13,7 @@ import (
 // has to stay conservative. A sre-ndd re-sweep showed 2 was *worse*
 // than 4 on all workloads (the extra goroutines don't earn enough
 // parallel work to pay for themselves on small SRE ops).
-var spawnPairThreshold = 4
+var spawnPairThreshold = 1024
 
 // And returns a AND b (boolean NDD conjunction).
 func And(a, b *Node) *Node {

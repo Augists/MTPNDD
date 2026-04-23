@@ -12,6 +12,9 @@ package main
 import "C"
 
 import (
+	"net/http"
+	_ "net/http/pprof"
+	"os"
 	"runtime"
 	"sync/atomic"
 	"unsafe"
@@ -22,6 +25,17 @@ import (
 
 // main is required for c-shared mode but must never run.
 func main() {}
+
+// If PPROF_PORT is set, expose the runtime profiling endpoints on that
+// TCP port so external tools can curl http://127.0.0.1:$PPROF_PORT/debug/
+// pprof/profile while the JNI is running.
+func init() {
+	if port := os.Getenv("PPROF_PORT"); port != "" {
+		go func() {
+			_ = http.ListenAndServe("127.0.0.1:"+port, nil)
+		}()
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Handle conversion.
@@ -107,6 +121,16 @@ func mapInitArgs(
 	// by 128× and makes the chunk directory overflow at much smaller
 	// workloads than intended.
 	_ = nodeSlab
+
+	// Disable in-Go goroutine spawning for JNI-driven workloads.
+	// JNI callers are already parallel at the Java thread level
+	// (sre-ndd runs N Java threads each making independent JNI
+	// calls); spawning inside each call then over-subscribes the
+	// scheduler and wastes CPU on goroutine lifecycle. Profiling
+	// showed 25+ % of CPU in goroutine machinery at w=4 for sre-ndd
+	// fattree08 MF=3. Switching to serial-in-Go dropped that
+	// workload from 28.9 s to 15.8 s wall.
+	cfg.SpawnPairThreshold = 1024
 	return cfg
 }
 
