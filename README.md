@@ -2,14 +2,27 @@
 
 Pure-Go implementation of **Multi-Terminal Parallel Network Decision
 Diagrams**. An in-memory BDD + NDD library with a small public surface
-and goroutine-based parallelism.
+and goroutine-based parallelism. Ships as both a Go package and a
+`cgo -buildmode=c-shared` `libmtpnddjni.so` drop-in for the existing
+Java `org.ants.mtpndd` wrapper.
 
-On the n-queens benchmark, `mtpndd-go` is **14–22 % faster than the
-C/Sylvan/Lace reference implementation** at N = 10..13 on 6 workers.
-See [`docs/performance.md`](docs/performance.md) for the full journey
-and [`docs/benchmarking.md`](docs/benchmarking.md) for reproduction.
+On the `sre-ndd` network-verification workloads (single run, 4 workers,
+vs. mtpndd-c / Sylvan+Lace C backend):
 
-## Scope (v1.4)
+| workload        | Go v1.17 | C      | Go / C |
+| --------------- | -------- | ------ | ------ |
+| ft08 MF=3 (w=4) | 14.4 s   | 32.4 s | 0.44×  (**2.25× faster**) |
+| ft12 MF=1 (w=4) | 19.8 s   | 26.5 s | 0.75×  (1.34× faster) |
+| ft12 MF=3 (w=4) | 218.9 s  | 565.8 s | 0.39× (**2.60× faster**) |
+
+On the smaller n-queens benchmark, `mtpndd-go` is **14–22 % faster**
+than the C reference at N = 10..13 on 6 workers.
+
+See [`docs/performance.md`](docs/performance.md) for the optimization
+journey and [`docs/benchmarking.md`](docs/benchmarking.md) for
+reproduction.
+
+## Scope (v1.17)
 
 - Pure-Go BDD (`internal/bdd`) with `True` / `False` terminals,
   `Mk / IthVar / NIthVar / And / Or / Xor / Not / Exist / SatCount`.
@@ -22,6 +35,8 @@ and [`docs/benchmarking.md`](docs/benchmarking.md) for reproduction.
   `GOMAXPROCS`-sized semaphore.
 - CLIs at `cmd/nqueens` (correctness check) and `cmd/nqueens-bench`
   (benchmark harness with `-cpuprofile`).
+- `jni/` cgo bridge producing `libmtpnddjni.so` — drop-in replacement
+  for mtpndd-c's .so, used by `sre-ndd` via JNI.
 
 ## Quickstart
 

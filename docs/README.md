@@ -8,18 +8,20 @@ rewrite on the `feature/go` branch.
 Pre-existing C/Sylvan/Lace documentation was moved to `docs_c_legacy/` during
 the Go port; look there for history of the C implementation.
 
-## Scope of the Go port (v1)
+## Scope of the Go port (v1.17)
 
 - Pure-Go BDD library with True / False terminals, `ithvar`, `and`, `or`,
   `not`, `xor`, `exist`, `satcount`.
 - Pure-Go NDD layer with field declaration, canonical `mk`, and the five
   boolean operations (`And`, `Or`, `Not`, `Diff`, `Exist`).
 - Goroutine-based parallelism — Lace is not ported.
+- **cgo `c-shared` JNI bridge** (`jni/`) — produces `libmtpnddjni.so`
+  binary-compatible with mtpndd-c's, so `sre-ndd`'s Java code runs
+  unmodified. The bridge auto-tunes for JNI callers (disables in-Go
+  goroutine spawning and periodic op-cache clears).
 - Multi-terminal leaves (`fraction`, `double`) and Phase‑1 arithmetic
-  (`plus`, `minus`, `times`, `divide`, `abstract_plus`) are intentionally
-  omitted in v1.
-- JNI / Java surface is not ported in v1; the v1 consumer is the `cmd/nqueens`
-  and `cmd/nqueens-bench` tools plus the `mtpndd` Go package.
+  (`plus`, `minus`, `times`, `divide`, `abstract_plus`) are still
+  deferred to v2.
 
 ## Documents
 
@@ -57,3 +59,17 @@ the Go port; look there for history of the C implementation.
   | 13 | 9.43 s | 7.40 s | 0.78×  | 22 % faster  |
 
   Go leads C by 14–22 % across all tested N on n-queens.
+
+### SRE (sre-ndd) workloads — via `jni/` libmtpnddjni.so (w=4)
+
+Measured on the same 31 GB host, `-Xmx32768m`, JDK 23.
+
+| workload   | Go v1.17 | C       | Go / C | notes |
+| ---------- | -------- | ------- | ------ | ----- |
+| ft08 MF=3  | 14.4 s   | 32.4 s  | 0.44×  | 5-run median |
+| ft12 MF=1  | 19.8 s   | 26.5 s  | 0.75×  | 3-run median |
+| ft12 MF=3  | 218.9 s  | 565.8 s | 0.39×  | single run; Go's global SatCount memo is the dominant lever (C SatCount 289 s vs Go 10.5 s) |
+
+See [`changelog.md`](changelog.md) v1.6 onward for the SRE-driven
+optimization trail (JNI bridge, SatCount memo, goroutine-spawn
+disable, op-cache tuning, uintptr slot storage, etc.).
