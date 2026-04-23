@@ -8,9 +8,11 @@ import (
 )
 
 // spawnPairThreshold is populated from Config at Init time. Below this
-// threshold same-field And/Or runs inline; at or above it they fan out one
-// goroutine per (i, j) pair. Goroutine spawn costs ~1-5 µs so the value
-// needs to stay conservative.
+// threshold same-field And/Or runs inline; at or above it they fan out
+// one goroutine per (i, j) pair. Goroutine spawn costs ~1-5 µs so this
+// has to stay conservative. A sre-ndd re-sweep showed 2 was *worse*
+// than 4 on all workloads (the extra goroutines don't earn enough
+// parallel work to pay for themselves on small SRE ops).
 var spawnPairThreshold = 4
 
 // And returns a AND b (boolean NDD conjunction).
